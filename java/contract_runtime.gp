@@ -188,19 +188,27 @@ public final class ContractRuntime {
     }
 
     public static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
-        Definition definition = definitions.get(root);
+        return validate(definitions, root, input, caller, true);
+    }
+    public static Validation.Outcome validateStructure(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
+        return validate(definitions, root, input, caller, false);
+    }
+    private static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller, boolean refinements) {
+        Definition definition = root == null ? null : definitions.get(root);
         if (definition == null || !definition.parameters().isEmpty()) return new Validation.Invalid(List.of(
             new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a declared root type with no unbound type parameters.")), false);
-        return new Validator(definitions, caller).run(root, input);
+        if (input == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.structure", List.of(""), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false);
+        return new Validator(definitions, caller, refinements).run(root, input);
     }
     private static final class Validator {
         final Map<String, Definition> definitions;
         final Budget budget;
         final Eval structure;
         final List<Validation.Check> checks = new ArrayList<>();
+        final boolean refinements;
         String currentPath = "";
-        Validator(Map<String, Definition> definitions, Budget.Limits caller) {
-            this.definitions = definitions; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure());
+        Validator(Map<String, Definition> definitions, Budget.Limits caller, boolean refinements) {
+            this.definitions = definitions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure());
         }
         Validation.Outcome run(String root, Data input) {
             try { check(new Type("named", root, List.of(), List.of(), List.of()), structure.transfer(input), Map.of(), ""); }
@@ -217,7 +225,7 @@ public final class ContractRuntime {
                 switch (type.kind()) {
                     case "refined": {
                         Checked result = check(type.arguments().getFirst(), input, env, path);
-                        if (result.shape()) for (Rule rule : type.rules()) rule(rule, result.data(), path);
+                        if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path);
                         return result;
                     }
                     case "named": {

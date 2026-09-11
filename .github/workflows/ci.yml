@@ -61,3 +61,4 @@ jobs:
           go test ./value -run '^$' -fuzz '^FuzzDataMutationIsolation$' -fuzztime=10s
           go test ./java -run '^$' -fuzz '^FuzzRuntimePackageNames$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./java -run '^$' -fuzz '^FuzzValidatorGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
+          go test ./java -run '^$' -fuzz '^FuzzModelGeneration$' -fuzztime=10s -fuzzminimizetime=1000x

@@ -1,0 +1,131 @@
+package java
+
+const modelSupportJava = `
+final class ModelSupport {
+    private ModelSupport() {}
+    private static final java.util.Map<String, String> PARENTS = java.util.Map.ofEntries(%s);
+    static final class Evidence {
+        private final String root;
+        private final Data raw;
+        private Evidence(String root, Data raw) { this.root = root; this.raw = raw; }
+        Data dataFor(String expected) {
+            for (String current = root; current != null; current = PARENTS.get(current)) if (current.equals(expected)) return raw;
+            throw new IllegalArgumentException("validation evidence does not belong to this nominal type");
+        }
+    }
+    static Evidence validate(String root, Data raw, Budget.Limits caller) {
+        %s.validate(root, raw, caller).orThrow(); return new Evidence(root, raw);
+    }
+    static Evidence withoutValidation(String root, Data raw, Budget.Limits caller) {
+        %s.validateStructure(root, raw, caller).orThrow(); return new Evidence(root, raw);
+    }
+    static <T> T nonNull(T value, String path) {
+        if (value == null) throw new ValidationException(new Validation.Invalid(java.util.List.of(
+            new Validation.Diagnostic("validation.structure", java.util.List.of(path), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false));
+        return value;
+    }
+    static Data integer(java.math.BigInteger value, String path) { return new Data.Number(Rational.of(nonNull(value, path))); }
+    static Data real(Rational value, String path) { return new Data.Number(nonNull(value, path)); }
+    static Data text(String value, String path) { return new Data.Text(nonNull(value, path)); }
+    static Data bool(Boolean value, String path) { return new Data.Bool(nonNull(value, path)); }
+    static <T> Data list(java.util.List<T> values, java.util.function.BiFunction<T, String, Data> encode, String path) {
+        nonNull(values, path); var result = new java.util.ArrayList<Data>();
+        for (int i = 0; i < values.size(); i++) result.add(encode.apply(values.get(i), path + "/" + i));
+        return new Data.Sequence(result);
+    }
+    static <T> java.util.List<T> list(Data data, java.util.function.Function<Data, T> decode) {
+        var result = new java.util.ArrayList<T>();
+        for (Data value : ((Data.Sequence)data).values()) result.add(decode.apply(value));
+        return java.util.List.copyOf(result);
+    }
+    static <T> Data maybe(ModelMaybe<T> value, java.util.function.BiFunction<T, String, Data> encode, String path) {
+        nonNull(value, path);
+        return switch (value) {
+            case ModelMaybe.Nothing<T> ignored -> new Data.Variant("Nothing", java.util.List.of());
+            case ModelMaybe.Just<T> some -> new Data.Variant("Just", java.util.List.of(encode.apply(some.value(), path)));
+        };
+    }
+    static <T> ModelMaybe<T> maybe(Data data, java.util.function.Function<Data, T> decode) {
+        var variant = (Data.Variant)data;
+        return switch (variant.name()) {
+            case "Nothing" -> new ModelMaybe.Nothing<>();
+            case "Just" -> new ModelMaybe.Just<>(decode.apply(variant.values().getFirst()));
+            default -> throw new AssertionError("invalid checked optional value");
+        };
+    }
+    static <T> Data nullable(ModelNullable<T> value, java.util.function.BiFunction<T, String, Data> encode, String path) {
+        nonNull(value, path);
+        return switch (value) {
+            case ModelNullable.Null<T> ignored -> new Data.Variant("Null", java.util.List.of());
+            case ModelNullable.NonNull<T> some -> new Data.Variant("NonNull", java.util.List.of(encode.apply(some.value(), path)));
+        };
+    }
+    static <T> ModelNullable<T> nullable(Data data, java.util.function.Function<Data, T> decode) {
+        var variant = (Data.Variant)data;
+        return switch (variant.name()) {
+            case "Null" -> new ModelNullable.Null<>();
+            case "NonNull" -> new ModelNullable.NonNull<>(decode.apply(variant.values().getFirst()));
+            default -> throw new AssertionError("invalid checked nullable value");
+        };
+    }
+    static <L, R> Data result(ModelResult<L, R> value, java.util.function.BiFunction<L, String, Data> left, java.util.function.BiFunction<R, String, Data> right, String path) {
+        nonNull(value, path);
+        return switch (value) {
+            case ModelResult.Err<L, R> err -> new Data.Variant("Err", java.util.List.of(left.apply(err.value(), path)));
+            case ModelResult.Ok<L, R> ok -> new Data.Variant("Ok", java.util.List.of(right.apply(ok.value(), path)));
+        };
+    }
+    static <L, R> ModelResult<L, R> result(Data data, java.util.function.Function<Data, L> left, java.util.function.Function<Data, R> right) {
+        var variant = (Data.Variant)data;
+        return switch (variant.name()) {
+            case "Err" -> new ModelResult.Err<>(left.apply(variant.values().getFirst()));
+            case "Ok" -> new ModelResult.Ok<>(right.apply(variant.values().getFirst()));
+            default -> throw new AssertionError("invalid checked result value");
+        };
+    }
+    static Data field(Data raw, String name) {
+        for (Data.Field field : ((Data.Struct)raw).fields()) if (field.name().equals(name)) return field.value();
+        // The enclosing model has already established that absent fields can
+        // only be optional. Preserve absence in rawData(); expose Nothing here.
+        return new Data.Variant("Nothing", java.util.List.of());
+    }
+    static Data applyChanges(Data raw, java.util.Map<String, Data> changes) {
+        if (changes.isEmpty()) return raw;
+        var result = new java.util.ArrayList<Data.Field>();
+        var remaining = new java.util.LinkedHashMap<>(changes);
+        for (Data.Field field : ((Data.Struct)raw).fields()) {
+            Data replacement = remaining.remove(field.name());
+            result.add(replacement == null ? field : new Data.Field(field.name(), replacement));
+        }
+        for (var entry : remaining.entrySet()) result.add(new Data.Field(entry.getKey(), entry.getValue()));
+        return new Data.Struct(result);
+    }
+}
+`
+
+const modelMaybeJava = `
+public sealed interface ModelMaybe<T> permits ModelMaybe.Nothing, ModelMaybe.Just {
+    record Nothing<T>() implements ModelMaybe<T> {}
+    record Just<T>(T value) implements ModelMaybe<T> {
+        public Just { ModelSupport.nonNull(value, ""); }
+    }
+}
+`
+const modelNullableJava = `
+public sealed interface ModelNullable<T> permits ModelNullable.Null, ModelNullable.NonNull {
+    record Null<T>() implements ModelNullable<T> {}
+    record NonNull<T>(T value) implements ModelNullable<T> {
+        public NonNull { ModelSupport.nonNull(value, ""); }
+    }
+}
+`
+const modelResultJava = `
+public sealed interface ModelResult<L, R> permits ModelResult.Err, ModelResult.Ok {
+    record Err<L, R>(L value) implements ModelResult<L, R> {
+        public Err { ModelSupport.nonNull(value, ""); }
+    }
+    record Ok<L, R>(R value) implements ModelResult<L, R> {
+        public Ok { ModelSupport.nonNull(value, ""); }
+    }
+}
+`

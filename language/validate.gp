@@ -19,6 +19,7 @@ type payloadValidator struct {
     checks []validation.Check
     currentPath string
     enclosing *evaluator
+    withoutRefinements bool
 }
 
 // ValidateData checks a named, non-parameterized root declaration against an
@@ -28,7 +29,18 @@ type payloadValidator struct {
 // Unsupported execution features produce Indeterminate, never silent success.
 // Program and Data are immutable; each call owns its meters and diagnostics.
 func (p *Program) ValidateData(root string,data value.Data,caller validation.Limits) validation.Report {
-    v:=&payloadValidator{program:p,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(validation.Limits{},caller)}
+    return p.validateData(root,data,caller,false)
+}
+
+// ValidateDataWithoutRefinements is the explicit structural-only bypass used by
+// generated model factories. It still checks declared shapes, fixed-width
+// representability, timestamps and resource limits; it never changes the input.
+func (p *Program) ValidateDataWithoutRefinements(root string,data value.Data,caller validation.Limits) validation.Report {
+    return p.validateData(root,data,caller,true)
+}
+
+func (p *Program) validateData(root string,data value.Data,caller validation.Limits,withoutRefinements bool) validation.Report {
+    v:=&payloadValidator{program:p,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(validation.Limits{},caller),withoutRefinements:withoutRefinements}
     for _,decl:=range p.module.Types {v.declarations[decl.Name]=decl}
     decl,found:=v.declarations[root]
     if !found || len(decl.Parameters)!=0 {
@@ -62,7 +74,7 @@ func (v *payloadValidator) check(t *Type,input evalValue,env map[string]typeBind
     match t.Form {
     case RefinedType(base,rules):
         result,ok:=v.check(base,input,env,path)
-        if ok {for _,rule:=range rules {v.rule(rule,result,path,env)}}
+        if ok && !v.withoutRefinements {for _,rule:=range rules {v.rule(rule,result,path,env)}}
         return result,ok
     case NamedType(name):
         if bound,found:=env[name];found {return v.check(bound.typ,input,bound.environment,path)}

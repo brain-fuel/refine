@@ -38,6 +38,12 @@ func javaQuote(text string) string {
 func javaList(items []string)string{return "java.util.List.of("+strings.Join(items,",")+")"}
 func quoteList(items []string)string{result:=make([]string,len(items));for i,item:=range items{result[i]=javaQuote(item)};return javaList(result)}
 
+func javaClassName(className string)error {
+    reserved:=" Data ContractRuntime Rational TextCodec Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
+    if className==""||strings.Contains(className,".")||strings.Contains(reserved," "+className+" "){return fmt.Errorf("invalid or reserved Java class name: %s",className)}
+    return packageName(className)
+}
+
 func emitExpr(expr *language.Expr,scope map[string]bool)string {
     kind,text,flag:="","",false;args,names:=[]string{},[]string{}
     child:=func(e *language.Expr)string{return emitExpr(e,scope)}
@@ -93,9 +99,8 @@ func GenerateValidator(program *language.Program,namespace,className string)(fil
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     if program==nil{return nil,fmt.Errorf("a compiled program is required")}
     if err:=packageName(namespace);err!=nil{return nil,err}
-    reserved:=" Data ContractRuntime Rational TextCodec Validation ValidationException Budget record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
-    if className==""||strings.Contains(className,".")||strings.Contains(reserved," "+className+" "){return nil,fmt.Errorf("invalid or reserved Java contract class name")}
-    if err:=packageName(className);err!=nil{return nil,err}
+    if err:=javaClassName(className);err!=nil{return nil,err}
+    for _,reserved:=range []string{"Data","ContractRuntime","Rational","TextCodec","Validation","ValidationException","Budget"}{if strings.EqualFold(className,reserved){return nil,fmt.Errorf("contract source name collides with runtime source")}}
     module:=program.Syntax()
     if len(module.Functions)!=0{unsupported(module.Functions[0].At,"named function emission remains required")}
     entries:=[]string{}
@@ -113,6 +118,7 @@ public final class %s {
     private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = java.util.Map.ofEntries(%s);
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
     public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, root, input, caller); }
+    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, root, input, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
 }
 `,className,className,strings.Join(entries,","))

@@ -40,12 +40,13 @@ contextual-keyword packages with Java 25.
   every enclosing meter and the overall budget once. Instances belong to one
   execution; they are not shared mutable global state.
 
-These are runtime primitives, **not yet generated domain models**. The initial
+These are runtime primitives; [semantic models](JAVA-MODELS.md) are emitted by a
+separate generation API. The initial
 generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
 not the final shared resource policy. Java regex/timestamps, schema-derived
-models, typed compound read/show, Jackson/Avro codecs, validated update APIs,
+complete model shapes, typed compound read/show, Jackson/Avro codecs,
 schema-derived test generators, Maven wiring and the full CLI generation path
 remain required. Nothing here establishes full product conformance.
 
@@ -129,7 +130,7 @@ This is a development subset, not the final language contract: all those missing
 forms remain required. The current 48,000-byte initializer-source guard rejects
 large contracts explicitly; chunked emission must lift that guard before release.
 
-Verification compares **13,250 complete Go/Java validation reports**, including
+Verification compares **26,500 complete Go/Java validation reports**, including
 diagnostic paths, codes, predicates and messages, across successful, malformed,
 unknown, tiny-budget, overflow and deep-tree cases. Three jetCheck suites add
 5,000 fresh-seeded cases for generated age, interval and recursive tree contracts.
@@ -138,7 +139,12 @@ resource limits; separate over-limit cases require Go/Java agreement instead.
 Emitter tests cover all-or-nothing rejection, unsafe class names, detached syntax
 copies, escaped controls/lone surrogates, deterministic output and size limits.
 
-Schema-specific semantic model classes, constructors/atomic updates, serde,
-schema-derived test generation, native-format ingestion/exports, Maven integration
-and the generation CLI are still outstanding. `Data` is internal-style payload
-plumbing for this validator, not a replacement for those domain types.
+The report comparisons exercise both normal validation and structural-only
+bypasses. Java `validateStructure` corresponds to Go's explicit
+`ValidateDataWithoutRefinements`; both preserve structural traversal/limits while
+skipping predicate execution.
+
+[Semantic models](JAVA-MODELS.md) now connect this validator to typed construction
+and atomic updates. Complete model shapes, serde, schema-derived test generation,
+native-format ingestion/exports, Maven integration and the generation CLI remain
+outstanding. `Data` is payload plumbing, not a replacement for domain types.

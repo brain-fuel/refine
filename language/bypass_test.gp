@@ -1,0 +1,32 @@
+package language
+
+import (
+    "testing"
+
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestStructuralBypassRetainsRepresentation(t *testing.T){
+    program:=validationProgram(t,`type Age = Int where it >= 0
+type Person = { age :: Age, small :: UInt8 } where it.age > 21
+type Broken = Real where it / 0.0 > 0.0
+type TimestampValue = Timestamp`)
+    cases:=[]struct{root string;data value.Data;normal string;bypass string}{
+        {"Age",integerPayload(-1),"invalid","valid"},
+        {"Person",payloadRecord(t,value.DataField{Name:"age",Value:integerPayload(-1)},value.DataField{Name:"small",Value:integerPayload(3)}),"invalid","valid"},
+        {"Person",payloadRecord(t,value.DataField{Name:"age",Value:integerPayload(-1)},value.DataField{Name:"small",Value:integerPayload(256)}),"invalid","invalid"},
+        {"Person",payloadRecord(t,value.DataField{Name:"age",Value:integerPayload(-1)}),"invalid","invalid"},
+        {"Age",payloadText(t,"wrong"),"invalid","invalid"},
+        {"Broken",integerPayload(1),"indeterminate","valid"},
+        {"TimestampValue",payloadText(t,"not a timestamp"),"invalid","invalid"},
+        {"TimestampValue",payloadText(t,"2027-06-30T23:59:60Z"),"indeterminate","indeterminate"},
+    }
+    for _,tc:=range cases{
+        if state:=validation.StateName(program.ValidateData(tc.root,tc.data,validation.Limits{}).State());state!=tc.normal{t.Fatalf("normal %s: %s",tc.root,state)}
+        if state:=validation.StateName(program.ValidateDataWithoutRefinements(tc.root,tc.data,validation.Limits{}).State());state!=tc.bypass{t.Fatalf("bypass %s: %s",tc.root,state)}
+    }
+    raw:=integerPayload(-1)
+    if state:=validation.StateName(program.ValidateDataWithoutRefinements("Age",raw,validation.Limits{Total:1}).State());state!="indeterminate"{t.Fatal("bypass ignored structure budget")}
+    number,_:=raw.Number();if number.Show()!="-1"{t.Fatal("bypass changed payload")}
+}

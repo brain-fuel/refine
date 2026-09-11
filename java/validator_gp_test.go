@@ -122,6 +122,8 @@ func TestGeneratedContractValidation(t *testing.T) {
 	add := func(kind, root, a, b string, data value.Data, limit, clause uint64) {
 		input := fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%d", kind, root, a, b, limit, clause)
 		vectors = append(vectors, vector{input, reportLine(program.ValidateData(root, data, validation.Limits{Total: limit, Clause: clause}))})
+		bypass := fmt.Sprintf("%s\t@%s\t%s\t%s\t%d\t%d", kind, root, a, b, limit, clause)
+		vectors = append(vectors, vector{bypass, reportLine(program.ValidateDataWithoutRefinements(root, data, validation.Limits{Total: limit, Clause: clause}))})
 	}
 	for _, root := range []string{"Age", "Small", "Percent", "Exact", "LetValue", "Escaped", "Arithmetic", "Overflow", "missing", "Tree"} {
 		for _, n := range []string{"-129", "-1", "0", "17", "18", "128", "1/3"} {
@@ -269,7 +271,8 @@ public final class ContractConformance {
                 case "badperson" -> new Data.Struct(List.of(field("age", new Data.Text("bad"))));
                 default -> throw new AssertionError();
             };
-            var outcome = Contract.validate(f[1], data, new Budget.Limits(Long.parseLong(f[4]), Long.parseLong(f[5])));
+            var limits = new Budget.Limits(Long.parseLong(f[4]), Long.parseLong(f[5]));
+            var outcome = f[1].startsWith("@") ? Contract.validateStructure(f[1].substring(1), data, limits) : Contract.validate(f[1], data, limits);
             StringBuilder result = new StringBuilder(outcome.state().name().toLowerCase(java.util.Locale.ROOT)).append('|').append(outcome.incomplete());
             for (var d : outcome.diagnostics()) result.append('|').append(hex(d.code())).append(',').append(hex(String.join(";", d.paths()))).append(',').append(hex(d.predicate())).append(',').append(hex(d.message()));
             System.out.println(result);

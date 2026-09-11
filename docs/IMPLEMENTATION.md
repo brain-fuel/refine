@@ -314,6 +314,43 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   concurrent Java validation, copied payload collections and forged numeric
   metadata. GoPlus latest still resolves to the pinned v0.158.0.
 
-Next: connect the generated validator to semantic Java models and validated
-construction/updates, and complete function/codec execution and native schemas.
-The full checklist remains the release gate.
+- Checkpoint `035ab1b` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34656772216). A fresh
+  consumer fetched `v0.0.0-20260911230628-035ab1b85506` without replacements and
+  passed race-tested source generation, Java compilation, whole-record checks,
+  validation exceptions, indeterminate evaluation and budget exhaustion.
+
+## Semantic Java model checkpoint
+
+- `GenerateModels` emits nominal scalar/record/list models and refinement
+  hierarchies backed by the generated validator. Public fields remain semantically
+  typed; primitive access is explicit. Constructors validate by default, throwing
+  the ordinary validation exception. Parent substitution performs no validation.
+- Named bypass factories skip predicates only. A matching Go
+  `ValidateDataWithoutRefinements` API and Java structural mode retain type,
+  numeric representability and resource checks. Cross-runtime report comparisons
+  now cover 26,500 normal/bypass cases.
+- Record drafts stage changes without checking intermediate states, freeze only
+  explicitly set fields, and validate the completed candidate once. Escaped
+  drafts/collections cannot mutate old or returned objects. Optional absence,
+  untouched extras and raw-object identity survive no-op updates. Refined record
+  subclasses retain their dynamic type/invariants through parent references.
+- Tests cover nominal inheritance/evidence isolation, unrelated-type compile
+  rejection, immutable nested collections, recursive optional records, distinct
+  optional/null/result states, bypass representability, callback failure,
+  code-name collisions and unnamed/Unicode packages. A Go-derived tight budget
+  checks single-pass update validation. Two fresh-seeded jetCheck suites add
+  4,000 model construction/update cases.
+- Local race tests, vet and deterministic generation pass. A 20-second model
+  emitter fuzz run passed 9,799,010 executions. A local Darwin/arm64 (Apple M5 Max)
+  source-generation benchmark measured 235,865 ns/op, 709,645 B/op and 5,855
+  allocs/op; it does not measure payload throughput. GoPlus latest remains the
+  pinned v0.158.0.
+- Generic domain declarations, tagged alternatives, anonymous nested record
+  models, full predicate/function execution, native codecs/schema adapters,
+  generated tests, versioning and project integration remain required. Current
+  unsupported model forms reject generation instead of weakening field types.
+  [JAVA-MODELS.md](JAVA-MODELS.md) describes the exact API and remaining scope.
+
+Next: complete model shapes and generated function/codec execution, then connect
+native formats and project workflows. The full checklist remains the release gate.
