@@ -11,6 +11,17 @@ import (
 
 func signed(n int32) string { return strconv.FormatInt(int64(n),10) }
 
+func TestTokenCategoryNamesRemainIdentifiers(t *testing.T) {
+    for _,name:=range []string{"text","number","name","newline","eof"}{
+        source:=name+" :: Int -> Int\n"+name+" "+name+" = "+name+"\nentry :: Int\nentry = "+name+" 42"
+        program,err:=Compile(source);if err!=nil{t.Fatalf("%s: %v",name,err)}
+        if len(program.module.Functions)!=2{t.Fatalf("%s truncated the module",name)}
+        expr,err:=ParseExpression(name);if err!=nil{t.Fatal(err)}
+        match expr.Form{case Variable(actual):if actual!=name{t.Fatal(actual)};case _:t.Fatalf("%s became a literal/token",name)}
+    }
+    for _,source:=range []string{"import text","eof type Ignored = Int","type T = Int eof"}{if _,err:=Compile(source);err==nil{t.Fatalf("token impersonation accepted: %s",source)}}
+}
+
 func parsedExpression(t *testing.T, source string) *Expr {
     t.Helper(); e, err := ParseExpression(source); if err != nil { t.Fatal(err) }; return e
 }

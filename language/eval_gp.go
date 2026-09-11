@@ -12,11 +12,14 @@ import (
 	"goforge.dev/refine/value"
 )
 
-// This execution core is private until the typed payload/where traversal is
-// connected. Only compiler-owned ASTs enter it. It never resolves an import,
+// This private execution core supports validating payload and codec boundaries.
+// Only compiler-owned ASTs enter it. It never resolves an import,
 // loads a plugin, reflects over host values, or invokes a host callback.
 // Function values are immutable partial applications of checked named functions.
-type evalValue struct{ form evalForm }
+type evalValue struct {
+	form      evalForm
+	signature *Type
+}
 
 //goplus:enum evalForm
 //goplus:derive off
@@ -75,6 +78,16 @@ type evalFunction struct {
 
 func (evalFunction) isEvalForm() {}
 
+//goplus:variant (evalForm) EvalGuardedFunction(Function evalValue, Argument *Type, Result *Type, Types map[string]typeBinding)
+type evalGuardedFunction struct {
+	function evalValue
+	argument *Type
+	result   *Type
+	types    map[string]typeBinding
+}
+
+func (evalGuardedFunction) isEvalForm() {}
+
 type evalField struct {
 	name  string
 	value evalValue
@@ -90,11 +103,12 @@ func (f *evalFailure) Error() string {
 }
 
 type evaluator struct {
-	module       *Module
-	functions    map[string]Function
-	constructors map[string]int
-	meter        *validation.Meter
-	depth        int
+	module          *Module
+	functions       map[string]Function
+	constructors    map[string]int
+	meter           *validation.Meter
+	depth           int
+	typeEnvironment map[string]typeBinding
 }
 
 // Nesting is an independent deterministic safety cap. Reaching it is unknown,
@@ -242,10 +256,12 @@ func (e *evaluator) expression(expr *Expr, env map[string]evalValue) evalValue {
 		return boolValue(b)
 	case Variable:
 		name := __gp_m4.Name
+
 		if v, found := env[name]; found {
 			return v
 		}
-		return e.resolve(name, expr.At)
+		signature := e.instantiate(e.module.inferred[expr], e.typeEnvironment, 0)
+		return e.resolveTyped(name, signature, expr.At)
 	case ListLiteral:
 		expressions := __gp_m4.Elements
 
@@ -325,10 +341,10 @@ func (e *evaluator) expression(expr *Expr, env map[string]evalValue) evalValue {
 		bound := __gp_m4.Value
 		body := __gp_m4.Body
 
-		if annotation != nil && hasInlineRefinement(annotation) {
-			evalError(expr.At, "evaluation.unsupported", "refined local annotation enforcement is not implemented yet")
-		}
 		v := e.expression(bound, env)
+		if annotation != nil && hasInlineRefinement(annotation) {
+			v = e.assertInline(annotation, v, e.typeEnvironment)
+		}
 		local := cloneEvalEnvironment(env)
 		local[name] = v
 		return e.expression(body, local)
@@ -358,21 +374,28 @@ var builtinArities = map[string]int{
 }
 
 func (e *evaluator) resolve(name string, at Span) evalValue {
+	return e.resolveTyped(name, nil, at)
+}
+func (e *evaluator) resolveTyped(name string, signature *Type, at Span) evalValue {
 	if fn, found := e.functions[name]; found {
 		arity := len(fn.Equations[0].Patterns)
 		if arity == 0 {
-			return e.invoke(name, nil, at)
+			return e.invoke(name, nil, signature, at)
 		}
-		return evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}}
+		result := evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}, signature: signature}
+		if hasInlineRefinement(fn.Signature) {
+			return e.assertInline(fn.Signature, result, e.functionBindings(name, signature))
+		}
+		return result
 	}
 	if arity, found := e.constructors[name]; found {
 		if arity == 0 {
 			return evalValue{form: evalVariant{name: name, arguments: nil}}
 		}
-		return evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}}
+		return evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}, signature: signature}
 	}
 	if arity, found := builtinArities[name]; found {
-		return evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}}
+		return evalValue{form: evalFunction{name: name, arity: arity, arguments: nil}, signature: signature}
 	}
 	evalError(at, "evaluation.name", "unresolved function or variable")
 	return evalValue{}
@@ -381,6 +404,14 @@ func (e *evaluator) apply(fn, arg evalValue, at Span) evalValue {
 	e.enter(at)
 	defer func() { e.depth-- }()
 	switch __gp_m6 := any(fn.form).(type) {
+	case evalGuardedFunction:
+		inner := __gp_m6.function
+		argument := __gp_m6.argument
+		result := __gp_m6.result
+		types := __gp_m6.types
+
+		checked := e.assertInline(argument, arg, types)
+		return e.assertInline(result, e.apply(inner, checked, at), types)
 	case evalFunction:
 		name := __gp_m6.name
 		arity := __gp_m6.arity
@@ -389,21 +420,21 @@ func (e *evaluator) apply(fn, arg evalValue, at Span) evalValue {
 		e.step(uint64(len(previous)+1), at)
 		args := append(append([]evalValue(nil), previous...), arg)
 		if len(args) < arity {
-			return evalValue{form: evalFunction{name: name, arity: arity, arguments: args}}
+			return evalValue{form: evalFunction{name: name, arity: arity, arguments: args}, signature: fn.signature}
 		}
-		return e.invoke(name, args, at)
+		return e.invoke(name, args, fn.signature, at)
 	default:
 		evalError(at, "evaluation.type", "application requires a function")
 	}
 	return evalValue{}
 }
-func (e *evaluator) invoke(name string, args []evalValue, at Span) evalValue {
+func (e *evaluator) invoke(name string, args []evalValue, signature *Type, at Span) evalValue {
 	e.enter(at)
 	defer func() { e.depth-- }()
 	if fn, found := e.functions[name]; found {
-		if hasInlineRefinement(fn.Signature) {
-			evalError(at, "evaluation.unsupported", "refined function signature enforcement is not implemented yet")
-		}
+		previous := e.typeEnvironment
+		e.typeEnvironment = e.functionBindings(name, signature)
+		defer func() { e.typeEnvironment = previous }()
 		for _, equation := range fn.Equations {
 			env := make(map[string]evalValue)
 			matched := true
@@ -414,13 +445,20 @@ func (e *evaluator) invoke(name string, args []evalValue, at Span) evalValue {
 				}
 			}
 			if matched {
-				return e.expression(equation.Body, env)
+				result := e.expression(equation.Body, env)
+				if len(args) == 0 && hasInlineRefinement(fn.Signature) {
+					result = e.assertInline(fn.Signature, result, e.typeEnvironment)
+				}
+				return result
 			}
 		}
 		evalError(at, "evaluation.pattern", "no function equation matched")
 	}
 	if _, found := e.constructors[name]; found {
 		return evalValue{form: evalVariant{name: name, arguments: append([]evalValue(nil), args...)}}
+	}
+	if name == "read" {
+		return e.typedRead(signature, args[0], at)
 	}
 	return e.builtin(name, args, at)
 }
@@ -739,6 +777,8 @@ func (e *evaluator) equal(a, b evalValue, at Span) bool {
 			evalError(at, "evaluation.type", "expected a record")
 		}
 	case evalFunction:
+		evalError(at, "evaluation.type", "functions do not support value equality")
+	case evalGuardedFunction:
 		evalError(at, "evaluation.type", "functions do not support value equality")
 	default:
 		panic("goplus: impossible enum value in match")

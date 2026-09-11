@@ -1,0 +1,18 @@
+[
+  {"name":"large integer","schema":"type T = Int","input":"9007199254740993","state":"valid","canonical":"9007199254740993"},
+  {"name":"reduced exact fraction","schema":"type T = Real","input":"-2/6","state":"valid","canonical":"-1/3"},
+  {"name":"exact exponent","schema":"type T = Real","input":"2e-3","state":"valid","canonical":"1/500"},
+  {"name":"UTF16 surrogate payload","schema":"type T = String","input":"\"\\ud800\\ud83d\\ude00\"","state":"valid","canonical":"\"\\ud800\\ud83d\\ude00\""},
+  {"name":"Boolean","schema":"type T = Bool","input":"True","state":"valid","canonical":"True"},
+  {"name":"absence","schema":"type T = Maybe (Nullable Int)","input":"Nothing","state":"valid","canonical":"Nothing"},
+  {"name":"present null","schema":"type T = Maybe (Nullable Int)","input":"Just Null","state":"valid","canonical":"(Just Null)"},
+  {"name":"record field order","schema":"type T = {z :: Int, a :: Bool}","input":"{z=2,a=False}","state":"valid","canonical":"{a = False, z = 2}"},
+  {"name":"Unicode scalar record ordering","schema":"type T = {𐐀 :: Int, ﬀ :: Int}","input":"{𐐀=1,ﬀ=2}","state":"valid","canonical":"{ﬀ = 2, 𐐀 = 1}"},
+  {"name":"recursive generic","schema":"data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int","input":"Branch (Leaf 1) (Leaf -2)","state":"invalid"},
+  {"name":"recursive signed constructor argument","schema":"data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int","input":"Branch (Leaf 1) (Leaf (-2))","state":"valid","canonical":"(Branch (Leaf 1) (Leaf (-2)))"},
+  {"name":"fraction constructor argument","schema":"type T = Maybe Real","input":"Just (-2/6)","state":"valid","canonical":"(Just (-1/3))"},
+  {"name":"refined rejection","schema":"type T = Int where it > 0","input":"-1","state":"invalid"},
+  {"name":"fixed width rejection","schema":"type T = Int8","input":"128","state":"invalid"},
+  {"name":"unknown refinement","schema":"type T = Int where 1 / 0 > 0.0","input":"1","state":"indeterminate"},
+  {"name":"expressions do not execute","schema":"type T = Int","input":"1 + 2","state":"invalid"}
+]

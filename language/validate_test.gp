@@ -48,7 +48,7 @@ func TestValidateDataThreeStatesBudgetAndMessageFallback(t *testing.T) {
         {"unrepresentable custom message",`type T = Int where False @message "\ud800"`,"invalid",false,1},
         {"budget custom message","loop :: Int -> String\nloop n = loop n\ntype T = Int where False @steps 50 @message loop it","invalid",false,1},
         {"one clause exhausted","loop :: Int -> Bool\nloop n = loop n\ntype T = Int where loop it @steps 20 where False","invalid",true,2},
-        {"refined function signature","f :: (Int where it > 0) -> Bool\nf _ = True\ntype T = Int where f it","indeterminate",true,1},
+        {"refined function signature","f :: (Int where it > 0) -> Bool\nf _ = True\ntype T = Int where f it","valid",false,0},
         {"refined local annotation","type T = Int where let x :: (Int where it > 0) = -1 in x == x","indeterminate",true,1},
         {"unimplemented timestamp","type T = Timestamp","indeterminate",true,1},
     }

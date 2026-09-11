@@ -14,6 +14,37 @@ import (
 
 func signed(n int32) string { return strconv.FormatInt(int64(n), 10) }
 
+func TestTokenCategoryNamesRemainIdentifiers(t *testing.T) {
+	for _, name := range []string{"text", "number", "name", "newline", "eof"} {
+		source := name + " :: Int -> Int\n" + name + " " + name + " = " + name + "\nentry :: Int\nentry = " + name + " 42"
+		program, err := Compile(source)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(program.module.Functions) != 2 {
+			t.Fatalf("%s truncated the module", name)
+		}
+		expr, err := ParseExpression(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch __gp_m0 := any(expr.Form).(type) {
+		case Variable:
+			actual := __gp_m0.Name
+			if actual != name {
+				t.Fatal(actual)
+			}
+		default:
+			t.Fatalf("%s became a literal/token", name)
+		}
+	}
+	for _, source := range []string{"import text", "eof type Ignored = Int", "type T = Int eof"} {
+		if _, err := Compile(source); err == nil {
+			t.Fatalf("token impersonation accepted: %s", source)
+		}
+	}
+}
+
 func parsedExpression(t *testing.T, source string) *Expr {
 	t.Helper()
 	e, err := ParseExpression(source)
@@ -73,9 +104,9 @@ func TestAgreedContractSyntax(t *testing.T) {
 		t.Fatal("module format/parse/format is not idempotent")
 	}
 	child := module.Types[2]
-	switch __gp_m0 := any(child.Body.Form).(type) {
+	switch __gp_m1 := any(child.Body.Form).(type) {
 	case RefinedType:
-		rules := __gp_m0.Rules
+		rules := __gp_m1.Rules
 
 		if len(rules) != 1 || rules[0].Code != "person.child_age_range" || rules[0].Message == nil {
 			t.Fatal("where clause metadata lost")
@@ -94,9 +125,9 @@ func TestAgreedContractSyntax(t *testing.T) {
 		panic("goplus: impossible enum value in match")
 	}
 	percent := module.Types[3]
-	switch __gp_m1 := any(percent.Body.Form).(type) {
+	switch __gp_m2 := any(percent.Body.Form).(type) {
 	case RefinedType:
-		rules := __gp_m1.Rules
+		rules := __gp_m2.Rules
 		if len(rules) != 2 {
 			t.Fatal("repeated where clauses merged")
 		}

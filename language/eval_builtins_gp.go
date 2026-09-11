@@ -6,6 +6,8 @@ package language
 import (
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"goforge.dev/refine/value"
 )
@@ -86,7 +88,7 @@ func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 	case "all", "any", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf":
 		return e.combine(name, args, at)
 	case "read":
-		evalError(at, "evaluation.unsupported", "typed read requires the typed codec integration")
+		evalError(at, "evaluation.type", "read requires an inferred target type")
 	case "matches", "search":
 		evalError(at, "evaluation.unsupported", "regex execution semantics are not implemented yet")
 	}
@@ -209,6 +211,9 @@ func (e *evaluator) show(v evalValue, at Span) string {
 		parts := make([]string, len(ordered))
 		for i, field := range ordered {
 			e.step(uint64(len(field.name)), at)
+			if !codecIdentifier(field.name, false) {
+				evalError(at, "evaluation.show", "record field is not representable in the canonical value grammar")
+			}
 			parts[i] = field.name + " = " + e.show(field.value, at)
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
@@ -217,20 +222,53 @@ func (e *evaluator) show(v evalValue, at Span) string {
 		args := __gp_m1.arguments
 
 		e.step(uint64(len(name)+len(args)), at)
+		if !codecIdentifier(name, true) {
+			evalError(at, "evaluation.show", "constructor is not representable in the canonical value grammar")
+		}
 		if len(args) == 0 {
 			return name
 		}
 		parts := []string{name}
 		for _, arg := range args {
-			parts = append(parts, e.show(arg, at))
+			shown := e.show(arg, at)
+			switch __gp_m2 := any(arg.form).(type) {
+			case evalNumber:
+				n := __gp_m2.value
+				if strings.HasPrefix(n.Show(), "-") || strings.Contains(n.Show(), "/") {
+					shown = "(" + shown + ")"
+				}
+			default:
+			}
+			parts = append(parts, shown)
 		}
 		return "(" + strings.Join(parts, " ") + ")"
 	case evalFunction:
+		evalError(at, "evaluation.show", "functions do not support canonical display")
+	case evalGuardedFunction:
 		evalError(at, "evaluation.show", "functions do not support canonical display")
 	default:
 		panic("goplus: impossible enum value in match")
 	}
 	return ""
+}
+
+func codecIdentifier(name string, constructor bool) bool {
+	if name == "" || !utf8.ValidString(name) || reserved(name) {
+		return false
+	}
+	if constructor && (!uppercase(name) || name == "True" || name == "False") {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !unicode.IsLetter(r) && r != '_' {
+				return false
+			}
+		} else if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '\'' {
+			return false
+		}
+	}
+	return true
 }
 
 // fromData is a structural transfer, not schema validation. The caller must
@@ -289,18 +327,18 @@ func (e *evaluator) fromData(data value.Data, at Span) evalValue {
 func (e *evaluator) toData(v evalValue, at Span) value.Data {
 	e.enter(at)
 	defer func() { e.depth-- }()
-	switch __gp_m3 := any(v.form).(type) {
+	switch __gp_m4 := any(v.form).(type) {
 	case evalNumber:
-		n := __gp_m3.value
+		n := __gp_m4.value
 		return value.OfNumber(n)
 	case evalText:
-		t := __gp_m3.value
+		t := __gp_m4.value
 		return value.OfText(t)
 	case evalBool:
-		b := __gp_m3.value
+		b := __gp_m4.value
 		return value.OfBool(b)
 	case evalList:
-		items := __gp_m3.items
+		items := __gp_m4.items
 
 		e.step(uint64(len(items)), at)
 		result := make([]value.Data, len(items))
@@ -309,7 +347,7 @@ func (e *evaluator) toData(v evalValue, at Span) value.Data {
 		}
 		return value.List(result)
 	case evalRecord:
-		fields := __gp_m3.fields
+		fields := __gp_m4.fields
 
 		e.step(uint64(len(fields)), at)
 		result := make([]value.DataField, len(fields))
@@ -322,8 +360,8 @@ func (e *evaluator) toData(v evalValue, at Span) value.Data {
 		}
 		return data
 	case evalVariant:
-		name := __gp_m3.name
-		args := __gp_m3.arguments
+		name := __gp_m4.name
+		args := __gp_m4.arguments
 
 		e.step(uint64(len(args)), at)
 		result := make([]value.Data, len(args))
@@ -336,6 +374,8 @@ func (e *evaluator) toData(v evalValue, at Span) value.Data {
 		}
 		return data
 	case evalFunction:
+		evalError(at, "evaluation.type", "a function is not a serializable payload value")
+	case evalGuardedFunction:
 		evalError(at, "evaluation.type", "a function is not a serializable payload value")
 	default:
 		panic("goplus: impossible enum value in match")

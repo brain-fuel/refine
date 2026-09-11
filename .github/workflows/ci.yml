@@ -40,4 +40,5 @@ jobs:
           go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzCompile$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzEvaluatorDeterminism$' -fuzztime=10s
+          go test ./language -run '^$' -fuzz '^FuzzTypedReadShow$' -fuzztime=10s
           go test ./value -run '^$' -fuzz '^FuzzDataMutationIsolation$' -fuzztime=10s

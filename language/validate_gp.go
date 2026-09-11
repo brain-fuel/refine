@@ -24,6 +24,7 @@ type payloadValidator struct {
 	structure    *evaluator
 	checks       []validation.Check
 	currentPath  string
+	enclosing    *evaluator
 }
 
 // ValidateData checks a named, non-parameterized root declaration against an
@@ -79,7 +80,7 @@ func (v *payloadValidator) check(t *Type, input evalValue, env map[string]typeBi
 		result, ok := v.check(base, input, env, path)
 		if ok {
 			for _, rule := range rules {
-				v.rule(rule, result, path)
+				v.rule(rule, result, path, env)
 			}
 		}
 		return result, ok
@@ -261,6 +262,11 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 	for i, param := range decl.Parameters {
 		bindings[param] = typeBinding{typ: args[i], environment: env}
 	}
+	for param, symbol := range v.program.module.declarationScopes[name] {
+		if bound, ok := bindings[param]; ok {
+			bindings[symbol] = bound
+		}
+	}
 	if decl.Body != nil {
 		return v.check(decl.Body, input, bindings, path)
 	}
@@ -352,7 +358,7 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 	return false
 }
 
-func (v *payloadValidator) rule(rule Where, input evalValue, path string) {
+func (v *payloadValidator) rule(rule Where, input evalValue, path string, types map[string]typeBinding) {
 	predicate := FormatExpression(rule.Predicate)
 	code := rule.Code
 	if code == "" {
@@ -360,7 +366,15 @@ func (v *payloadValidator) rule(rule Where, input evalValue, path string) {
 		code = fmt.Sprintf("refine.%x", digest[:8])
 	}
 	detail := validation.Diagnostic{Code: code, Paths: []string{path}, Predicate: predicate, Message: "Value must satisfy the declared condition: " + predicate + "."}
-	e := &evaluator{module: v.program.module, functions: v.structure.functions, constructors: v.structure.constructors, meter: v.budget.BeginClause(rule.Steps)}
+	var meter *validation.Meter
+	depth := 0
+	if v.enclosing != nil {
+		meter = v.enclosing.meter.Nested(rule.Steps)
+		depth = v.enclosing.depth
+	} else {
+		meter = v.budget.BeginClause(rule.Steps)
+	}
+	e := &evaluator{module: v.program.module, functions: v.structure.functions, constructors: v.structure.constructors, meter: meter, depth: depth, typeEnvironment: types}
 	env := map[string]evalValue{"it": input}
 	result, failure := e.attempt(rule.Predicate, env)
 	if failure != nil {

@@ -32,6 +32,12 @@ func (p *parser) take() token {
 	return t
 }
 func (p *parser) is(text string) bool {
+	// Token-category names are not language keywords: identifiers such as
+	// text, number, newline and eof must never impersonate literal/end tokens.
+	switch text {
+	case "name", "number", "text", "newline", "eof":
+		return p.peek().kind == text
+	}
 	return p.peek().kind == text || p.peek().kind == "name" && p.peek().text == text
 }
 func (p *parser) accept(text string) bool {

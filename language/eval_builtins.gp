@@ -3,6 +3,8 @@ package language
 import (
     "sort"
     "strings"
+    "unicode"
+    "unicode/utf8"
 
     "goforge.dev/refine/value"
 )
@@ -40,7 +42,7 @@ func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
         for i,item := range items { for j := 0; j < i; j++ { if e.equal(item,items[j],at) { return boolValue(false) } } }; return boolValue(true)
     case "all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf":
         return e.combine(name,args,at)
-    case "read": evalError(at,"evaluation.unsupported","typed read requires the typed codec integration")
+    case "read": evalError(at,"evaluation.type","read requires an inferred target type")
     case "matches","search": evalError(at,"evaluation.unsupported","regex execution semantics are not implemented yet")
     }
     evalError(at,"evaluation.name","unsupported built-in function"); return evalValue{}
@@ -97,15 +99,32 @@ func (e *evaluator) show(v evalValue,at Span) string {
         levels := uint64(1); for n := len(fields); n > 1; n >>= 1 { levels++ }
         e.step(uint64(len(fields))*levels,at)
         ordered := append([]evalField(nil),fields...); sort.Slice(ordered,func(i,j int) bool { return ordered[i].name < ordered[j].name })
-        parts := make([]string,len(ordered)); for i,field := range ordered { e.step(uint64(len(field.name)),at); parts[i] = field.name + " = " + e.show(field.value,at) }
+        parts := make([]string,len(ordered)); for i,field := range ordered {
+            e.step(uint64(len(field.name)),at)
+            if !codecIdentifier(field.name,false){evalError(at,"evaluation.show","record field is not representable in the canonical value grammar")}
+            parts[i] = field.name + " = " + e.show(field.value,at)
+        }
         return "{" + strings.Join(parts,", ") + "}"
     case EvalVariant(name,args):
         e.step(uint64(len(name)+len(args)),at)
+        if !codecIdentifier(name,true){evalError(at,"evaluation.show","constructor is not representable in the canonical value grammar")}
         if len(args) == 0 { return name }
-        parts := []string{name}; for _,arg := range args { parts = append(parts,e.show(arg,at)) }; return "(" + strings.Join(parts," ") + ")"
+        parts := []string{name}; for _,arg := range args {
+            shown:=e.show(arg,at)
+            match arg.form{case EvalNumber(n,_):if strings.HasPrefix(n.Show(),"-") || strings.Contains(n.Show(),"/"){shown="("+shown+")"};case _:}
+            parts = append(parts,shown)
+        }; return "(" + strings.Join(parts," ") + ")"
     case EvalFunction(_,_,_): evalError(at,"evaluation.show","functions do not support canonical display")
+    case EvalGuardedFunction(_,_,_,_):evalError(at,"evaluation.show","functions do not support canonical display")
     }
     return ""
+}
+
+func codecIdentifier(name string,constructor bool)bool {
+    if name=="" || !utf8.ValidString(name) || reserved(name){return false}
+    if constructor && (!uppercase(name) || name=="True" || name=="False"){return false}
+    for i,r:=range name{if i==0{if !unicode.IsLetter(r) && r!='_'{return false}}else if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r!='_' && r!='\''{return false}}
+    return true
 }
 
 // fromData is a structural transfer, not schema validation. The caller must
@@ -146,6 +165,7 @@ func (e *evaluator) toData(v evalValue,at Span) value.Data {
         result := make([]value.Data,len(args)); for i,arg := range args { result[i] = e.toData(arg,at) }
         data,err := value.Variant(name,result); if err != nil { evalError(at,"evaluation.constructor","invalid runtime constructor") }; return data
     case EvalFunction(_,_,_): evalError(at,"evaluation.type","a function is not a serializable payload value")
+    case EvalGuardedFunction(_,_,_,_):evalError(at,"evaluation.type","a function is not a serializable payload value")
     }
     return value.Data{}
 }

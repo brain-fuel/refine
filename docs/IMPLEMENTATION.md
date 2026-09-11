@@ -155,12 +155,35 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   prove only those runs, not complete runtime correctness.
 - A follow-up 15-second evaluator fuzz run with corpus minimization disabled
   passed 2,812,113 cases. Local race tests, vet, generated-source checks, and
-  the public-library example pass; remote CI for this checkpoint still needs
-  observation after pushing.
+  the public-library example pass. Checkpoint `ea3a7d4` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34644247635), and a separate
+  module fetched its public pseudo-version and passed race-tested validation and
+  multi-field candidate-update checks without local replacements.
 - Remaining runtime limitations and the initial operation-cost model are explicit
   in [RUNTIME.md](RUNTIME.md). Unsupported operations report indeterminate rather
   than silently succeed. No whole-language/Java/release gate is marked complete.
 
-Next: finish typed codecs/conversions, regex/timestamps, refined function/local
-enforcement, and recursive dispatch; connect native constraint provenance and
-Java emission to the checked runtime. The full checklist remains the release gate.
+## Typed codec and function-contract checkpoint
+
+- The checked module retains immutable inferred expression types and generic
+  scopes. Typed `read` uses those types, including named generic and higher-order
+  calls, and validates nominal/anonymous refinements before returning `Ok`.
+- `ReadData` and `ShowDataWithoutValidation` expose the canonical in-memory codec.
+  Literal decoding cannot execute input expressions. Invalid/unknown reads do
+  not expose candidates. Explicit bypass display does not bypass validating read.
+- Local annotations and curried function pre/postconditions now execute, including
+  contracts on functions passed/returned as values. Named parent predicates are
+  not rerun merely for substitution. Nested budget meters charge every enclosing
+  scope without relaxing/resetting limits.
+- A parser regression is fixed: identifiers named `text`, `number`, `newline`,
+  or `eof` no longer impersonate token categories or truncate source parsing.
+- Shared canonical-codec fixtures, 2,000 composite read/show property cases,
+  literal-only decoding, invalid bypass rejection, generic/recursive codecs,
+  higher-order contracts, and nested-meter tests cover this checkpoint. Initial
+  20-second fuzz runs passed 1,311,801 typed read/show cases and 1,721,050 evaluator
+  cases. Remaining gaps, including codec-capability inference through generic
+  signatures, remain explicit in [RUNTIME.md](RUNTIME.md).
+
+Next: finish conversions, regex/timestamps, capability inference, and recursive
+dispatch; connect native constraint provenance and Java emission to the checked
+runtime. The full checklist remains the release gate.

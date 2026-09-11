@@ -12,7 +12,12 @@ type parser struct { tokens []token; index int; depth int }
 func (p *parser) peek() token { return p.tokens[p.index] }
 func (p *parser) previous() token { if p.index == 0 { return p.peek() }; return p.tokens[p.index-1] }
 func (p *parser) take() token { t := p.peek(); if t.kind != "eof" { p.index++ }; return t }
-func (p *parser) is(text string) bool { return p.peek().kind == text || p.peek().kind == "name" && p.peek().text == text }
+func (p *parser) is(text string) bool {
+    // Token-category names are not language keywords: identifiers such as
+    // text, number, newline and eof must never impersonate literal/end tokens.
+    switch text{case "name","number","text","newline","eof":return p.peek().kind==text}
+    return p.peek().kind == text || p.peek().kind == "name" && p.peek().text == text
+}
 func (p *parser) accept(text string) bool { if p.is(text) { p.take(); return true }; return false }
 func (p *parser) need(text string) token { if !p.is(text) { syntax(p.peek().at, "expected " + text) }; return p.take() }
 func (p *parser) lines() { for p.accept("newline") {} }

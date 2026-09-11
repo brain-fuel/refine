@@ -92,3 +92,25 @@ func TestStructureSharesTotalButNotClauseAllowance(t *testing.T) {
 		t.Fatal("failed work consumed another clause allowance")
 	}
 }
+
+func TestNestedMetersCannotResetEnclosingAllowance(t *testing.T) {
+	budget := NewBudget(Limits{Total: 100, Clause: 10}, Limits{})
+	outer := budget.BeginClause(0)
+	child := outer.Nested(1000)
+	grandchild := child.Nested(1000)
+	if grandchild.Step(7) != nil || outer.Used() != 7 || child.Used() != 7 || grandchild.Used() != 7 || budget.Used() != 7 {
+		t.Fatal("nested cost not charged exactly once to total and every ancestor")
+	}
+	if grandchild.Step(4) == nil {
+		t.Fatal("nested override relaxed outer cap")
+	}
+	if outer.Step(3) != nil || outer.Used() != 10 || budget.Used() != 10 {
+		t.Fatal("failed child consumed parent allowance")
+	}
+	if outer.Nested(1000).Step(1) == nil {
+		t.Fatal("new child reset exhausted ancestor")
+	}
+	if budget.BeginClause(0).Step(10) != nil {
+		t.Fatal("unrelated clause lost allowance")
+	}
+}

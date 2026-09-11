@@ -15,6 +15,10 @@ type Module struct {
     Imports []Import
     Types []TypeDecl
     Functions []Function
+    // Immutable after Compile; deliberately absent from fresh Syntax() copies.
+    inferred map[*Expr]*Type
+    functionScopes map[string]map[string]string
+    declarationScopes map[string]map[string]string
 }
 type Import struct { Path string; At Span }
 type TypeDecl struct { Name string; Parameters []string; Body *Type; Variants []Variant; At Span }

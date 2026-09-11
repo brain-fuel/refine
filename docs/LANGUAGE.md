@@ -82,8 +82,9 @@ and nesting limits produce resource-limit diagnostics, not a false claim that
 unexplored patterns are certainly incomplete.
 
 The front end recognizes signatures for collection operations, predicate
-combinators, show/read, and regex predicates. Recognizing a signature does not
-mean the corresponding evaluator or Java implementation is finished.
+combinators, show/read, and regex predicates. Collection operations and typed
+show/read now have an in-memory implementation; regex execution and the Java
+implementation remain unfinished.
 `read` needs an inferable target type; for example:
 
 ```haskell

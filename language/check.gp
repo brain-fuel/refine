@@ -19,7 +19,7 @@ func (p *Program) Syntax() *Module {
     return copy
 }
 
-type term struct { name string; args []*term; fields []typedField; variable int; rigid bool }
+type term struct { name string; args []*term; fields []typedField; variable int; rigid bool; rules []Where }
 type typedField struct { name string; typ *term }
 type constructor struct { parent string; parameters []string; arguments []*Type }
 type obligation struct { class string; typ *term; at Span }
@@ -32,6 +32,9 @@ type checker struct {
     nextVariable int
     obligations []obligation
     coverageWork uint64
+    expressionTerms map[*Expr]*term
+    reified map[*term]*Type
+    expressionOrder []*Expr
 }
 
 func typeError(at Span, message string) { panic(&Error{Code:"language.type",At:at,Message:message}) }
@@ -122,7 +125,10 @@ func (c *checker) typ(t *Type, variables map[string]*term, allowNew bool, rigid 
     case ArrowType(arg, result): return arrow(c.typ(arg,variables,allowNew,rigid),c.typ(result,variables,allowNew,rigid))
     case RecordType(fields):
         result := base("{}"); for _, field := range fields { result.fields = append(result.fields,typedField{name:field.Name,typ:c.typ(field.Type,variables,allowNew,rigid)}) }; return result
-    case RefinedType(parent, _): return c.typ(parent,variables,allowNew,rigid)
+    case RefinedType(parent, rules):
+        result := *c.typ(parent,variables,allowNew,rigid)
+        result.rules = append(append([]Where(nil),result.rules...),rules...)
+        return &result
     }
     panic("unreachable type form")
 }
@@ -207,7 +213,8 @@ func (c *checker) numeric(t *term, at Span) *term {
     if t.name != "Real" && t.name != "Int" && !(primitive(t.name) && (strings.HasPrefix(t.name,"Int") || strings.HasPrefix(t.name,"UInt"))) { typeError(at,"expected a numeric type, got " + c.describe(t)) }
     return t
 }
-func (c *checker) expression(e *Expr, env map[string]*term) *term {
+func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
+    defer func(){if result!=nil && c.expressionTerms!=nil{if _,seen:=c.expressionTerms[e];!seen{c.expressionOrder=append(c.expressionOrder,e)};c.expressionTerms[e]=result}}()
     match e.Form {
     case NumberLiteral(text): if strings.ContainsAny(text,".eE") { return base("Real") }; return base("Int")
     case TextLiteral(_): return base("String")
@@ -253,7 +260,7 @@ func (c *checker) expression(e *Expr, env map[string]*term) *term {
         a, b := c.expression(yes,env), c.expression(no,env); c.unify(a,b,e.At); return a
     case Let(name, annotation, bound, body):
         typ := c.expression(bound,env)
-        if annotation != nil { expected := c.typ(annotation,make(map[string]*term),false,false); c.assign(expected,typ,bound.At); typ = expected }
+        if annotation != nil { expected := c.typ(annotation,make(map[string]*term),false,false);c.assign(expected,typ,bound.At);c.refinements(annotation,make(map[string]*term));typ=expected }
         local := copyEnvironment(env); local[name] = typ; return c.expression(body,local)
     case Case(subject, arms):
         typ := c.expression(subject,env); result := c.fresh(false); matrix := [][]*coveragePattern{}
@@ -273,7 +280,9 @@ func (c *checker) solveObligations() {
     for _, pending := range c.obligations {
         t := c.underlying(pending.typ,pending.at)
         switch pending.class {
-        case "read": if !c.known(t) { typeError(pending.at,"read target type cannot be inferred; add an annotation") }
+        case "read":
+            if !c.known(t) { typeError(pending.at,"read target type cannot be inferred; add an annotation") }
+            c.readableType(t,pending.at,make(map[string]bool))
         case "length": if t.name != "String" && t.name != "[]" { typeError(pending.at,"length/concatenation requires String or a list; add an annotation if inference is insufficient") }
         case "equality": c.equalityType(t,pending.at,make(map[string]bool))
         }
@@ -306,6 +315,11 @@ func (c *checker) refinements(t *Type, variables map[string]*term) {
     match t.Form {
     case RefinedType(parent, rules):
         c.refinements(parent,variables)
+        // Rules have their own inference boundary. Checking a local annotation
+        // must not prematurely solve obligations belonging to the surrounding
+        // expression, whose later uses may still determine a read target.
+        enclosing:=c.obligations;c.obligations=nil
+        defer func(){c.obligations=enclosing}()
         env := map[string]*term{"it":c.typ(parent,variables,false,false)}
         for _, rule := range rules {
             c.unify(base("Bool"),c.expression(rule.Predicate,env),rule.Predicate.At)
@@ -325,7 +339,9 @@ func Compile(source string) (program *Program, failure error) {
     defer recoverSyntax(&failure)
     module, err := Parse(source); if err != nil { return nil, err }
     if len(module.Imports) != 0 { return nil, &Error{Code:"language.import",At:module.Imports[0].At,Message:"resolve and bundle imports before standalone compilation"} }
-    c := checker{module:module,declarations:make(map[string]TypeDecl),functions:make(map[string]Function),constructors:make(map[string]constructor),substitution:make(map[int]*term)}
+    c := checker{module:module,declarations:make(map[string]TypeDecl),functions:make(map[string]Function),constructors:make(map[string]constructor),substitution:make(map[int]*term),expressionTerms:make(map[*Expr]*term)}
+    module.functionScopes=make(map[string]map[string]string)
+    module.declarationScopes=make(map[string]map[string]string)
     for _, declaration := range module.Types {
         if primitive(declaration.Name) || declaration.Name == "Maybe" || declaration.Name == "Nullable" || declaration.Name == "Result" { typeError(declaration.At,"cannot redefine a built-in type") }
         seen := make(map[string]bool)
@@ -354,6 +370,7 @@ func Compile(source string) (program *Program, failure error) {
     for _, declaration := range module.Types {
         variables := make(map[string]*term)
         for _, parameter := range declaration.Parameters { variables[parameter] = c.fresh(true) }
+        module.declarationScopes[declaration.Name]=typeScope(variables)
         if declaration.Body != nil {
             typ := c.typ(declaration.Body,variables,false,true); c.underlying(typ,declaration.At); c.refinements(declaration.Body,variables)
         }
@@ -362,6 +379,7 @@ func Compile(source string) (program *Program, failure error) {
     for _, fn := range module.Functions {
         variables := make(map[string]*term)
         signature := c.typ(fn.Signature,variables,true,true)
+        module.functionScopes[fn.Name]=typeScope(variables)
         c.refinements(fn.Signature,variables)
         arity := len(fn.Equations[0].Patterns)
         arguments := []*term{}; result := signature
@@ -380,7 +398,55 @@ func Compile(source string) (program *Program, failure error) {
         }
         if !c.covered(matrix,arguments,0) { typeError(fn.At,"function patterns are not exhaustive; add the missing cases or an explicit fallback") }
     }
+    module.inferred=make(map[*Expr]*Type,len(c.expressionTerms))
+    c.reified=make(map[*term]*Type)
+    for _,expr:=range c.expressionOrder {module.inferred[expr]=c.reify(c.expressionTerms[expr],expr.At)}
     return &Program{module:module}, nil
+}
+
+func typeScope(variables map[string]*term)map[string]string {
+    scope:=make(map[string]string)
+    for name,typ:=range variables{scope[name]="$"+strconv.Itoa(typ.variable)}
+    return scope
+}
+
+// Reification retains nominal names and anonymous refinements. It does not
+// expand recursive declarations or leak the mutable unification environment.
+func (c *checker) reify(t *term,at Span)*Type {
+    t=c.prune(t)
+    if existing,ok:=c.reified[t];ok{return existing}
+    result:=&Type{At:at}
+    c.reified[t]=result
+    if t.variable!=0 {
+        result.Form=NamedType("$"+strconv.Itoa(t.variable))
+        if len(t.rules)>0{result=&Type{Form:RefinedType(result,append([]Where(nil),t.rules...)),At:at};c.reified[t]=result}
+        return result
+    }
+    switch t.name {
+    case "[]":result.Form=ListType(c.reify(t.args[0],at))
+    case "->":result.Form=ArrowType(c.reify(t.args[0],at),c.reify(t.args[1],at))
+    case "{}":
+        fields:=make([]Field,len(t.fields));for i,field:=range t.fields{fields[i]=Field{Name:field.name,Type:c.reify(field.typ,at),At:at}}
+        result.Form=RecordType(fields)
+    default:
+        result.Form=NamedType(t.name)
+        for _,arg:=range t.args{result=&Type{Form:AppliedType(result,c.reify(arg,at)),At:at}}
+    }
+    if len(t.rules)>0{result=&Type{Form:RefinedType(result,append([]Where(nil),t.rules...)),At:at}}
+    c.reified[t]=result
+    return result
+}
+
+func (c *checker) readableType(t *term,at Span,visiting map[string]bool) {
+    t=c.prune(t)
+    if t.variable!=0{return}
+    if t.name=="->"{typeError(at,"functions are not readable payload values")}
+    for _,arg:=range t.args{c.readableType(arg,at,visiting)}
+    for _,field:=range t.fields{c.readableType(field.typ,at,visiting)}
+    if visiting[t.name]{return};visiting[t.name]=true
+    if underlying,ok:=c.expandOne(t);ok{c.readableType(underlying,at,visiting)}
+    for _,variant:=range c.family(t){for _,arg:=range variant.arguments{c.readableType(arg,at,visiting)}}
+    delete(visiting,t.name)
 }
 
 func (p *Program) Summary() string { return fmt.Sprintf("%d types, %d functions",len(p.module.Types),len(p.module.Functions)) }
