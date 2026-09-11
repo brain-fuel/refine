@@ -249,6 +249,36 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   integration remain required. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md)
   and [dependency roles](DEPENDENCIES.md).
 
-Next: finish conversions, capability inference, and recursive dispatch; connect
-native constraint provenance and Java emission to the checked runtime. The full
-checklist remains the release gate.
+- Checkpoint `d8dcf32` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34650847660). A separate
+  public consumer fetched `v0.0.0-20260911214438-d8dcf323e0c3` without local
+  replacements and passed race-tested exact divisibility, per-constraint edits,
+  native-token/metadata preservation and builtin-shadowing checks.
+
+## Java runtime generation checkpoint
+
+- `java/*.gp` emits five Java 25 runtime sources: canonical exact rationals,
+  UTF-16 text codecs, sealed validation outcomes, a try/catch-compatible
+  exception, and nested unsigned-64-bit budget meters. Generation is pure and
+  package-relative; the sources can live in the user's single Maven artifact.
+- Emitted sources compile with all javac warnings treated as errors. Tests
+  compare 5,670 Java/Go cases and compile five package-layout variants, including
+  Unicode and unnamed packages.
+- JetBrains jetCheck runs four fresh-seeded 2,000-iteration law suites and an
+  explicit shrink/serialized-replay regression. Three consecutive local runs
+  passed. Both test jars are checksum-pinned and checked before execution;
+  neither tests nor generated code fetch dependencies. CI requires Java 25 and
+  the property-test dependency directory on Linux and macOS.
+- Full local race tests, vet and deterministic generation checks pass. A
+  20-second package-name fuzz run passed 12,478,996 executions. The local
+  source-generation benchmark measured 3,000 ns/op, 21,120 B/op and 23 allocs/op
+  on Darwin/arm64 (Apple M5 Max); this measures source generation only, not
+  payload-validation performance. Latest GoPlus still resolves to v0.158.0.
+- This is not schema model generation, a Java evaluator, or serde. The full
+  required artifact, validator, native-format, compatibility, versioning,
+  Maven and example gates remain unchecked. See [JAVA-RUNTIME.md](JAVA-RUNTIME.md)
+  for implemented APIs and resource-policy limitations.
+
+Next: connect checked language types to Java model/evaluator emission and native
+schemas; finish conversions, capability inference and recursive dispatch. The
+full checklist remains the release gate.

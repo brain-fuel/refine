@@ -1,0 +1,165 @@
+package java
+
+import (
+    "bytes"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "math/rand"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strconv"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func javaTools(t *testing.T)(string,string){
+    t.Helper();javaHome:=os.Getenv("REFINE_JAVA_HOME");if javaHome==""{javaHome=os.Getenv("JAVA_HOME")}
+    if javaHome==""{if _,err:=os.Stat("/opt/homebrew/opt/openjdk@25/bin/javac");err==nil{javaHome="/opt/homebrew/opt/openjdk@25"}}
+    compiler:="";if javaHome!=""{compiler=filepath.Join(javaHome,"bin","javac")}else{compiler,_=exec.LookPath("javac")}
+    output,err:=exec.Command(compiler,"-version").CombinedOutput();major:=0
+    fields:=strings.Fields(string(output));if len(fields)>1{major,_=strconv.Atoi(strings.Split(fields[1],".")[0])}
+    if err!=nil||major<25{if os.Getenv("REFINE_REQUIRE_JAVA")=="1"{t.Fatalf("Java 25 compiler required: %s (%v)",output,err)};t.Skip("Java 25 compiler unavailable; CI requires it via REFINE_REQUIRE_JAVA=1")}
+    return compiler,filepath.Join(filepath.Dir(compiler),"java")
+}
+
+func TestRuntimeGeneration(t *testing.T){
+    for _,namespace:=range []string{"", "com.me.project.runtime", "δοκιμή.映像", "$project.runtime", "record.var"}{
+        files,err:=GenerateRuntime(namespace);if err!=nil{t.Fatal(err)}
+        again,err:=GenerateRuntime(namespace);if err!=nil{t.Fatal(err)}
+        if len(files)!=5{t.Fatal("missing runtime source")}
+        for i,file:=range files{if file!=again[i]||strings.Contains(file.Path,"\\")||filepath.IsAbs(file.Path)||strings.Contains(file.Path,".."){t.Fatal("nondeterministic or unsafe generated path")}}
+        files[0].Source="changed";if again[0].Source=="changed"{t.Fatal("mutable source backing escaped")}
+    }
+    for _,namespace:=range []string{"a..b",".foo","foo.","../bad","class.runtime","foo/bar","foo; import bad","foo\\u002eother","foo.9abc","true","_","foo.\u200bbar","foo\nbar","java","java.lang"}{if _,err:=GenerateRuntime(namespace);err==nil{t.Fatalf("invalid package accepted: %q",namespace)}}
+}
+
+func BenchmarkGenerateRuntime(b *testing.B) {
+    b.ReportAllocs()
+    for i := 0; i < b.N; i++ {
+        files, err := GenerateRuntime("com.me.project.refine.runtime")
+        if err != nil || len(files) != 5 { b.Fatal("runtime generation failed", err) }
+    }
+}
+
+func FuzzRuntimePackageNames(f *testing.F) {
+    for _, name := range []string{"", "com.me.project.runtime", "δοκιμή.映像", "record.var", "../bad", "foo\\u002eother", "java.lang"} { f.Add(name) }
+    f.Fuzz(func(t *testing.T, name string) {
+        files, err := GenerateRuntime(name)
+        again, repeated := GenerateRuntime(name)
+        if (err == nil) != (repeated == nil) { t.Fatal("nondeterministic package acceptance") }
+        if err != nil { return }
+        for i, file := range files {
+            if file != again[i] { t.Fatal("nondeterministic output") }
+            if filepath.IsAbs(file.Path) || strings.Contains(file.Path, "..") || strings.ContainsAny(file.Path, "\\\n\r") { t.Fatal("unsafe package path") }
+            if !strings.HasSuffix(file.Path, ".java") { t.Fatal("missing source extension") }
+        }
+    })
+}
+
+type vector struct { input string; expected string }
+func unitsHex(units []uint16)string{var b strings.Builder;for _,unit:=range units{fmt.Fprintf(&b,"%04x",unit)};return b.String()}
+func inputHex(text string)string{v,err:=value.TextFromUTF8(text);if err!=nil{panic(err)};return unitsHex(v.Units())}
+func resultText(text string,err error)string{if err!=nil{return "error:"+err.Error()};return text}
+func numberVector(op,left,right string,bits int,signed bool)vector{
+    input:=fmt.Sprintf("number\t%s\t%s\t%s\t%d\t%v",op,left,right,bits,signed)
+    a,err:=value.ParseNumber(left);if err!=nil{return vector{input,"error:"+err.Error()}}
+    b,err:=value.ParseNumber(right);if err!=nil{return vector{input,"error:"+err.Error()}}
+    var n value.Number;var text string
+    switch op{
+    case "add":n=a.Add(b);case "subtract":n=a.Subtract(b);case "multiply":n=a.Multiply(b)
+    case "divide":n,err=a.Divide(b);case "remainder":n,err=a.Remainder(b);case "negate":n=a.Negate()
+    case "show":n=a;case "compare":text=strconv.Itoa(a.Compare(b));case "decimal":text,err=a.Decimal()
+    case "fixed":n,err=a.FixedWidth(uint(bits),signed);case "wrap":n,err=a.Wrap(uint(bits),signed)
+    case "integer":text=strconv.FormatBool(a.IsInteger())
+    default:panic("unknown test operation")
+    }
+    if text==""{text=n.Show()};return vector{input,resultText(text,err)}
+}
+
+func budgetVector(schema,caller validation.Limits,actions string)vector{
+    b:=validation.NewBudget(schema,caller);meters:=[]*validation.Meter{};results:=[]string{}
+    for _,action:=range strings.Split(actions,";"){
+        f:=strings.Split(action,":");unsigned:=func(s string)uint64{v,err:=strconv.ParseUint(s,10,64);if err!=nil{panic(err)};return v}
+        state:="ok"
+        switch f[0]{
+        case "c":meters=append(meters,b.BeginClause(unsigned(f[1])))
+        case "s":meters=append(meters,b.BeginStructure())
+        case "n":index,_:=strconv.Atoi(f[1]);meters=append(meters,meters[index].Nested(unsigned(f[2])))
+        case "w":index,_:=strconv.Atoi(f[1]);if err:=meters[index].Step(unsigned(f[2]));err!=nil{state="fail"}
+        default:panic("unknown budget action")
+        }
+        state+=":"+strconv.FormatUint(b.Used(),10);for _,m:=range meters{state+=":"+strconv.FormatUint(m.Used(),10)};results=append(results,state)
+    }
+    return vector{fmt.Sprintf("budget\t%d\t%d\t%d\t%d\t%s",schema.Total,schema.Clause,caller.Total,caller.Clause,actions),strings.Join(results,";")}
+}
+
+func validationVector(mode string,kinds string)vector{
+    checks:=[]validation.Check{};for i,kind:=range kinds{d:=validation.Diagnostic{Code:strconv.Itoa(i),Paths:[]string{"/"+strconv.Itoa(i)},Predicate:"predicate",Message:"explanation"};switch kind{case '0':checks=append(checks,validation.Satisfied());case '1':checks=append(checks,validation.Violated(d));case '2':checks=append(checks,validation.Undecided(d))}}
+    if mode!="collect"{var combination validation.Combination;switch mode{case "ALL":combination=validation.All();case "AT_LEAST_ONE":combination=validation.AtLeastOne();case "ONLY_ONE":combination=validation.OnlyOne()};checks=[]validation.Check{validation.Combine(combination,checks,validation.Diagnostic{Code:"combined",Paths:[]string{"/"},Predicate:"predicate",Message:"explanation"})}}
+    report:=validation.Collect(checks);codes,paths:=[]string{},[]string{};for _,d:=range report.Diagnostics(){codes=append(codes,d.Code);paths=append(paths,d.Paths...)}
+    return vector{"validation\t"+mode+"\t"+kinds,fmt.Sprintf("%s|%v|%s|%s",validation.StateName(report.State()),report.Incomplete(),strings.Join(codes,","),strings.Join(paths,","))}
+}
+
+func conformanceVectors(t *testing.T)[]vector{
+    t.Helper();vectors:=[]vector{}
+    fixtures,err:=os.ReadFile("../value/testdata/numbers.json");if err!=nil{t.Fatal(err)}
+    var numbers []struct{Name string;Op string;Left string;Right string;Result string;Error string}
+    if err:=json.Unmarshal(fixtures,&numbers);err!=nil{t.Fatal(err)}
+    for _,tc:=range numbers{right:=tc.Right;if right==""{right="0"};v:=numberVector(tc.Op,tc.Left,right,8,true);want:=tc.Result;if tc.Error!=""{want="error:"+tc.Error};if v.expected!=want{t.Fatalf("Go disagrees with shared fixture %s",tc.Name)};vectors=append(vectors,v)}
+    random:=rand.New(rand.NewSource(42))
+    operations:=[]string{"add","subtract","multiply","divide","remainder","negate","compare","decimal","show","fixed","wrap","integer"}
+    for i:=0;i<1800;i++{
+        left:=fmt.Sprintf("%d/%d",int64(random.Intn(200000))-100000,random.Intn(20)+1)
+        right:=fmt.Sprintf("%d/%d",int64(random.Intn(200000))-100000,random.Intn(20)+1)
+        if i%3==0{left=fmt.Sprint(int64(random.Intn(200000))-100000);right=fmt.Sprint(int64(random.Intn(20))-10)}
+        vectors=append(vectors,numberVector(operations[i%len(operations)],left,right,random.Intn(130),i%2==0))
+    }
+    for _,raw:=range []string{"0","-0","-0.000","1e-100","1e100","10.000","-13","9007199254740993","18446744073709551616","1/3","+1","01","1/0","1/-2","1.5/2",".2","1.","1e","1e+2","NaN"," 1","1\n"}{
+        // Transport forbids literal newlines; test malformed newline in Java's
+        // self-check instead of inventing a different protocol encoding here.
+        if strings.Contains(raw,"\n"){continue}
+        for _,op:=range []string{"show","decimal","fixed","wrap"}{vectors=append(vectors,numberVector(op,raw,"0",8,true))}
+    }
+    for i:=0;i<1000;i++{units:=make([]uint16,random.Intn(40));for j:=range units{units[j]=uint16(random.Intn(65536))};text:=value.TextFromUnits(units);vectors=append(vectors,vector{"text\t"+unitsHex(units),text.Show()});raw,err:=text.UTF8();vectors=append(vectors,vector{"utf8\t"+unitsHex(units),resultText(hex.EncodeToString([]byte(raw)),err)})}
+    for _,raw:=range []string{`"abc"`,`"\ud800"`,`"\udfff"`,`"\ud83d\ude00"`,`"é😀"`,`"\n\t\/"`,`"\u0000"`,`"\u00ff"`,`"\u00FF"`,`"\uＦＦＦＦ"`,`"\q"`,`"\u00"`,`"a"junk"`,`"\"`,`"a`}{text,err:=value.ReadText(raw);vectors=append(vectors,vector{"read-text\t"+inputHex(raw),resultText(text.Show(),err)})}
+    for _,raw:=range [][]byte{[]byte("hello😀"),{0xed,0xa0,0x80},{0xff},{0xc0,0x80},{0xf4,0x90,0x80,0x80},{0xe2,0x82},nil}{text,err:=value.TextFromUTF8(string(raw));vectors=append(vectors,vector{"from-utf8\t"+hex.EncodeToString(raw),resultText(text.Show(),err)})}
+    for size:=0;size<=5;size++{count:=1;for j:=0;j<size;j++{count*=3};for n:=0;n<count;n++{kinds:="";v:=n;for j:=0;j<size;j++{kinds+=strconv.Itoa(v%3);v/=3};for _,mode:=range []string{"collect","ALL","AT_LEAST_ONE","ONLY_ONE"}{vectors=append(vectors,validationVector(mode,kinds))}}}
+    for i:=0;i<300;i++{
+        schema:=validation.Limits{Total:uint64(random.Intn(100)+1),Clause:uint64(random.Intn(30))};caller:=validation.Limits{Total:uint64(random.Intn(120)),Clause:uint64(random.Intn(40))}
+        actions:=[]string{"c:0","s","n:0:0","n:2:1000","c:1000"}
+        for j:=0;j<30;j++{actions=append(actions,fmt.Sprintf("w:%d:%d",random.Intn(5),random.Intn(15)))}
+        vectors=append(vectors,budgetVector(schema,caller,strings.Join(actions,";")))
+    }
+    vectors=append(vectors,budgetVector(validation.Limits{Total:^uint64(0),Clause:^uint64(0)},validation.Limits{},"c:0;n:0:0;w:1:9223372036854775808;w:0:9223372036854775807;w:1:1;c:0;w:2:0;w:0:0"))
+    return vectors
+}
+
+func TestGeneratedJavaRuntimeConformance(t *testing.T){
+    compiler,vm:=javaTools(t);root:=t.TempDir();files,err:=GenerateRuntime("refine.runtime");if err!=nil{t.Fatal(err)}
+    sources:=[]string{};for _,file:=range files{target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harness:=filepath.Join(root,"Conformance.java");if err:=os.WriteFile(harness,[]byte(conformanceJava),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(root,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("javac: %v\n%s",err,output)}
+    vectors:=conformanceVectors(t);var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input);input.WriteByte('\n')}
+    command:=exec.Command(vm,"-cp",classes,"Conformance");command.Stdin=strings.NewReader(input.String());var stderr bytes.Buffer;command.Stderr=&stderr
+    output,err:=command.Output();if err!=nil{t.Fatalf("Java conformance: %v\n%s",err,stderr.String())}
+    lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n")
+    if len(lines)!=len(vectors){t.Fatalf("Java returned %d results, expected %d; stderr=%s",len(lines),len(vectors),stderr.String())}
+    for i,v:=range vectors{if lines[i]!=v.expected{t.Fatalf("vector %d: %s\nJava: %s\nGo: %s",i,v.input,lines[i],v.expected)}}
+    t.Logf("%d cross-runtime vectors passed",len(vectors))
+}
+
+func TestGeneratedJavaPackageLayouts(t *testing.T){
+    compiler,_:=javaTools(t);root:=t.TempDir();sources:=[]string{}
+    for _,namespace:=range []string{"","com.me.project.runtime","δοκιμή.映像","$project.runtime","record.var"}{
+        files,err:=GenerateRuntime(namespace);if err!=nil{t.Fatal(err)}
+        for _,file:=range files{target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    }
+    args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",filepath.Join(root,"classes")},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("package layouts: %v\n%s",err,output)}
+}

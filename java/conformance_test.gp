@@ -1,0 +1,122 @@
+package java
+
+const conformanceJava=`
+import refine.runtime.*;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Locale;
+
+public final class Conformance {
+    private static String units(String hex) {
+        char[] units = new char[hex.length() / 4];
+        for (int i = 0; i < units.length; i++) units[i] = (char) Integer.parseInt(hex.substring(i * 4, i * 4 + 4), 16);
+        return new String(units);
+    }
+    private static String number(String[] f) {
+        Rational a = Rational.parse(f[2]), b = Rational.parse(f[3]);
+        int bits = Integer.parseInt(f[4]); boolean signed = Boolean.parseBoolean(f[5]);
+        return switch (f[1]) {
+            case "add" -> a.add(b).show(); case "subtract" -> a.subtract(b).show();
+            case "multiply" -> a.multiply(b).show(); case "divide" -> a.divide(b).show();
+            case "negate" -> a.negate().show(); case "remainder" -> a.remainder(b).show();
+            case "show" -> a.show(); case "decimal" -> a.decimal();
+            case "compare" -> Integer.toString(a.compareTo(b));
+            case "integer" -> Boolean.toString(a.isInteger());
+            case "fixed" -> a.fixedWidth(bits, signed).show(); case "wrap" -> a.wrap(bits, signed).show();
+            default -> throw new AssertionError("unknown operation");
+        };
+    }
+    private static String budget(String[] f) {
+        Budget b = new Budget(new Budget.Limits(new BigInteger(f[1]), new BigInteger(f[2])),
+                              new Budget.Limits(new BigInteger(f[3]), new BigInteger(f[4])));
+        List<Budget.Meter> meters = new ArrayList<>(); List<String> results = new ArrayList<>();
+        for (String action : f[5].split(";")) {
+            String[] parts = action.split(":"); String state = "ok";
+            switch (parts[0]) {
+                case "c" -> meters.add(b.beginClause(new BigInteger(parts[1])));
+                case "s" -> meters.add(b.beginStructure());
+                case "n" -> meters.add(meters.get(Integer.parseInt(parts[1])).nested(new BigInteger(parts[2])));
+                case "w" -> { try { meters.get(Integer.parseInt(parts[1])).step(new BigInteger(parts[2])); }
+                              catch (Budget.Exceeded failure) { state = "fail"; } }
+                default -> throw new AssertionError("unknown action");
+            }
+            StringBuilder result = new StringBuilder(state).append(':').append(b.used());
+            for (Budget.Meter meter : meters) result.append(':').append(meter.used());
+            results.add(result.toString());
+        }
+        return String.join(";", results);
+    }
+    private static String validation(String[] f) {
+        List<Validation.Check> checks = new ArrayList<>();
+        for (int i = 0; i < f[2].length(); i++) {
+            var detail = new Validation.Diagnostic(Integer.toString(i), List.of("/" + i), "predicate", "explanation");
+            checks.add(switch (f[2].charAt(i)) {
+                case '0' -> new Validation.Satisfied(); case '1' -> new Validation.Violated(detail);
+                case '2' -> new Validation.Undecided(detail); default -> throw new AssertionError();
+            });
+        }
+        if (!f[1].equals("collect")) checks = List.of(Validation.combine(Validation.Combination.valueOf(f[1]), checks,
+            new Validation.Diagnostic("combined", List.of("/"), "predicate", "explanation")));
+        Validation.Outcome outcome = Validation.collect(checks);
+        List<String> codes = new ArrayList<>(), paths = new ArrayList<>();
+        for (Validation.Diagnostic detail : outcome.diagnostics()) { codes.add(detail.code()); paths.addAll(detail.paths()); }
+        return outcome.state().name().toLowerCase(Locale.ROOT) + "|" + outcome.incomplete()
+            + "|" + String.join(",", codes) + "|" + String.join(",", paths);
+    }
+    private static void selfCheck() {
+        List<String> paths = new ArrayList<>(List.of("/original"));
+        var detail = new Validation.Diagnostic("test", paths, "predicate", "private-opt-in-message");
+        paths.set(0, "/changed");
+        List<Validation.Check> checks = new ArrayList<>(List.of(new Validation.Violated(detail), new Validation.Undecided(detail)));
+        var outcome = Validation.collect(checks); checks.clear();
+        if (!outcome.incomplete() || outcome.state() != Validation.State.INVALID || outcome.diagnostics().size() != 2)
+            throw new AssertionError("immutable invalid outcome");
+        if (!outcome.diagnostics().getFirst().paths().getFirst().equals("/original")) throw new AssertionError("path alias");
+        try { outcome.diagnostics().clear(); throw new AssertionError("mutable diagnostics"); }
+        catch (UnsupportedOperationException expected) {}
+        try { outcome.diagnostics().getFirst().paths().clear(); throw new AssertionError("mutable paths"); }
+        catch (UnsupportedOperationException expected) {}
+        try { outcome.orThrow(); throw new AssertionError("invalid accepted"); }
+        catch (ValidationException failure) {
+            if (failure.outcome() != outcome || failure.getMessage().contains("private-opt-in-message"))
+                throw new AssertionError("exception lost outcome or disclosed payload");
+        }
+        try { new Validation.Indeterminate(List.of(detail)).orThrow(); throw new AssertionError("unknown accepted"); }
+        catch (ValidationException expected) {}
+        new Validation.Valid().orThrow();
+        char[] chars = new char[] {'a', (char) 0xd800}; String text = TextCodec.fromUnits(chars); chars[0] = 'b';
+        char[] copy = TextCodec.units(text); copy[0] = 'c'; if (text.charAt(0) != 'a') throw new AssertionError("text mutation");
+        if (new Rational(BigInteger.valueOf(2), BigInteger.valueOf(-4)).compareTo(Rational.parse("-0.5")) != 0)
+            throw new AssertionError("denominator sign normalization");
+        if (!Rational.parse("2/4").equals(Rational.parse("0.5")) || Rational.parse("2/4").hashCode() != Rational.parse("0.5").hashCode())
+            throw new AssertionError("canonical equality/hash");
+        try { Rational.parse("1\n"); throw new AssertionError("trailing newline accepted"); }
+        catch (IllegalArgumentException expected) {}
+    }
+    public static void main(String[] args) throws Exception {
+        selfCheck();
+        try (var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+            for (String line; (line = reader.readLine()) != null;) {
+                String[] f = line.split("\t", -1);
+                try {
+                    String result = switch (f[0]) {
+                        case "number" -> number(f);
+                        case "text" -> TextCodec.show(units(f[1]));
+                        case "utf8" -> HexFormat.of().formatHex(TextCodec.utf8(units(f[1])));
+                        case "read-text" -> TextCodec.show(TextCodec.read(units(f[1])));
+                        case "from-utf8" -> TextCodec.show(TextCodec.fromUtf8(HexFormat.of().parseHex(f[1])));
+                        case "budget" -> budget(f); case "validation" -> validation(f);
+                        default -> throw new AssertionError("unknown vector");
+                    };
+                    System.out.println(result);
+                } catch (RuntimeException failure) { System.out.println("error:" + failure.getMessage()); }
+            }
+        }
+    }
+}
+`

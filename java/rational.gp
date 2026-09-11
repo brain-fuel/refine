@@ -1,0 +1,104 @@
+package java
+
+const rationalJava=`
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Objects;
+import java.util.regex.Pattern;
+
+/** An immutable canonical rational; no operation silently rounds. */
+public record Rational(BigInteger numerator, BigInteger denominator)
+        implements Comparable<Rational> {
+    public static final Rational ZERO = new Rational(BigInteger.ZERO, BigInteger.ONE);
+    public static final Rational ONE = new Rational(BigInteger.ONE, BigInteger.ONE);
+    private static final Pattern SYNTAX = Pattern.compile(
+        "-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*|(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)");
+
+    public Rational {
+        Objects.requireNonNull(numerator);
+        Objects.requireNonNull(denominator);
+        if (denominator.signum() == 0) throw new ArithmeticException("division by zero");
+        if (denominator.signum() < 0) {
+            numerator = numerator.negate();
+            denominator = denominator.negate();
+        }
+        BigInteger common = numerator.gcd(denominator);
+        numerator = numerator.divide(common);
+        denominator = denominator.divide(common);
+    }
+    public static Rational of(BigInteger integer) { return new Rational(integer, BigInteger.ONE); }
+    public static Rational of(long integer) { return of(BigInteger.valueOf(integer)); }
+
+    /** Caller must charge literal size and exponent expansion before parsing. */
+    public static Rational parse(String source) {
+        Objects.requireNonNull(source);
+        if (!SYNTAX.matcher(source).matches()) throw new IllegalArgumentException("invalid exact number");
+        int slash = source.indexOf('/');
+        if (slash >= 0) return new Rational(new BigInteger(source.substring(0, slash)),
+                                            new BigInteger(source.substring(slash + 1)));
+        int exponentAt = Math.max(source.indexOf('e'), source.indexOf('E'));
+        BigInteger exponent = exponentAt < 0 ? BigInteger.ZERO : new BigInteger(source.substring(exponentAt + 1));
+        String decimal = exponentAt < 0 ? source : source.substring(0, exponentAt);
+        int point = decimal.indexOf('.');
+        int fractionDigits = point < 0 ? 0 : decimal.length() - point - 1;
+        BigInteger unscaled = new BigInteger(decimal.replace(".", ""));
+        if (unscaled.signum() == 0) return ZERO;
+        BigInteger scale = BigInteger.valueOf(fractionDigits).subtract(exponent);
+        final int power;
+        try { power = scale.abs().intValueExact(); }
+        catch (ArithmeticException failure) { throw new ArithmeticException("numeric expansion exceeds resources"); }
+        BigInteger factor = BigInteger.TEN.pow(power);
+        return scale.signum() < 0 ? of(unscaled.multiply(factor)) : new Rational(unscaled, factor);
+    }
+    public Rational add(Rational other) {
+        return new Rational(numerator.multiply(other.denominator).add(other.numerator.multiply(denominator)),
+                            denominator.multiply(other.denominator));
+    }
+    public Rational subtract(Rational other) { return add(other.negate()); }
+    public Rational multiply(Rational other) {
+        return new Rational(numerator.multiply(other.numerator), denominator.multiply(other.denominator));
+    }
+    public Rational divide(Rational other) {
+        if (other.numerator.signum() == 0) throw new ArithmeticException("division by zero");
+        return new Rational(numerator.multiply(other.denominator), denominator.multiply(other.numerator));
+    }
+    public Rational negate() { return new Rational(numerator.negate(), denominator); }
+    public int signum() { return numerator.signum(); }
+    public boolean isInteger() { return denominator.equals(BigInteger.ONE); }
+    @Override public int compareTo(Rational other) {
+        return numerator.multiply(other.denominator).compareTo(other.numerator.multiply(denominator));
+    }
+    public Rational remainder(Rational other) {
+        if (!isInteger() || !other.isInteger()) throw new ArithmeticException("remainder requires integers");
+        if (other.signum() == 0) throw new ArithmeticException("remainder by zero");
+        return of(numerator.remainder(other.numerator));
+    }
+    private void integerWidth(int bits) {
+        // Matches the current Go backend guard; replacing this guard with the
+        // complete shared resource policy remains required before release.
+        if (bits < 1 || bits > 65536) throw new IllegalArgumentException("integer width must be between 1 and 65536 bits");
+        if (!isInteger()) throw new IllegalArgumentException("expected an integer");
+    }
+    public Rational fixedWidth(int bits, boolean signed) {
+        integerWidth(bits);
+        BigInteger upper = BigInteger.ONE.shiftLeft(signed ? bits - 1 : bits);
+        BigInteger lower = signed ? upper.negate() : BigInteger.ZERO;
+        if (numerator.compareTo(lower) < 0 || numerator.compareTo(upper) >= 0)
+            throw new ArithmeticException("fixed-width integer overflow");
+        return this;
+    }
+    public Rational wrap(int bits, boolean signed) {
+        integerWidth(bits);
+        BigInteger modulus = BigInteger.ONE.shiftLeft(bits);
+        BigInteger wrapped = numerator.mod(modulus);
+        if (signed && wrapped.compareTo(modulus.shiftRight(1)) >= 0) wrapped = wrapped.subtract(modulus);
+        return of(wrapped);
+    }
+    public String decimal() {
+        try { return new BigDecimal(numerator).divide(new BigDecimal(denominator)).stripTrailingZeros().toPlainString(); }
+        catch (ArithmeticException failure) { throw new ArithmeticException("number has no exact finite decimal encoding"); }
+    }
+    public String show() { return isInteger() ? numerator.toString() : numerator + "/" + denominator; }
+    @Override public String toString() { return show(); }
+}
+`

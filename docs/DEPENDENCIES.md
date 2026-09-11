@@ -18,6 +18,14 @@ release gate.
 - `github.com/dlclark/regexp2 v1.11.0` checksum entries come from the oracle's
   upstream test dependencies. Refine's own production code and provenance tests
   do not import it.
+- `org.jetbrains:jetCheck:0.3.0`: Java runtime property-test harness, not a
+  generated production dependency. Upstream is
+  [Apache-2.0](https://github.com/JetBrains/jetCheck/blob/master/LICENSE).
+  `org.jetbrains:annotations:13.0` is its Apache-2.0 transitive dependency.
+  Both Maven Central jars are SHA-256 pinned in `java/properties_test.gp` and
+  verified before test execution. No JUnit or Vavr dependency is needed by this
+  standalone harness. Published annotations 13.0 SHA-1 was also checked while
+  establishing its SHA-256 pin; jetCheck publishes its SHA-256 directly.
 
 Dependency declarations are not evidence that an upstream component supplies
 the full Refine contract. In particular, native regex semantics, deterministic

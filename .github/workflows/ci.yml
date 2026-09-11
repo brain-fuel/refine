@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   go:
+    env:
+      REFINE_REQUIRE_JAVA: '1'
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -19,6 +21,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Provision pinned Java property-test dependencies
+        shell: bash
+        run: |
+          jetcheck_dir=$(mktemp -d "$RUNNER_TEMP/refine-jetcheck.XXXXXX")
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/org/jetbrains/jetCheck/0.3.0/jetCheck-0.3.0.jar -o "$jetcheck_dir/jetCheck-0.3.0.jar"
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar -o "$jetcheck_dir/annotations-13.0.jar"
+          echo "REFINE_JETCHECK_DIR=$jetcheck_dir" >> "$GITHUB_ENV"
+          # Go tests check pinned SHA-256 digests before executing these jars.
       - name: Verify pinned GoPlus and generated sources
         run: |
           go tool goplus version
@@ -45,3 +59,4 @@ jobs:
           go test ./language -run '^$' -fuzz '^FuzzEvaluatorDeterminism$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzTypedReadShow$' -fuzztime=10s
           go test ./value -run '^$' -fuzz '^FuzzDataMutationIsolation$' -fuzztime=10s
+          go test ./java -run '^$' -fuzz '^FuzzRuntimePackageNames$' -fuzztime=10s -fuzzminimizetime=1000x
