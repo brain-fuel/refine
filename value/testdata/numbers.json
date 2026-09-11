@@ -1,0 +1,9 @@
+[
+  {"name":"integer beyond binary64 precision","op":"add","left":"9007199254740992","right":"1","result":"9007199254740993"},
+  {"name":"exact thirds","op":"divide","left":"1","right":"3","result":"1/3"},
+  {"name":"thirds recombine","op":"multiply","left":"1/3","right":"3","result":"1"},
+  {"name":"decimal subtraction","op":"subtract","left":"0.3","right":"0.2","result":"1/10"},
+  {"name":"no negative zero","op":"negate","left":"0","result":"0"},
+  {"name":"integer multiplication is unbounded","op":"multiply","left":"18446744073709551616","right":"18446744073709551616","result":"340282366920938463463374607431768211456"},
+  {"name":"zero divisor","op":"divide","left":"1","right":"0","error":"division by zero"}
+]

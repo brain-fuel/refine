@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/target/
+/.goplus/
+/coverage.out
+*.test
+.DS_Store

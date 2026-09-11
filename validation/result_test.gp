@@ -1,0 +1,65 @@
+package validation
+
+import (
+    "encoding/json"
+    "testing"
+    "testing/quick"
+)
+
+func TestReportJSON(t *testing.T) {
+    report := Collect([]Check{Undecided(Diagnostic{Code: "budget", Paths: []string{"/age"}, Message: "step limit reached"})})
+    data, err := json.Marshal(report)
+    if err != nil { t.Fatal(err) }
+    expected := `{"state":"indeterminate","incomplete":true,"diagnostics":[{"code":"budget","paths":["/age"],"predicate":"","message":"step limit reached"}]}`
+    if string(data) != expected { t.Fatalf("JSON report = %s", data) }
+    empty, err := json.Marshal(Report{})
+    if err != nil || string(empty) != `{"state":"valid","incomplete":false,"diagnostics":[]}` { t.Fatalf("empty JSON report = %s, %v", empty, err) }
+}
+
+func stateOf(check Check) string { return StateName(Collect([]Check{check}).State()) }
+
+func TestCombinatorTruthTables(t *testing.T) {
+    d := Diagnostic{Code: "predicate", Paths: []string{"/"}, Predicate: "p it", Message: "predicate must hold"}
+    inputs := []Check{Satisfied(), Violated(d), Undecided(d)}
+    tables := []struct { mode Combination; expected []string }{
+        {All(), []string{"valid", "invalid", "indeterminate", "invalid", "invalid", "invalid", "indeterminate", "invalid", "indeterminate"}},
+        {AtLeastOne(), []string{"valid", "valid", "valid", "valid", "invalid", "indeterminate", "valid", "indeterminate", "indeterminate"}},
+        {OnlyOne(), []string{"invalid", "valid", "indeterminate", "valid", "invalid", "indeterminate", "indeterminate", "indeterminate", "indeterminate"}},
+    }
+    for _, table := range tables {
+        for i, a := range inputs { for j, b := range inputs {
+            actual := stateOf(Combine(table.mode, []Check{a, b}, d))
+            if actual != table.expected[i*3+j] { t.Errorf("mode %T [%d,%d]: %s, want %s", table.mode, i, j, actual, table.expected[i*3+j]) }
+        } }
+    }
+    if stateOf(Combine(All(), nil, d)) != "valid" { t.Fatal("empty all must be valid") }
+    if stateOf(Combine(AtLeastOne(), nil, d)) != "invalid" { t.Fatal("empty at-least-one must be invalid") }
+    if stateOf(Combine(OnlyOne(), nil, d)) != "invalid" { t.Fatal("empty only-one must be invalid") }
+    if stateOf(Combine(OnlyOne(), []Check{Satisfied(), Satisfied(), Undecided(d)}, d)) != "invalid" { t.Fatal("two successes must refute only-one even with unknown") }
+}
+
+func TestKnownInvalidDominatesAndDiagnosticsAreImmutable(t *testing.T) {
+    d := Diagnostic{Code: "range", Paths: []string{"/age"}, Predicate: "it.age >= 0 && it.age < 18", Message: "Age must be between 0 inclusive and 18 exclusive"}
+    report := Collect([]Check{Violated(d), Undecided(Diagnostic{Code: "budget", Message: "step limit reached"})})
+    d.Paths[0] = "/changed"
+    if StateName(report.State()) != "invalid" || !report.Incomplete() { t.Fatal("known invalid was lost") }
+    if len(report.Diagnostics()) != 2 { t.Fatal("diagnostics were split by Boolean operand or dropped") }
+    details := report.Diagnostics()
+    details[0].Paths[0] = "/mutated"
+    details[0].Code = "mutated"
+    if report.Diagnostics()[0].Paths[0] != "/age" || report.Diagnostics()[0].Code != "range" { t.Fatal("mutable diagnostic backing escaped") }
+}
+
+func TestCollectPermutationLaw(t *testing.T) {
+    property := func(kinds []uint8) bool {
+        checks := make([]Check, len(kinds))
+        for i, kind := range kinds {
+            switch kind % 3 { case 0: checks[i] = Satisfied(); case 1: checks[i] = Violated(Diagnostic{}); case 2: checks[i] = Undecided(Diagnostic{}) }
+        }
+        before := Collect(checks)
+        for i, j := 0, len(checks)-1; i < j; i, j = i+1, j-1 { checks[i], checks[j] = checks[j], checks[i] }
+        after := Collect(checks)
+        return StateName(before.State()) == StateName(after.State()) && before.Incomplete() == after.Incomplete()
+    }
+    if err := quick.Check(property, &quick.Config{MaxCount: 2000}); err != nil { t.Fatal(err) }
+}

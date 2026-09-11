@@ -1,0 +1,33 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify pinned GoPlus and generated sources
+        run: |
+          go tool goplus version
+          go tool goplus gen --check ./...
+          go generate ./...
+          git diff --exit-code -- '*.go' go.mod go.sum
+      - run: go test -race ./...
+      - run: go vet ./...
+      - name: Fuzz lossless ingestion and text codecs
+        run: |
+          go test ./schemajson -run '^$' -fuzz '^FuzzLosslessDocument$' -fuzztime=10s
+          go test ./value -run '^$' -fuzz '^FuzzTextReadShow$' -fuzztime=10s
