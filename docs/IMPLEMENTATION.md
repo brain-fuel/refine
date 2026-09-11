@@ -279,6 +279,41 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   Maven and example gates remain unchecked. See [JAVA-RUNTIME.md](JAVA-RUNTIME.md)
   for implemented APIs and resource-policy limitations.
 
-Next: connect checked language types to Java model/evaluator emission and native
-schemas; finish conversions, capability inference and recursive dispatch. The
-full checklist remains the release gate.
+- Checkpoint `2654b57` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34655231371). An independent
+  consumer fetched `v0.0.0-20260911224324-2654b57ed0bf` without local replacements,
+  emitted/compiled Java and passed exact arithmetic, UTF-16, validation exception
+  and nested-budget checks under Go's race detector.
+
+## Generated Java contract validators
+
+- `GenerateValidator` connects checked language declarations to standalone Java
+  execution. It emits immutable language payloads, an immutable contract graph,
+  structure/refinement validation and an ordinary throwing boundary that returns
+  the original payload unchanged. No Go runtime or dynamic schema loading is
+  needed by emitted Java.
+- Records, aliases, lists, recursive/generic tagged unions and optional/null/
+  result forms execute. Expression-only field and whole-structure refinements
+  preserve ordered diagnostics, exact arithmetic, overflow, UTF-16, error-message
+  fallback, invalid/unknown aggregation, and Go's logical-step accounting.
+- 13,250 full-report comparisons include tiny total/per-clause budgets and
+  explicit over-depth trees. Generated contracts also pass 5,000 jetCheck cases
+  for scalar, relational record and recursive generic validation. Initial
+  unbounded random trees exceeded evaluator limits and caused lengthy shrinking;
+  the all-leaves law now bounds generated trees to fit the resource policy while
+  dedicated over-limit cases require matching indeterminate reports.
+- Unsupported expression/function/timestamp forms reject generation explicitly,
+  as do unsafe class names and oversized initializers. These are outstanding
+  implementation obligations, not relaxed release requirements. Model classes,
+  serde, native formats, complete language execution and project integration
+  still remain required; see [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
+- Local full-repository race tests, vet and deterministic generation pass. A
+  20-second emitter fuzz run passed 10,689,334 executions; the source-generation
+  benchmark measured 121,626 ns/op, 418,878 B/op and 3,939 allocs/op on Darwin/arm64
+  (Apple M5 Max), including a fresh detached syntax parse. Tests also exercise
+  concurrent Java validation, copied payload collections and forged numeric
+  metadata. GoPlus latest still resolves to the pinned v0.158.0.
+
+Next: connect the generated validator to semantic Java models and validated
+construction/updates, and complete function/codec execution and native schemas.
+The full checklist remains the release gate.

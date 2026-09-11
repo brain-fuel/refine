@@ -1,0 +1,251 @@
+package java
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+    "time"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+const validatorContract = `
+type Age = Int where it >= 0 @code "age.nonnegative" @message "Age must not be negative"
+type Person = { name :: String, age :: Age }
+type Child = Person where it.age < 18
+type Interval = { start :: Int, end :: Int }
+  where it.start <= it.end @code "interval.order"
+  where it.start >= 0 @code "interval.start"
+type Percent = Real where it >= 0.0 && it <= 100.0
+type Exact = Real where it / 0.0 > 0.0 @code "unknown"
+  where it < 0.0 @code "negative" @message (if True then "negative required" else "unused")
+type Names = [String] where it == ["alpha", "beta"]
+type Small = Int8
+type MaybeAge = Maybe Age
+type Optional = { age :: MaybeAge, other :: Nullable Age }
+data Tree a = Leaf a | Branch (Tree a) (Tree a)
+type AgeTree = Tree Age
+type Envelope = { tree :: AgeTree }
+type LetValue = Int where (let x = it + 1 in x > it)
+type TextRule = String where it /= "\ud800" @message "bad\ud800"
+type Escaped = Int where it < 0 @code "line\ncode" @message "quote\" slash\\ newline\n"
+type Arithmetic = Int where (it * it % 7) >= 0 && -it <= it
+type Overflow = Int8 where it + it > it
+type Concat = String where it ++ "x" > "z"
+type Cons = [Int] where (0 : it) == [0, 1]
+type SameRecord = { a :: Int, b :: String } where { b = it.b, a = it.a } == it
+type Int0 = String
+type Int01 = String
+type Int4294967296 = String
+`
+
+func reportLine(report validation.Report)string {
+    result:=fmt.Sprintf("%s|%v",validation.StateName(report.State()),report.Incomplete())
+    for _,d:=range report.Diagnostics(){result+=fmt.Sprintf("|%x,%x,%x,%x",d.Code,strings.Join(d.Paths,";"),d.Predicate,d.Message)}
+    return result
+}
+func testNumber(raw string)value.Data{n,err:=value.ParseNumber(raw);if err!=nil{panic(err)};return value.OfNumber(n)}
+func testText(raw string)value.Data{v,err:=value.TextFromUTF8(raw);if err!=nil{panic(err)};return value.OfText(v)}
+func testRecord(fields ...value.DataField)value.Data{v,err:=value.Record(fields);if err!=nil{panic(err)};return v}
+func testVariant(name string,args ...value.Data)value.Data{v,err:=value.Variant(name,args);if err!=nil{panic(err)};return v}
+
+func TestGeneratedContractValidation(t *testing.T){
+    compiler,vm:=javaTools(t)
+    dependencies:=jetCheckClasspath(t)
+    program,err:=language.Compile(validatorContract);if err!=nil{t.Fatal(err)}
+    files,err:=GenerateValidator(program,"example.contract","Contract");if err!=nil{t.Fatal(err)}
+    root:=t.TempDir();sources:=[]string{}
+    for _,file:=range files{target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harness:=filepath.Join(root,"ContractConformance.java");if err:=os.WriteFile(harness,[]byte(contractHarnessJava),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(root,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",dependencies,"-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("javac: %v\n%s",err,output)}
+    vectors:=[]vector{}
+    add:=func(kind,root,a,b string,data value.Data,limit,clause uint64){
+        input:=fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%d",kind,root,a,b,limit,clause)
+        vectors=append(vectors,vector{input,reportLine(program.ValidateData(root,data,validation.Limits{Total:limit,Clause:clause}))})
+    }
+    for _,root:=range []string{"Age","Small","Percent","Exact","LetValue","Escaped","Arithmetic","Overflow","missing","Tree"}{
+        for _,n:=range []string{"-129","-1","0","17","18","128","1/3"}{
+            for limit:=uint64(1);limit<90;limit++{add("number",root,n,"",testNumber(n),limit,0)}
+            for clause:=uint64(1);clause<35;clause++{add("number",root,n,"",testNumber(n),0,clause)}
+        }
+    }
+    for n:=-2;n<22;n++ {
+        raw:=fmt.Sprint(n);person:=testRecord(value.DataField{Name:"name",Value:testText("😀")},value.DataField{Name:"age",Value:testNumber(raw)},value.DataField{Name:"extra",Value:value.OfBool(true)})
+        for limit:=uint64(1);limit<100;limit++{add("person","Child",raw,"",person,limit,0)}
+    }
+    for a:=-1;a<3;a++{for b:=-1;b<3;b++{
+        left,right:=fmt.Sprint(a),fmt.Sprint(b);data:=testRecord(value.DataField{Name:"start",Value:testNumber(left)},value.DataField{Name:"end",Value:testNumber(right)})
+        for clause:=uint64(1);clause<30;clause++{add("interval","Interval",left,right,data,0,clause)}
+    }}
+    optional:=testRecord(value.DataField{Name:"other",Value:testVariant("NonNull",testNumber("21"))})
+    tree:=testVariant("Branch",testVariant("Leaf",testNumber("-1")),testVariant("Leaf",testNumber("3")))
+    for limit:=uint64(1);limit<150;limit++{
+        add("optional","Optional","","",optional,limit,0)
+        add("tree","Envelope","","",testRecord(value.DataField{Name:"tree",Value:tree}),limit,0)
+        add("names","Names","","",value.List([]value.Data{testText("alpha"),testText("beta")}),limit,0)
+        add("text","TextRule","","",value.OfText(value.TextFromUnits([]uint16{0xd800})),limit,0)
+        add("badperson","Child","","",testRecord(value.DataField{Name:"age",Value:testText("bad")}),limit,0)
+        add("names","Cons","","",value.List([]value.Data{testText("alpha"),testText("beta")}),limit,0)
+        add("cons","Cons","","",value.List([]value.Data{testNumber("1")}),limit,0)
+        add("same","SameRecord","","",testRecord(value.DataField{Name:"a",Value:testNumber("3")},value.DataField{Name:"b",Value:testText("😀")}),limit,0)
+        for _,name:=range []string{"Concat","Int0","Int01","Int4294967296"}{add("text",name,"","",value.OfText(value.TextFromUnits([]uint16{0xd800})),limit,0)}
+    }
+    for _,depth:=range []int{0,1,8,20,60,120,180,300,510,511,512,600}{
+        tree:=testVariant("Leaf",testNumber("0"))
+        for i:=0;i<depth;i++{tree=testVariant("Branch",tree,testVariant("Leaf",testNumber("0")))}
+        add("deep","AgeTree",fmt.Sprint(depth),"",tree,0,0)
+    }
+    var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input);input.WriteByte('\n')}
+    ctx,cancel:=context.WithTimeout(context.Background(),time.Minute);defer cancel()
+    command:=exec.CommandContext(ctx,vm,"-cp",classes+string(os.PathListSeparator)+dependencies,"ContractConformance");command.Stdin=strings.NewReader(input.String())
+    var stderr bytes.Buffer;command.Stderr=&stderr
+    output,err:=command.Output();if err!=nil{t.Fatalf("Java contract: %v\n%s",err,stderr.String())}
+    lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n");if len(lines)!=len(vectors){t.Fatalf("expected %d results, got %d: %s",len(vectors),len(lines),output)}
+    for i,v:=range vectors{if lines[i]!=v.expected{t.Fatalf("case %s\nJava %s\nGo   %s",v.input,lines[i],v.expected)}}
+    t.Logf("%d full-report Go/Java validator comparisons passed",len(vectors))
+}
+
+const contractHarnessJava = `
+import example.contract.*;
+import java.util.List;
+import java.util.HexFormat;
+import java.nio.charset.StandardCharsets;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import org.jetbrains.jetCheck.Generator;
+import org.jetbrains.jetCheck.PropertyChecker;
+public final class ContractConformance {
+    static Data n(String raw) { return new Data.Number(Rational.parse(raw)); }
+    static Data.Field field(String name, Data value) { return new Data.Field(name, value); }
+    static Data leaf(String n) { return new Data.Variant("Leaf", List.of(n(n))); }
+    static Data deep(int depth) { Data tree = leaf("0"); for (int i = 0; i < depth; i++) tree = new Data.Variant("Branch", List.of(tree, leaf("0"))); return tree; }
+    static String hex(String text) { return HexFormat.of().formatHex(text.getBytes(StandardCharsets.UTF_8)); }
+    static void require(boolean condition) { if (!condition) throw new AssertionError("contract law failed"); }
+    record Endpoints(int start, int end) {}
+    static int negativeLeaves(Data tree) {
+        var v = (Data.Variant)tree;
+        if (v.name().equals("Leaf")) return ((Data.Number)v.values().getFirst()).value().signum() < 0 ? 1 : 0;
+        return negativeLeaves(v.values().get(0)) + negativeLeaves(v.values().get(1));
+    }
+    static Generator<Data> trees(int depth) {
+        Generator<Data> leaves = Generator.integers().map(age -> leaf(Integer.toString(age)));
+        if (depth == 0) return leaves;
+        Generator<Data> child = trees(depth - 1);
+        return Generator.anyOf(leaves, Generator.zipWith(child, child, (a, b) -> new Data.Variant("Branch", List.of(a, b))));
+    }
+    static void properties() {
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(), age -> {
+            Data raw = n(Integer.toString(age)); var result = Contract.validate("Age", raw);
+            require(result.state() == (age >= 0 ? Validation.State.VALID : Validation.State.INVALID));
+            if (age >= 0) require(Contract.requireValid("Age", raw) == raw);
+            else require(result.diagnostics().getFirst().code().equals("age.nonnegative"));
+            return true;
+        });
+        PropertyChecker.customized().withIterationCount(2000).forAll(
+            Generator.zipWith(Generator.integers(), Generator.integers(), Endpoints::new), p -> {
+                Data raw = new Data.Struct(List.of(field("end", n(Integer.toString(p.end()))), field("start", n(Integer.toString(p.start())))));
+                var result = Contract.validate("Interval", raw);
+                require(!result.incomplete());
+                require(result.diagnostics().size() == (p.start() > p.end() ? 1 : 0) + (p.start() < 0 ? 1 : 0));
+                return true;
+            });
+        // All generated trees fit the evaluator's documented depth/work caps.
+        // Over-limit behavior is a separate Go/Java comparison, not this law.
+        PropertyChecker.customized().withIterationCount(1000).forAll(trees(8), tree -> {
+            var result = Contract.validate("AgeTree", tree);
+            require(!result.incomplete()); require(result.diagnostics().size() == negativeLeaves(tree));
+            return true;
+        });
+    }
+    public static void main(String[] args) throws Exception {
+        var input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        String line;
+        while ((line = input.readLine()) != null) {
+            String[] f = line.split("\t", -1);
+            Data data = switch (f[0]) {
+                case "number" -> n(f[2]);
+                case "deep" -> deep(Integer.parseInt(f[2]));
+                case "person" -> new Data.Struct(List.of(field("name", new Data.Text("😀")), field("age", n(f[2])), field("extra", new Data.Bool(true))));
+                case "interval" -> new Data.Struct(List.of(field("start", n(f[2])), field("end", n(f[3]))));
+                case "optional" -> new Data.Struct(List.of(field("other", new Data.Variant("NonNull", List.of(n("21"))))));
+                case "tree" -> new Data.Struct(List.of(field("tree", new Data.Variant("Branch", List.of(leaf("-1"), leaf("3"))))));
+                case "names" -> new Data.Sequence(List.of(new Data.Text("alpha"), new Data.Text("beta")));
+                case "cons" -> new Data.Sequence(List.of(n("1")));
+                case "same" -> new Data.Struct(List.of(field("a", n("3")), field("b", new Data.Text("😀"))));
+                case "text" -> new Data.Text(new String(new char[]{(char)0xd800}));
+                case "badperson" -> new Data.Struct(List.of(field("age", new Data.Text("bad"))));
+                default -> throw new AssertionError();
+            };
+            var outcome = Contract.validate(f[1], data, new Budget.Limits(Long.parseLong(f[4]), Long.parseLong(f[5])));
+            StringBuilder result = new StringBuilder(outcome.state().name().toLowerCase(java.util.Locale.ROOT)).append('|').append(outcome.incomplete());
+            for (var d : outcome.diagnostics()) result.append('|').append(hex(d.code())).append(',').append(hex(String.join(";", d.paths()))).append(',').append(hex(d.predicate())).append(',').append(hex(d.message()));
+            System.out.println(result);
+        }
+        Data raw = n("21"); if (Contract.requireValid("Age", raw) != raw) throw new AssertionError("raw payload was replaced");
+        try { Contract.requireValid("Age", n("-1")); throw new AssertionError("invalid accepted"); } catch (ValidationException expected) {}
+        try { Contract.requireValid("Exact", n("-1")); throw new AssertionError("unknown accepted"); } catch (ValidationException expected) {}
+        var mutable = new java.util.ArrayList<Data.Field>(); mutable.add(field("start", n("0"))); mutable.add(field("end", n("1")));
+        Data.Struct copied = new Data.Struct(mutable); mutable.clear(); require(copied.fields().size() == 2);
+        try { copied.fields().clear(); throw new AssertionError("mutable payload escaped"); } catch (UnsupportedOperationException expected) {}
+        // Caller-supplied numeric metadata never overrides the declared type.
+        require(Contract.validate("Age", new Data.Number(Rational.of(-1), "UInt8")).state() == Validation.State.INVALID);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 200; i++) { final int age = i - 100; futures.add(executor.submit(() -> require(
+                Contract.validate("Age", n(Integer.toString(age))).state() == (age >= 0 ? Validation.State.VALID : Validation.State.INVALID)))); }
+            for (var future : futures) future.get();
+        }
+        properties();
+    }
+}
+`
+
+func TestValidatorGenerationRejectsUnsupported(t *testing.T){
+    for _,source:=range []string{
+        "f :: Int -> Bool\nf x = x > 0\ntype T = Int where f it",
+        "type T = String where length it > 0",
+        "type T = Timestamp",
+        "type T = Int where (let x :: Int = it in x > 0)",
+        "type T = Maybe Int where (case it of { Nothing -> True; Just x -> x > 0 })",
+    }{
+        program,err:=language.Compile(source);if err!=nil{t.Fatalf("invalid rejection fixture: %s: %v",source,err)}
+        files,err:=GenerateValidator(program,"example","Contract")
+        if _,ok:=err.(*GenerationError);!ok||files!=nil{t.Fatalf("unsupported contract silently emitted: %s: %v",source,err)}
+    }
+    program,err:=language.Compile("type T = Int where it > 0");if err!=nil{t.Fatal(err)}
+    for _,name:=range []string{"", "Data", "String", "record", "a.b", "../Bad", "a;"}{if files,err:=GenerateValidator(program,"",name);err==nil||files!=nil{t.Fatalf("invalid class accepted: %q",name)}}
+    if files,err:=GenerateValidator(nil,"","Contract");err==nil||files!=nil{t.Fatal("nil program accepted")}
+    first,err:=GenerateValidator(program,"example","Contract");if err!=nil{t.Fatal(err)}
+    syntax:=program.Syntax();syntax.Types[0].Name="Corrupted"
+    second,err:=GenerateValidator(program,"example","Contract");if err!=nil{t.Fatal(err)}
+    for i:=range first{if first[i]!=second[i]{t.Fatal("generation depends on mutable syntax copy")}}
+    large,err:=language.Compile("type T = String where it == "+fmt.Sprintf("%q",strings.Repeat("a",50000)));if err!=nil{t.Fatal(err)}
+    if files,err:=GenerateValidator(large,"","Contract");err==nil||files!=nil{t.Fatal("oversized initializer not rejected")}
+}
+
+func FuzzValidatorGeneration(f *testing.F){
+    for _,source:=range []string{"type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}
+    f.Fuzz(func(t *testing.T,source string){
+        if len(source)>8192{return}
+        program,err:=language.Compile(source);if err!=nil{return}
+        first,err:=GenerateValidator(program,"example","Contract")
+        second,again:=GenerateValidator(program,"example","Contract")
+        if err!=nil{if again==nil||first!=nil||second!=nil{t.Fatal("partial or nondeterministic failed generation")};return}
+        if again!=nil||len(first)!=8||len(second)!=8{t.Fatal("invalid source set")}
+        for i:=range first{if first[i]!=second[i]{t.Fatal("nondeterministic validator")}}
+    })
+}
+
+func BenchmarkGenerateValidator(b *testing.B){
+    program,err:=language.Compile(validatorContract);if err!=nil{b.Fatal(err)}
+    b.ReportAllocs();b.ResetTimer()
+    for i:=0;i<b.N;i++{if _,err:=GenerateValidator(program,"example","Contract");err!=nil{b.Fatal(err)}}
+}

@@ -40,8 +40,8 @@ contextual-keyword packages with Java 25.
   every enclosing meter and the overall budget once. Instances belong to one
   execution; they are not shared mutable global state.
 
-These are runtime primitives, **not yet generated domain models or a Java
-predicate evaluator**. The evaluator must precharge numeric parsing/expansion;
+These are runtime primitives, **not yet generated domain models**. The initial
+generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
 not the final shared resource policy. Java regex/timestamps, schema-derived
@@ -82,3 +82,63 @@ jars in a configured directory are failures.
 
 The Java production runtime depends only on the JDK. jetCheck and annotations
 are test-only; see [dependency roles](DEPENDENCIES.md).
+
+## Compiled contract validators
+
+`GenerateValidator(program, packageName, className)` accepts a statically checked
+`*language.Program` and emits eight files: the five primitives above, immutable
+`Data` payload trees, `ContractRuntime` execution support, and the named contract
+class. It returns no files if generation fails and performs no filesystem writes.
+The generated contract holds a private immutable definition graph; it does not
+read schema source, load plugins, or call Go at runtime.
+
+```go
+program, err := language.Compile("type Age = Int where it >= 0")
+// Handle err, then:
+files, err := java.GenerateValidator(program, "com.me.project", "Contract")
+```
+
+After writing those sources to a Java 25 project:
+
+```java
+Data age = new Data.Number(Rational.of(21));
+Validation.Outcome result = Contract.validate("Age", age);
+Data unchanged = Contract.requireValid("Age", age); // Same object, or exception.
+```
+
+`validate` also accepts caller `Budget.Limits`. Each invocation owns its meters,
+typed view and diagnostics. The input is never modified, even when the typed
+record view excludes extras or supplies an absent optional field. This API uses
+explicit language payload constructors, **not JSON or Avro wire conventions**.
+
+Supported structural forms include records, aliases, lists, generic/recursive
+tagged unions, `Maybe`, `Nullable`, `Result`, Bool/String, arbitrary integers and
+rationals, and checked fixed-width integers. Primitive-looking user declarations
+such as `Int01` remain ordinary named types. Field and whole-structure predicates
+share Go's per-clause reporting, stable generated codes, default/custom messages,
+invalid-plus-unknown aggregation, and structural/expression budget accounting.
+Custom-message failure preserves the conclusive violation and generated fallback.
+
+The current expression emitter handles literals, `it`, field projection, numeric
+and Boolean operators, equality, concatenation/cons, conditionals, unannotated
+local bindings, and record/list literals. It rejects named functions, function
+application (including builtins), match expressions, annotated local bindings,
+function-valued types and timestamps with `java.unsupported` plus source position.
+It never drops those rules or emits validators that quietly accept them.
+This is a development subset, not the final language contract: all those missing
+forms remain required. The current 48,000-byte initializer-source guard rejects
+large contracts explicitly; chunked emission must lift that guard before release.
+
+Verification compares **13,250 complete Go/Java validation reports**, including
+diagnostic paths, codes, predicates and messages, across successful, malformed,
+unknown, tiny-budget, overflow and deep-tree cases. Three jetCheck suites add
+5,000 fresh-seeded cases for generated age, interval and recursive tree contracts.
+The all-leaves-checked tree law deliberately generates trees within the documented
+resource limits; separate over-limit cases require Go/Java agreement instead.
+Emitter tests cover all-or-nothing rejection, unsafe class names, detached syntax
+copies, escaped controls/lone surrogates, deterministic output and size limits.
+
+Schema-specific semantic model classes, constructors/atomic updates, serde,
+schema-derived test generation, native-format ingestion/exports, Maven integration
+and the generation CLI are still outstanding. `Data` is internal-style payload
+plumbing for this validator, not a replacement for those domain types.

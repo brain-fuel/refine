@@ -1,0 +1,31 @@
+package java
+
+const dataJava = `
+import java.util.List;
+import java.util.HashSet;
+import java.util.Objects;
+
+/** Immutable language payloads. These are not JSON or Avro wire encodings. */
+public sealed interface Data {
+    record Number(Rational value, String numericType) implements Data {
+        public Number { Objects.requireNonNull(value); Objects.requireNonNull(numericType); }
+        public Number(Rational value) { this(value, value.isInteger() ? "Int" : "Real"); }
+    }
+    record Text(String value) implements Data { public Text { Objects.requireNonNull(value); } }
+    record Bool(boolean value) implements Data {}
+    record Sequence(List<Data> values) implements Data { public Sequence { values = List.copyOf(values); } }
+    record Field(String name, Data value) {
+        public Field { Objects.requireNonNull(name); Objects.requireNonNull(value); if (name.isEmpty()) throw new IllegalArgumentException("empty record field"); }
+    }
+    record Struct(List<Field> fields) implements Data {
+        public Struct {
+            fields = List.copyOf(fields);
+            var names = new HashSet<String>();
+            for (Field field : fields) if (!names.add(field.name())) throw new IllegalArgumentException("duplicate record field");
+        }
+    }
+    record Variant(String name, List<Data> values) implements Data {
+        public Variant { Objects.requireNonNull(name); if (name.isEmpty()) throw new IllegalArgumentException("empty constructor name"); values = List.copyOf(values); }
+    }
+}
+`
