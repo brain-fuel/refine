@@ -83,8 +83,10 @@ unexplored patterns are certainly incomplete.
 
 The front end recognizes signatures for collection operations, predicate
 combinators, show/read, and regex predicates. Collection operations and typed
-show/read now have an in-memory implementation; regex execution and the Java
-implementation remain unfinished.
+show/read, budgeted full-string `matches`/substring `search`, and RFC 3339
+timestamp validation/comparison now have an in-memory implementation. The Java
+implementation remains unfinished. See [runtime semantics](RUNTIME.md) for the
+refinement regex dialect, timestamp precision, and leap-second policy.
 `read` needs an inferable target type; for example:
 
 ```haskell

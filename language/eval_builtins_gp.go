@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"goforge.dev/refine/pattern"
 	"goforge.dev/refine/value"
 )
 
@@ -90,7 +91,21 @@ func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 	case "read":
 		evalError(at, "evaluation.type", "read requires an inferred target type")
 	case "matches", "search":
-		evalError(at, "evaluation.unsupported", "regex execution semantics are not implemented yet")
+		compiled, err := pattern.Compile(textOf(args[0], at), e.meter)
+		if err != nil {
+			problem := err.(*pattern.Error)
+			evalError(at, problem.Code, problem.Message)
+		}
+		var mode pattern.Mode = pattern.Full{}
+		if name == "search" {
+			mode = pattern.Search{}
+		}
+		matched, err := compiled.Match(textOf(args[1], at), mode, e.meter)
+		if err != nil {
+			problem := err.(*pattern.Error)
+			evalError(at, problem.Code, problem.Message)
+		}
+		return boolValue(matched)
 	}
 	evalError(at, "evaluation.name", "unsupported built-in function")
 	return evalValue{}
@@ -183,6 +198,10 @@ func (e *evaluator) show(v evalValue, at Span) string {
 		text := __gp_m1.value
 		e.step(uint64(text.Length()), at)
 		return text.Show()
+	case evalTimestamp:
+		timestamp := __gp_m1.value
+		e.step(uint64(len(timestamp.Raw())), at)
+		return timestamp.Show()
 	case evalBool:
 		b := __gp_m1.value
 		if b {
@@ -334,6 +353,11 @@ func (e *evaluator) toData(v evalValue, at Span) value.Data {
 	case evalText:
 		t := __gp_m4.value
 		return value.OfText(t)
+	case evalTimestamp:
+		t := __gp_m4.value
+		e.step(uint64(len(t.Raw())), at)
+		text, _ := value.TextFromUTF8(t.Raw())
+		return value.OfText(text)
 	case evalBool:
 		b := __gp_m4.value
 		return value.OfBool(b)

@@ -93,7 +93,7 @@ func TestEvaluatorExplainedFailures(t *testing.T) {
 		{"recursion budget", "loop :: Int -> Bool\nloop n = loop n\nentry :: Bool\nentry = loop 0", "evaluation.budget", validation.Limits{Clause: 60}},
 		{"recursion nesting", "loop :: Int -> Bool\nloop n = loop n\nentry :: Bool\nentry = loop 0", "evaluation.depth", validation.Limits{}},
 		{"literal expansion", "entry :: Real\nentry = 1e9999999999999999999999999", "evaluation.budget", validation.Limits{}},
-		{"unsupported regex", "entry :: Bool\nentry = matches \".*\" \"secret-payload\"", "evaluation.unsupported", validation.Limits{}},
+		{"unsupported regex", "entry :: Bool\nentry = matches \"(?=secret-payload)\" \"secret-payload\"", "regex.syntax", validation.Limits{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

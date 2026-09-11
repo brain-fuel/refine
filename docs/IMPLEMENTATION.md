@@ -184,6 +184,38 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   cases. Remaining gaps, including codec-capability inference through generic
   signatures, remain explicit in [RUNTIME.md](RUNTIME.md).
 
-Next: finish conversions, regex/timestamps, capability inference, and recursive
-dispatch; connect native constraint provenance and Java emission to the checked
-runtime. The full checklist remains the release gate.
+- Checkpoint `f85a023` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34646986712). A separate
+  public consumer resolved `v0.0.0-20260911205816-f85a023ccedd` without local
+  replacements and passed race-tested typed codecs, nominal refinement reads,
+  and multi-field candidate updates.
+
+## Regex and timestamp checkpoint
+
+- `pattern/*.gp` connects Go/RE2 parsing/compilation to an iterative, metered
+  regex matcher. `matches` and `search` now execute, including dynamic patterns,
+  Unicode classes, surrogate identity, anchors, and explicit unsupported errors.
+  Compilation/expansion and matching share the enclosing validation budget.
+- `value/timestamp.gp` implements exact RFC 3339 parsing, offset metadata,
+  instant ordering, original-payload preservation, and pinned leap knowledge.
+  Typed payload/read boundaries parse timestamps for predicates without changing
+  their raw text. Unknown future leap labels remain indeterminate; known sibling
+  violations are still collected. Civil versus SI duration primitives are
+  explicitly separate, not silent timestamp subtraction.
+- Coverage includes shared timestamp JSON fixtures, 5,000 offset/instant
+  property cases, regex differential properties, fixed work thresholds,
+  unsupported-pattern privacy, timestamp read/show, sub-nanosecond booking
+  comparisons, malformed/future leap labels, and concurrent program reuse.
+- Local unit/property tests, race tests, vet, and deterministic GoPlus generation
+  pass. `go list -m goforge.dev/goplus@latest` still resolves the pinned v0.158.0.
+  A 20-second regex differential fuzz run passed 6,627,539 executions. A timestamp
+  run hit a fuzz-harness deadline during shrinking; limiting each minimization
+  attempt to 1,000 executions (not disabling shrinking) allowed a fresh 20-second
+  run to pass 11,253,034 executions. CI uses this bounded shrink setting.
+- This is not proof of native regex parity, complete timestamp/conversion
+  vocabulary, a cross-runtime stable regex cost profile, or Java conformance.
+  Those and the full unchecked release requirements remain outstanding.
+
+Next: finish conversions, capability inference, and recursive dispatch; connect
+native constraint provenance and Java emission to the checked runtime. The full
+checklist remains the release gate.

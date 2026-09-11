@@ -18,6 +18,7 @@ type evalValue struct { form evalForm; signature *Type }
 type evalForm enum {
     EvalNumber(Value value.Number, NumericType string)
     EvalText(Value value.Text)
+    EvalTimestamp(Value value.Timestamp)
     EvalBool(Value bool)
     EvalList(Items []evalValue)
     EvalRecord(Fields []evalField)
@@ -60,6 +61,9 @@ func (e *evaluator) enter(at Span) {
 func boolValue(b bool) evalValue { return evalValue{form:EvalBool(b)} }
 func numberValue(n value.Number,typ string) evalValue { return evalValue{form:EvalNumber(n,typ)} }
 func textValue(t value.Text) evalValue { return evalValue{form:EvalText(t)} }
+func timestampOf(v evalValue,at Span)value.Timestamp {
+    match v.form{case EvalTimestamp(t):return t;case _:evalError(at,"evaluation.type","expected a timestamp")};return value.Timestamp{}
+}
 func boolean(v evalValue,at Span) bool {
     match v.form { case EvalBool(b): return b; case _: evalError(at,"evaluation.type","expected Boolean") }
     return false
@@ -313,6 +317,10 @@ func (e *evaluator) compare(a,b evalValue,at Span) int {
         x,y := left.Units(),right.Units()
         for i := 0; i < len(x) && i < len(y); i++ { if x[i] < y[i] { return -1 }; if x[i] > y[i] { return 1 } }
         if len(x) < len(y) { return -1 }; if len(x) > len(y) { return 1 }; return 0
+    case EvalTimestamp(left):
+        right:=timestampOf(b,at)
+        e.step(uint64(len(left.Fraction().Show()))*uint64(len(right.Fraction().Show()))+1,at)
+        return left.Compare(right)
     case _: evalError(at,"evaluation.type","unsupported ordered value")
     }
     return 0
@@ -323,6 +331,7 @@ func (e *evaluator) equal(a,b evalValue,at Span) bool {
     match a.form {
     case EvalNumber(left,_): right,_ := number(b,at); e.step(uint64(len(left.Show())+len(right.Show())),at); return left.Show() == right.Show()
     case EvalText(left): right := textOf(b,at); e.step(uint64(left.Length()+right.Length()),at); return left.Equal(right)
+    case EvalTimestamp(_):return e.compare(a,b,at)==0
     case EvalBool(left): return left == boolean(b,at)
     case EvalList(left):
         right := itemsOf(b,at); if len(left) != len(right) { return false }

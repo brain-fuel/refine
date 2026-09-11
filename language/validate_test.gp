@@ -50,7 +50,7 @@ func TestValidateDataThreeStatesBudgetAndMessageFallback(t *testing.T) {
         {"one clause exhausted","loop :: Int -> Bool\nloop n = loop n\ntype T = Int where loop it @steps 20 where False","invalid",true,2},
         {"refined function signature","f :: (Int where it > 0) -> Bool\nf _ = True\ntype T = Int where f it","valid",false,0},
         {"refined local annotation","type T = Int where let x :: (Int where it > 0) = -1 in x == x","indeterminate",true,1},
-        {"unimplemented timestamp","type T = Timestamp","indeterminate",true,1},
+        {"timestamp requires text","type T = Timestamp","invalid",false,1},
     }
     for _,tc:=range cases {t.Run(tc.name,func(t *testing.T){
         program:=validationProgram(t,tc.source)

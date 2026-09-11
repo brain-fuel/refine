@@ -73,6 +73,53 @@ Arithmetic uses exact rationals. `/` returns `Real`, even for integer operands.
 results are checked, not silently wrapped. Numeric conversions are not implicit.
 Text ordering is lexicographic by UTF-16 code units; equality does not normalize.
 
+### Regex and timestamps
+
+`matches pattern subject` requires the entire string to match; `search pattern
+subject` permits a substring match. Refinement patterns use the
+[Go/RE2 syntax](https://pkg.go.dev/regexp/syntax) with Perl-style flags, Unicode
+categories/scripts, ASCII shorthand classes and word boundaries, and no
+lookaround or backreferences. An invalid/unsupported pattern is an evaluation
+error (indeterminate), never a false match. Dynamic payload-supplied patterns
+are allowed; errors do not disclose them. This dialect applies only to added
+refinements: native-schema regex semantics are not replaced by it.
+
+The `pattern` package uses the ecosystem parser/compiler with a separately
+metered, iterative state-set matcher. It does not use a backtracking engine or
+wall-clock timeout. Valid UTF-16 pairs match as Unicode code points; lone
+surrogates retain their own identity instead of becoming U+FFFD. A pattern
+targeting a lone surrogate uses an explicit escape such as `\\x{d800}` in a
+language string. Literal unpaired surrogates in pattern source are rejected.
+The current program representation and Unicode tables come from the pinned CI
+Go toolchain; a versioned cross-runtime regex profile remains required before
+claiming Java parity or release-stable cross-toolchain cost identity.
+
+`Timestamp` accepts [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) text at
+payload/read boundaries. It validates the Gregorian date, timezone, and leap
+label; decimal fractional seconds have arbitrary precision. Comparisons and
+equality use UTC instants, not lexicographic text or host nanosecond rounding.
+`-00:00` preserves unknown-local-offset metadata while still identifying the
+UTC instant. The raw `value.Data` representation stays text, unchanged;
+only the private typed evaluator view is parsed. Expressions do not implicitly
+coerce a String to Timestamp: use typed `read`.
+
+Leap knowledge is pinned to `value.LeapTableVersion`, IERS Bulletin C72
+(2026-07-06). The implementation includes all 27 positive leap seconds through
+2016 and the announced absence of a December 2026 leap. Known impossible
+labels are invalid; a possible future month-boundary leap outside this table is
+indeterminate. Ordinary future timestamps do not require a leap prediction.
+No validation reads a clock, timezone database, filesystem, or network.
+Sources: [IERS leap table](https://hpiers.obspm.fr/iers/bul/bulc/Leap_Second.dat)
+and [Bulletin C](https://hpiers.obspm.fr/iers/bul/bulc/bulletinc.dat).
+
+The public `value.Timestamp` primitive also distinguishes `CivilSecondsUntil`
+(exact civil-coordinate difference, excluding intervening leaps and rejecting
+leap-labelled endpoints) from `SISecondsUntil` (exact elapsed duration within
+the pinned post-1972 history, through the start of 2027). The latter returns an
+explicit unknown-history error beyond that range. These duration methods are
+not yet DSL built-ins. Timestamp arithmetic never silently conflates these two
+meanings. The zero primitive value is the Unix epoch.
+
 Structure is checked before executing rules that depend on that structure.
 Inherited, nested, and repeated `where` clauses each retain their diagnostics.
 One compound `&&` clause is one violation. Sibling structural/rule failures are
@@ -123,6 +170,10 @@ The canonical representation is independent of JSON/Avro serde:
 
 - Numbers use reduced integer/fraction spelling, e.g. `42` or `-1/3`.
 - Text is quoted ASCII with exact `\uXXXX` UTF-16 escapes.
+- Timestamps use quoted RFC 3339 text, retaining their original offset, case,
+  and decimal precision. Typed read recovers the timestamp and its raw payload;
+  instant-equivalent timestamps with different offset metadata can have different
+  displays. Display does not normalize the payload to UTC.
 - Booleans are `True`/`False`; lists are `[1, 2]`.
 - Record identifiers are sorted by Unicode scalar value (equivalently UTF-8 byte
   order for valid identifiers): `{a = 1, z = True}`. This is distinct from UTF-16
@@ -171,6 +222,16 @@ tested at exact thresholds. It must be mirrored by the future Java runtime:
   and the overall budget exactly once. A nested `@steps` override cannot reset or
   relax the enclosing predicate's allowance. Decoding charges input UTF-16/UTF-8
   lengths before parsing, plus each visited literal node.
+- Timestamp boundary parsing charges `1 + UTF16Length²` before conversion and
+  exact fraction parsing. Timestamp comparisons charge
+  `1 + leftFractionCanonicalLength * rightFractionCanonicalLength`; display and
+  raw transfer charge retained text length.
+- Regex compilation charges `1 + patternUTF16Length²` before parsing, each AST
+  node, and an overflow-checked conservative expansion bound before expanding
+  counted repeats. Matching charges the subject length plus program size before
+  allocation, each input position, each visited instruction (including duplicate
+  states), and rune-class work. Exact accounting is in `pattern/regex.gp`; fixed
+  threshold and differential tests guard it. Budget exhaustion is indeterminate.
 
 Defaults remain 1,000,000 overall and 100,000 per clause. Caller limits can only
 tighten these; `@steps` overrides the schema's clause default while retaining
@@ -187,8 +248,8 @@ predicates can use the full logical budget without this temporary host-stack cap
 
 The following are explicitly unfinished, not silently interpreted as success:
 
-- Regex execution, RFC 3339 timestamp values, and explicit conversion/rounding
-  vocabulary.
+- Explicit conversion/rounding and timestamp duration vocabulary; release-stable
+  cross-runtime regex/Unicode profile and matching cost conformance.
 - Full constraint-qualified polymorphism and inference of all necessary codec
   capabilities through generic function signatures. Unresolved runtime target
   variables currently fail indeterminate; they must never silently pick a type.

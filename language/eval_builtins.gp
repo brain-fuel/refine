@@ -6,6 +6,7 @@ import (
     "unicode"
     "unicode/utf8"
 
+    "goforge.dev/refine/pattern"
     "goforge.dev/refine/value"
 )
 
@@ -43,7 +44,13 @@ func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
     case "all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf":
         return e.combine(name,args,at)
     case "read": evalError(at,"evaluation.type","read requires an inferred target type")
-    case "matches","search": evalError(at,"evaluation.unsupported","regex execution semantics are not implemented yet")
+    case "matches","search":
+        compiled,err:=pattern.Compile(textOf(args[0],at),e.meter)
+        if err!=nil {problem:=err.(*pattern.Error);evalError(at,problem.Code,problem.Message)}
+        var mode pattern.Mode=pattern.Full();if name=="search"{mode=pattern.Search()}
+        matched,err:=compiled.Match(textOf(args[1],at),mode,e.meter)
+        if err!=nil {problem:=err.(*pattern.Error);evalError(at,problem.Code,problem.Message)}
+        return boolValue(matched)
     }
     evalError(at,"evaluation.name","unsupported built-in function"); return evalValue{}
 }
@@ -90,6 +97,7 @@ func (e *evaluator) show(v evalValue,at Span) string {
     match v.form {
     case EvalNumber(n,_): e.step(uint64(len(n.Show())),at); return n.Show()
     case EvalText(text): e.step(uint64(text.Length()),at); return text.Show()
+    case EvalTimestamp(timestamp):e.step(uint64(len(timestamp.Raw())),at);return timestamp.Show()
     case EvalBool(b): if b { return "True" }; return "False"
     case EvalList(items):
         e.step(uint64(len(items)),at)
@@ -152,6 +160,7 @@ func (e *evaluator) toData(v evalValue,at Span) value.Data {
     match v.form {
     case EvalNumber(n,_): return value.OfNumber(n)
     case EvalText(t): return value.OfText(t)
+    case EvalTimestamp(t):e.step(uint64(len(t.Raw())),at);text,_:=value.TextFromUTF8(t.Raw());return value.OfText(text)
     case EvalBool(b): return value.OfBool(b)
     case EvalList(items):
         e.step(uint64(len(items)),at)

@@ -1,0 +1,97 @@
+package language
+
+import (
+    "fmt"
+    "strings"
+    "sync"
+    "testing"
+
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestRegexRefinementsAndBudgets(t *testing.T){
+    p:=validationProgram(t,`type Full = String where matches "[a-z]+" it
+type Search = String where search "[a-z]+" it
+type InvalidDominates = String where matches "(?=x)" it where False
+type Small = String where matches "[a-z]+" it @steps 10
+type Dynamic = {pattern :: String, subject :: String} where matches it.pattern it.subject
+`)
+    for _,tc:=range []struct{root string;raw string;state string;incomplete bool}{
+        {"Full","abc","valid",false},{"Full","1abc2","invalid",false},
+        {"Search","1abc2","valid",false},{"Search","123","invalid",false},
+        {"InvalidDominates","x","invalid",true},{"Small","abc","indeterminate",true},
+    }{
+        report:=p.ValidateData(tc.root,payloadText(t,tc.raw),validation.Limits{})
+        if validation.StateName(report.State())!=tc.state||report.Incomplete()!=tc.incomplete{t.Fatalf("%s %s: %+v",tc.root,tc.raw,report.Diagnostics())}
+    }
+    raw:=payloadRecord(t,value.DataField{Name:"pattern",Value:payloadText(t,"(?=private-sensitive-pattern)")},value.DataField{Name:"subject",Value:payloadText(t,"private-sensitive-payload")})
+    report:=p.ValidateData("Dynamic",raw,validation.Limits{})
+    if validation.StateName(report.State())!="indeterminate"{t.Fatal("unsupported regex treated as false")}
+    for _,detail:=range report.Diagnostics(){if strings.Contains(detail.Message,"private-sensitive"){t.Fatal("regex leaked private data")}}
+    for _,tc:=range []struct{expr string;want string}{
+        {`matches "a|ab" "ab"`,"True"},{`search "a" "cat"`,"True"},
+        {`matches "." "\ud800"`,"True"},{`matches "\\x{fffd}" "\ud800"`,"False"},
+        {`all (matches "[a-z]+") ["one", "two"]`,"True"},
+    }{e,result,failure:=execution(t,"entry :: Bool\nentry = "+tc.expr,validation.Limits{});if failure!=nil||e.show(result,Span{})!=tc.want{t.Fatalf("%s: %v",tc.expr,failure)}}
+}
+
+func TestTimestampRefinementsPreserveRawPayload(t *testing.T){
+    p:=validationProgram(t,`type Booking = {start :: Timestamp, end :: Timestamp}
+  where it.start < it.end @code "booking.order" @message "Start must precede end"
+type Same = {a :: Timestamp, b :: Timestamp} where it.a == it.b
+type Siblings = {unknown :: Timestamp, bad :: Int where False}
+type T = Timestamp
+`)
+    for _,tc:=range []struct{start string;end string;state string}{
+        {"2016-12-31T23:59:59.999999999999Z","2016-12-31T23:59:60Z","valid"},
+        {"2016-12-31T23:59:60Z","2017-01-01T00:00:00Z","valid"},
+        {"2026-09-11T12:00:00+01:00","2026-09-11T11:00:00Z","invalid"},
+        {"2026-09-11T00:00:00.0000000002Z","2026-09-11T00:00:00.0000000001Z","invalid"},
+        {"2026-02-30T00:00:00Z","2026-09-11T00:00:00Z","invalid"},
+        {"2027-06-30T23:59:60Z","2027-07-01T00:00:00Z","indeterminate"},
+    }{
+        raw:=payloadRecord(t,value.DataField{Name:"start",Value:payloadText(t,tc.start)},value.DataField{Name:"end",Value:payloadText(t,tc.end)})
+        report:=p.ValidateData("Booking",raw,validation.Limits{})
+        if validation.StateName(report.State())!=tc.state{t.Fatalf("%s -> %s: %+v",tc.start,tc.end,report.Diagnostics())}
+        start,_:=raw.Lookup("start");text,_:=start.Text();actual,_:=text.UTF8();if actual!=tc.start{t.Fatal("raw timestamp changed")}
+    }
+    same:=payloadRecord(t,value.DataField{Name:"a",Value:payloadText(t,"2000-01-01T00:00:00.1000-00:00")},value.DataField{Name:"b",Value:payloadText(t,"2000-01-01T01:00:00.1+01:00")})
+    if report:=p.ValidateData("Same",same,validation.Limits{});validation.StateName(report.State())!="valid"{t.Fatalf("UTC instant equality: %+v",report.Diagnostics())}
+    siblings:=payloadRecord(t,value.DataField{Name:"unknown",Value:payloadText(t,"2027-06-30T23:59:60Z")},value.DataField{Name:"bad",Value:integerPayload(1)})
+    report:=p.ValidateData("Siblings",siblings,validation.Limits{})
+    if validation.StateName(report.State())!="invalid"||!report.Incomplete()||len(report.Diagnostics())!=2{t.Fatal("unknown timestamp hid a known sibling violation")}
+    if report.Diagnostics()[0].Paths[0]!="/unknown"||report.Diagnostics()[1].Paths[0]!="/bad"{t.Fatal("lost diagnostic paths")}
+    report=p.ValidateData("T",payloadText(t,"2000-01-01T00:00:00."+strings.Repeat("1",1000)+"Z"),validation.Limits{Total:100})
+    if validation.StateName(report.State())!="indeterminate"{t.Fatal("timestamp parse not budgeted")}
+}
+
+func TestTimestampTypedReadShow(t *testing.T){
+    p:=validationProgram(t,"type T = Timestamp where it == it")
+    for _,raw:=range []string{"1937-01-01T12:00:27.8700+00:20","2016-12-31t23:59:60.123456789012345z","2000-01-01T00:00:00.000-00:00"}{
+        payload:=payloadText(t,raw);shown,err:=ShowDataWithoutValidation(payload,validation.Limits{});if err!=nil{t.Fatal(err)}
+        read,report:=p.ReadData("T",shown,validation.Limits{});if validation.StateName(report.State())!="valid"{t.Fatalf("%+v",report.Diagnostics())}
+        equal,err:=payload.EqualWith(read,func(uint64)error{return nil});if err!=nil||!equal{t.Fatal("read/show changed timestamp precision or spelling")}
+        // Exercise generic typed read inside a predicate program, and return
+        // the shown parsed timestamp rather than merely showing the raw text.
+        input,_:=shown.UTF8();literal,_:=value.TextFromUTF8(input)
+        source:="parse :: String -> Result String a\nparse x = read x\nentry :: Result String Timestamp\nentry = parse "+literal.Show()
+        e,result,failure:=execution(t,source,validation.Limits{})
+        if failure!=nil||e.show(result,Span{})!="(Ok "+input+")"{t.Fatalf("timestamp read: %v",failure)}
+    }
+    for _,tc:=range []struct{raw string;unknown bool}{{"2026-02-30T00:00:00Z",false},{"private-sensitive",false},{"2027-06-30T23:59:60Z",true}}{
+        quoted,_:=value.TextFromUTF8(fmt.Sprintf("%q",tc.raw))
+        source:="entry :: Result String Timestamp\nentry = read "+quoted.Show()
+        e,result,failure:=execution(t,source,validation.Limits{})
+        if tc.unknown{if failure==nil||failure.code!="read.indeterminate"{t.Fatal("unknown leap became ordinary invalid input")};continue}
+        if failure!=nil{t.Fatal(failure)};shown:=e.show(result,Span{});if !strings.HasPrefix(shown,"(Err ")||strings.Contains(shown,"private-sensitive"){t.Fatalf("wrong/private error: %s",shown)}
+    }
+    if _,err:=Compile("entry :: Timestamp\nentry = \"2000-01-01T00:00:00Z\"");err==nil{t.Fatal("implicit String-to-Timestamp coercion in expressions")}
+}
+
+func TestRegexTimestampConcurrentReuse(t *testing.T){
+    p:=validationProgram(t,`type T = {at :: Timestamp, text :: String} where it.at == it.at where matches "[a-z]+" it.text`)
+    raw:=payloadRecord(t,value.DataField{Name:"at",Value:payloadText(t,"2016-12-31T23:59:60Z")},value.DataField{Name:"text",Value:payloadText(t,"hello")})
+    var group sync.WaitGroup
+    for i:=0;i<16;i++{group.Add(1);go func(){defer group.Done();for j:=0;j<20;j++{if report:=p.ValidateData("T",raw,validation.Limits{});validation.StateName(report.State())!="valid"{t.Errorf("concurrent validation: %+v",report.Diagnostics())}}}()};group.Wait()
+}

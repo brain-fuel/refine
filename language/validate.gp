@@ -109,7 +109,24 @@ func (v *payloadValidator) named(name string,args []*Type,input evalValue,env ma
     switch name {
     case "Bool":match input.form {case EvalBool(_):return input,true;case _:return v.wrong(path,"Expected a Boolean.")}
     case "String":match input.form {case EvalText(_):return input,true;case _:return v.wrong(path,"Expected text.")}
-    case "Timestamp":evalError(at,"evaluation.unsupported","timestamp payload semantics are not implemented yet")
+    case "Timestamp":
+        match input.form {
+        case EvalTimestamp(_):return input,true
+        case EvalText(text):
+            size:=uint64(text.Length())
+            if size>0 && size>(^uint64(0)-1)/size{evalError(at,"evaluation.budget","timestamp parsing cost exceeds evaluation resources")}
+            v.structure.step(size*size+1,at)
+            raw,err:=text.UTF8();if err!=nil{return v.wrong(path,"Expected an RFC 3339 timestamp.")}
+            parsed,err:=value.ParseTimestamp(raw)
+            if err!=nil{
+                problem:=err.(*value.TimestampError)
+                detail:=validation.Diagnostic{Code:problem.Code,Paths:[]string{path},Message:problem.Message}
+                if problem.Code=="timestamp.unknown_leap"{v.checks=append(v.checks,validation.Undecided(detail))}else{v.checks=append(v.checks,validation.Violated(detail))}
+                return evalValue{},false
+            }
+            return evalValue{form:EvalTimestamp(parsed)},true
+        case _:return v.wrong(path,"Expected an RFC 3339 timestamp.")
+        }
     case "Maybe","Nullable","Result":
         match input.form {
         case EvalVariant(tag,values):

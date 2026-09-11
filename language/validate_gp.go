@@ -197,12 +197,41 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 			return v.wrong(path, "Expected text.")
 		}
 	case "Timestamp":
-		evalError(at, "evaluation.unsupported", "timestamp payload semantics are not implemented yet")
-	case "Maybe", "Nullable", "Result":
 		switch __gp_m7 := any(input.form).(type) {
+		case evalTimestamp:
+			return input, true
+		case evalText:
+			text := __gp_m7.value
+
+			size := uint64(text.Length())
+			if size > 0 && size > (^uint64(0)-1)/size {
+				evalError(at, "evaluation.budget", "timestamp parsing cost exceeds evaluation resources")
+			}
+			v.structure.step(size*size+1, at)
+			raw, err := text.UTF8()
+			if err != nil {
+				return v.wrong(path, "Expected an RFC 3339 timestamp.")
+			}
+			parsed, err := value.ParseTimestamp(raw)
+			if err != nil {
+				problem := err.(*value.TimestampError)
+				detail := validation.Diagnostic{Code: problem.Code, Paths: []string{path}, Message: problem.Message}
+				if problem.Code == "timestamp.unknown_leap" {
+					v.checks = append(v.checks, validation.Undecided{Detail: detail})
+				} else {
+					v.checks = append(v.checks, validation.Violated{Detail: detail})
+				}
+				return evalValue{}, false
+			}
+			return evalValue{form: evalTimestamp{value: parsed}}, true
+		default:
+			return v.wrong(path, "Expected an RFC 3339 timestamp.")
+		}
+	case "Maybe", "Nullable", "Result":
+		switch __gp_m8 := any(input.form).(type) {
 		case evalVariant:
-			tag := __gp_m7.name
-			values := __gp_m7.arguments
+			tag := __gp_m8.name
+			values := __gp_m8.arguments
 
 			none, some, index := "Nothing", "Just", 0
 			if name == "Nullable" {
@@ -227,9 +256,9 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 		}
 	}
 	if primitive(name) {
-		switch __gp_m8 := any(input.form).(type) {
+		switch __gp_m9 := any(input.form).(type) {
 		case evalNumber:
-			n := __gp_m8.value
+			n := __gp_m9.value
 
 			v.structure.step(uint64(len(n.Show())), at)
 			if name != "Real" && !n.IsInteger() {
@@ -270,10 +299,10 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 	if decl.Body != nil {
 		return v.check(decl.Body, input, bindings, path)
 	}
-	switch __gp_m9 := any(input.form).(type) {
+	switch __gp_m10 := any(input.form).(type) {
 	case evalVariant:
-		tag := __gp_m9.name
-		values := __gp_m9.arguments
+		tag := __gp_m10.name
+		values := __gp_m10.arguments
 
 		for _, variant := range decl.Variants {
 			v.structure.step(1, at)
@@ -303,12 +332,12 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 	if depth >= evaluationNesting {
 		evalError(t.At, "evaluation.depth", "optional type expansion nesting limit exceeded")
 	}
-	switch __gp_m10 := any(t.Form).(type) {
+	switch __gp_m11 := any(t.Form).(type) {
 	case RefinedType:
-		base := __gp_m10.Base
+		base := __gp_m11.Base
 		return v.optional(base, env, depth+1)
 	case NamedType:
-		name := __gp_m10.Name
+		name := __gp_m11.Name
 
 		if bound, found := env[name]; found {
 			return v.optional(bound.typ, bound.environment, depth+1)
@@ -322,10 +351,10 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 		args := []*Type{}
 		for {
 			stop := false
-			switch __gp_m11 := any(root.Form).(type) {
+			switch __gp_m12 := any(root.Form).(type) {
 			case AppliedType:
-				fn := __gp_m11.Constructor
-				arg := __gp_m11.Argument
+				fn := __gp_m12.Constructor
+				arg := __gp_m12.Argument
 				args = append([]*Type{arg}, args...)
 				root = fn
 			default:
@@ -335,9 +364,9 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 				break
 			}
 		}
-		switch __gp_m12 := any(root.Form).(type) {
+		switch __gp_m13 := any(root.Form).(type) {
 		case NamedType:
-			name := __gp_m12.Name
+			name := __gp_m13.Name
 
 			if name == "Maybe" && len(args) == 1 {
 				return true
@@ -389,9 +418,9 @@ func (v *payloadValidator) rule(rule Where, input evalValue, path string, types 
 	if rule.Message != nil {
 		custom, failed := e.attempt(rule.Message, env)
 		if failed == nil {
-			switch __gp_m13 := any(custom.form).(type) {
+			switch __gp_m14 := any(custom.form).(type) {
 			case evalText:
-				text := __gp_m13.value
+				text := __gp_m14.value
 				if message, err := text.UTF8(); err == nil {
 					detail.Message = message
 				}
