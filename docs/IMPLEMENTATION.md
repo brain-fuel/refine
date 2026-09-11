@@ -123,12 +123,44 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   Tests exercise exit status, file/stdin input, JSON diagnostic output, no default
   payload leakage, I/O errors, unchanged input files, and the real fixture.
 - Local race tests, vet, generation verification, and an actual built CLI pass.
-  Remote CI for this checkpoint remains to be observed after pushing.
+  Checkpoint `359ff42` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34641410771).
+- Public consumption of `goforge.dev/refine@359ff42` from a separate Go module
+  with `GOWORK=off`, no local replacements, and race tests passed. It resolved
+  to development pseudo-version `v0.0.0-20260911195505-359ff42f6bbb`, not a product
+  release. The Hugo vanity route is deployed and its go-import metadata verified.
 - Required front-end work remains explicit in `docs/LANGUAGE.md`: imports,
   constraint-qualified polymorphism, full explicit conversion/numeric semantics,
   and integration with execution/native/Java backends. No full-language or release
   checkbox is marked complete based on this checkpoint.
 
-Next: immutable structured payload values and the metered predicate evaluator,
-then connect native constraint provenance and Java emission to the checked
-representation. The full checklist above remains the release gate.
+## In-memory runtime checkpoint
+
+- `value/data.gp` supplies deeply immutable structured payloads, explicit
+  constructor alternatives, ordered record storage, order-independent record
+  equality, metered iterative structural comparison, and multi-field candidate
+  updates with no intermediate mutation or validation claim.
+- `language/eval*.gp` implements budgeted eager/short-circuit expression execution,
+  exact arithmetic, immutable lists/records/data, recursion, patterns,
+  higher-order named functions, collection operations, and three-outcome
+  combinators. The interpreter cannot obtain network/filesystem capabilities.
+- `Program.ValidateData` connects named root declarations to structural checks,
+  nested/inherited per-where validation, diagnostics, budgets, and custom-message
+  fallback. This is in-memory language payload validation, not native serde.
+- Tests include execution tables, all predicate outcome sequences up to length
+  four, deterministic budget thresholds, 3,000 field/record equivalence cases,
+  2,000 map/fold law cases, 3,000 immutable update law cases, privacy/concurrency,
+  recursive/generic payloads, and fuzz properties. Initial 20-second fuzz runs
+  passed 106,712 evaluator cases and 2,536,767 immutable-data cases; these counts
+  prove only those runs, not complete runtime correctness.
+- A follow-up 15-second evaluator fuzz run with corpus minimization disabled
+  passed 2,812,113 cases. Local race tests, vet, generated-source checks, and
+  the public-library example pass; remote CI for this checkpoint still needs
+  observation after pushing.
+- Remaining runtime limitations and the initial operation-cost model are explicit
+  in [RUNTIME.md](RUNTIME.md). Unsupported operations report indeterminate rather
+  than silently succeed. No whole-language/Java/release gate is marked complete.
+
+Next: finish typed codecs/conversions, regex/timestamps, refined function/local
+enforcement, and recursive dispatch; connect native constraint provenance and
+Java emission to the checked runtime. The full checklist remains the release gate.

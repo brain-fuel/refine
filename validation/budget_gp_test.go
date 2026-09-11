@@ -71,3 +71,24 @@ func TestBudgetNeverExceedsCaps(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStructureSharesTotalButNotClauseAllowance(t *testing.T) {
+	budget := NewBudget(Limits{Total: 20, Clause: 10}, Limits{Clause: 2})
+	structure := budget.BeginStructure()
+	if err := structure.Step(15); err != nil {
+		t.Fatal("structural work incorrectly used per-clause cap")
+	}
+	clause := budget.BeginClause(0)
+	if err := clause.Step(2); err != nil {
+		t.Fatal(err)
+	}
+	if clause.Step(1) == nil {
+		t.Fatal("caller clause cap escaped")
+	}
+	if structure.Step(4) == nil {
+		t.Fatal("structural meter escaped shared total")
+	}
+	if budget.BeginClause(0).Step(2) != nil || budget.Used() != 19 {
+		t.Fatal("failed work consumed another clause allowance")
+	}
+}

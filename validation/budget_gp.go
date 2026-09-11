@@ -57,8 +57,12 @@ func (b *Budget) BeginClause(schemaOverride uint64) *Meter {
 	}
 	return &Meter{parent: b, remaining: tighter(cap, b.callerClause)}
 }
-func (b *Budget) Used() uint64 { return b.used }
-func (m *Meter) Used() uint64  { return m.used }
+
+// BeginStructure charges traversal/transfer work to the validation total, not
+// to any individual where clause. Its allowance can never exceed that total.
+func (b *Budget) BeginStructure() *Meter { return &Meter{parent: b, remaining: b.remaining} }
+func (b *Budget) Used() uint64           { return b.used }
+func (m *Meter) Used() uint64            { return m.used }
 
 // Step charges before an operation. An unaffordable operation is not executed;
 // the exhausted meter stays exhausted, but does not consume another clause's

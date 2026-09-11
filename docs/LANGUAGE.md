@@ -1,8 +1,9 @@
 # Refinement language front end
 
-This describes the implemented parser and static checker. It is not a declaration
-that the full compiler, predicate execution, native backends, or Java generation
-are complete. The release contract remains [SPEC.md](../SPEC.md).
+This describes the implemented parser and static checker. The initial in-memory
+evaluator is documented in [RUNTIME.md](RUNTIME.md); neither document claims the
+full language, native backends, or Java generation are complete. The release
+contract remains [SPEC.md](../SPEC.md).
 
 ## Declarations
 
@@ -50,8 +51,8 @@ and multi-module compilation stage remain required work.
   field projection binds more tightly than application.
 - Operators: `||`, `&&`, `==`, `/=`, `<`, `<=`, `>`, `>=`, `:`, `++`, `+`, `-`,
   `*`, `/`, `%`. Cons and concatenation associate right; arithmetic associates
-  left. Unary minus is supported. Execution and short-circuit tests are still
-  required when the evaluator is connected.
+  left. Unary minus is supported. The in-memory evaluator tests eager arguments
+  and short-circuit Boolean execution.
 - Lists: `[1, 2, 3]`; record expressions: `{age = 21, name = "A"}`.
 - Conditional: `if predicate then value else alternative`.
 - Local binding: `let n :: Int = expression in body`; omit the annotation when
@@ -93,7 +94,7 @@ positiveText text =
 ```
 
 Still required: constraint-qualified polymorphism for overloaded operations,
-full conversion/fixed-width literal semantics, import resolution, execution,
+full conversion/fixed-width literal semantics, import resolution, remaining execution,
 schema lowering, English explanation, and cross-runtime conformance. Currently
 underconstrained equality/length/numeric operations request a concrete annotation;
 they are not silently accepted with invented semantics. In particular, functions

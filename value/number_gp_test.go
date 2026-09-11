@@ -137,3 +137,21 @@ func TestRationalReadShowLaw(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIntegerRemainderSemantics(t *testing.T) {
+	for _, tc := range []struct{ a, b, want int64 }{{13, 5, 3}, {-13, 5, -3}, {13, -5, 3}, {-13, -5, -3}, {0, 5, 0}} {
+		got, err := Integer(tc.a).Remainder(Integer(tc.b))
+		if err != nil || got.Show() != Integer(tc.want).Show() {
+			t.Fatalf("%d %% %d = %s, %v", tc.a, tc.b, got.Show(), err)
+		}
+	}
+	if _, err := Integer(1).Remainder(Integer(0)); err == nil {
+		t.Fatal("zero divisor accepted")
+	}
+	if _, err := mustNumber(t, "1/2").Remainder(Integer(1)); err == nil {
+		t.Fatal("fractional dividend accepted")
+	}
+	if _, err := Integer(1).Remainder(mustNumber(t, "1/2")); err == nil {
+		t.Fatal("fractional divisor accepted")
+	}
+}

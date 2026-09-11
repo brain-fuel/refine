@@ -73,6 +73,20 @@ func (n Number) Divide(other Number) (Number, error) {
 	return numberFromRat(new(big.Rat).Quo(n.rat(), other.rat())), nil
 }
 
+// Remainder uses a quotient truncated toward zero; a nonzero remainder has the
+// dividend's sign. It is integer-only and never rounds a fractional operand.
+func (n Number) Remainder(other Number) (Number, error) {
+	left, right := n.rat(), other.rat()
+	if !left.IsInt() || !right.IsInt() {
+		return Number{}, errors.New("remainder requires integers")
+	}
+	if right.Sign() == 0 {
+		return Number{}, errors.New("remainder by zero")
+	}
+	result := new(big.Int).Rem(left.Num(), right.Num())
+	return numberFromRat(new(big.Rat).SetInt(result)), nil
+}
+
 // FixedWidth rejects values outside the explicitly requested integer type.
 // The returned value is unchanged. Wrapping must use Wrap explicitly.
 func (n Number) FixedWidth(bits uint, signed bool) (Number, error) {

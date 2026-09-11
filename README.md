@@ -29,8 +29,11 @@ go vet ./...
 Implemented foundations (not the complete compiler): immutable exact numbers and
 UTF-16 text; three-outcome validation results and deterministic budget meters;
 lossless ordered JSON ingestion/editing; a Haskell-like parser, formatter, and
-static type/pattern checker. Native schema validation, predicate execution,
-Java generation, and release orchestration remain in progress.
+static type/pattern checker; and metered in-memory predicate execution and
+typed payload validation. See [docs/RUNTIME.md](docs/RUNTIME.md) for the library
+API, step accounting, and explicit limitations. Native schema/wire validation,
+the remaining execution features, Java generation, and release orchestration
+remain in progress.
 
 The development CLI exposes only the phases currently implemented:
 

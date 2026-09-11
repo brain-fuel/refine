@@ -1,0 +1,151 @@
+package language
+
+import (
+    "sort"
+    "strings"
+
+    "goforge.dev/refine/value"
+)
+
+func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
+    switch name {
+    case "not": return boolValue(!boolean(args[0],at))
+    case "show":
+        shown := e.show(args[0],at)
+        e.step(uint64(len(shown)),at)
+        text,err := value.TextFromUTF8(shown); if err != nil { evalError(at,"evaluation.show","value cannot be shown as text") }; return textValue(text)
+    case "length":
+        match args[0].form {
+        case EvalText(text): return numberValue(value.Integer(int64(text.Length())),"Int")
+        case EvalList(items): return numberValue(value.Integer(int64(len(items))),"Int")
+        case _: evalError(at,"evaluation.type","length requires text or a list")
+        }
+    case "reverse":
+        items := itemsOf(args[0],at); e.step(uint64(len(items)),at)
+        result := make([]evalValue,len(items)); for i,item := range items { result[len(items)-1-i] = item }; return evalValue{form:EvalList(result)}
+    case "map":
+        items := itemsOf(args[1],at); e.step(uint64(len(items)),at)
+        result := make([]evalValue,len(items)); for i,item := range items { result[i] = e.apply(args[0],item,at) }; return evalValue{form:EvalList(result)}
+    case "filter":
+        items := itemsOf(args[1],at); e.step(uint64(len(items)),at)
+        result := make([]evalValue,0,len(items))
+        for _,item := range items { if boolean(e.apply(args[0],item,at),at) { result = append(result,item) } }; return evalValue{form:EvalList(result)}
+    case "foldl":
+        result := args[1]
+        for _,item := range itemsOf(args[2],at) { e.step(1,at); result = e.apply(e.apply(args[0],result,at),item,at) }; return result
+    case "oneOf","elem":
+        for _,item := range itemsOf(args[1],at) { if e.equal(args[0],item,at) { return boolValue(true) } }; return boolValue(false)
+    case "unique":
+        items := itemsOf(args[0],at)
+        for i,item := range items { for j := 0; j < i; j++ { if e.equal(item,items[j],at) { return boolValue(false) } } }; return boolValue(true)
+    case "all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf":
+        return e.combine(name,args,at)
+    case "read": evalError(at,"evaluation.unsupported","typed read requires the typed codec integration")
+    case "matches","search": evalError(at,"evaluation.unsupported","regex execution semantics are not implemented yet")
+    }
+    evalError(at,"evaluation.name","unsupported built-in function"); return evalValue{}
+}
+
+func (e *evaluator) attemptApply(fn,arg evalValue,at Span) (result evalValue,failure *evalFailure) {
+    defer func(){ if caught := recover(); caught != nil { if explained,ok := caught.(*evalFailure); ok { failure = explained } else { panic(caught) } } }()
+    result = e.apply(fn,arg,at); return
+}
+
+// Predicate errors are unknown, not false. A decisive result survives earlier
+// unknowns: e.g. any [unknown, true] and all [unknown, false]. Iteration follows
+// input order and stops once the result is conclusive under three-outcome logic.
+func (e *evaluator) combine(name string,args []evalValue,at Span) evalValue {
+    mode := "any"
+    if name == "all" || name == "satisfiesAll" { mode = "all" }
+    if name == "satisfiesOnlyOneOf" { mode = "one" }
+    overValues := name == "all" || name == "any"
+    var items []evalValue
+    if overValues { items = itemsOf(args[1],at) } else { items = itemsOf(args[0],at) }
+    yes := 0
+    var unknown *evalFailure
+    for _,item := range items {
+        fn,arg := item,args[1]
+        if overValues { fn,arg = args[0],item }
+        result,failure := e.attemptApply(fn,arg,at)
+        if failure != nil { if unknown == nil { unknown = failure }; continue }
+        satisfied := boolean(result,at)
+        if satisfied { yes++ }
+        if mode == "all" && !satisfied { return boolValue(false) }
+        if mode == "any" && satisfied { return boolValue(true) }
+        if mode == "one" && yes > 1 { return boolValue(false) }
+    }
+    if unknown != nil { panic(unknown) }
+    if mode == "all" { return boolValue(true) }
+    if mode == "one" { return boolValue(yes == 1) }
+    return boolValue(false)
+}
+
+// Canonical display is separate from native serde. Records sort identifiers;
+// sequences and constructor arguments keep their order. Text escapes every
+// non-ASCII UTF-16 code unit. Numbers use reduced exact fractions.
+func (e *evaluator) show(v evalValue,at Span) string {
+    e.enter(at); defer func(){e.depth--}()
+    match v.form {
+    case EvalNumber(n,_): e.step(uint64(len(n.Show())),at); return n.Show()
+    case EvalText(text): e.step(uint64(text.Length()),at); return text.Show()
+    case EvalBool(b): if b { return "True" }; return "False"
+    case EvalList(items):
+        e.step(uint64(len(items)),at)
+        parts := make([]string,len(items)); for i,item := range items { parts[i] = e.show(item,at) }
+        return "[" + strings.Join(parts,", ") + "]"
+    case EvalRecord(fields):
+        levels := uint64(1); for n := len(fields); n > 1; n >>= 1 { levels++ }
+        e.step(uint64(len(fields))*levels,at)
+        ordered := append([]evalField(nil),fields...); sort.Slice(ordered,func(i,j int) bool { return ordered[i].name < ordered[j].name })
+        parts := make([]string,len(ordered)); for i,field := range ordered { e.step(uint64(len(field.name)),at); parts[i] = field.name + " = " + e.show(field.value,at) }
+        return "{" + strings.Join(parts,", ") + "}"
+    case EvalVariant(name,args):
+        e.step(uint64(len(name)+len(args)),at)
+        if len(args) == 0 { return name }
+        parts := []string{name}; for _,arg := range args { parts = append(parts,e.show(arg,at)) }; return "(" + strings.Join(parts," ") + ")"
+    case EvalFunction(_,_,_): evalError(at,"evaluation.show","functions do not support canonical display")
+    }
+    return ""
+}
+
+// fromData is a structural transfer, not schema validation. The caller must
+// apply the declared numeric types/refinements before executing predicates.
+func (e *evaluator) fromData(data value.Data,at Span) evalValue {
+    e.enter(at); defer func(){e.depth--}()
+    match data.Kind() {
+    case value.NumberData(): n,_ := data.Number();e.step(uint64(len(n.Show())),at);if n.IsInteger() { return numberValue(n,"Int") }; return numberValue(n,"Real")
+    case value.TextData(): t,_ := data.Text(); return textValue(t)
+    case value.BoolData(): b,_ := data.Boolean(); return boolValue(b)
+    case value.ListData():
+        e.step(uint64(data.Size()),at);items := data.Elements()
+        result := make([]evalValue,len(items)); for i,item := range items { result[i] = e.fromData(item,at) }; return evalValue{form:EvalList(result)}
+    case value.RecordData():
+        e.step(uint64(data.Size()),at);fields := data.Fields()
+        result := make([]evalField,len(fields)); for i,field := range fields {e.step(uint64(len(field.Name)),at);result[i] = evalField{name:field.Name,value:e.fromData(field.Value,at)} }; return evalValue{form:EvalRecord(result)}
+    case value.VariantData():
+        name,_ := data.Constructor();e.step(uint64(data.Size()+len(name)),at);args := data.Elements()
+        result := make([]evalValue,len(args)); for i,arg := range args { result[i] = e.fromData(arg,at) }; return evalValue{form:EvalVariant(name,result)}
+    }
+}
+
+func (e *evaluator) toData(v evalValue,at Span) value.Data {
+    e.enter(at); defer func(){e.depth--}()
+    match v.form {
+    case EvalNumber(n,_): return value.OfNumber(n)
+    case EvalText(t): return value.OfText(t)
+    case EvalBool(b): return value.OfBool(b)
+    case EvalList(items):
+        e.step(uint64(len(items)),at)
+        result := make([]value.Data,len(items)); for i,item := range items { result[i] = e.toData(item,at) }; return value.List(result)
+    case EvalRecord(fields):
+        e.step(uint64(len(fields)),at)
+        result := make([]value.DataField,len(fields)); for i,field := range fields { result[i] = value.DataField{Name:field.name,Value:e.toData(field.value,at)} }
+        data,err := value.Record(result); if err != nil { evalError(at,"evaluation.record","invalid runtime record") }; return data
+    case EvalVariant(name,args):
+        e.step(uint64(len(args)),at)
+        result := make([]value.Data,len(args)); for i,arg := range args { result[i] = e.toData(arg,at) }
+        data,err := value.Variant(name,result); if err != nil { evalError(at,"evaluation.constructor","invalid runtime constructor") }; return data
+    case EvalFunction(_,_,_): evalError(at,"evaluation.type","a function is not a serializable payload value")
+    }
+    return value.Data{}
+}
