@@ -175,6 +175,7 @@ var builtinSignatures = map[string]string{
     "satisfiesAll":"[a -> Bool] -> a -> Bool", "satisfiesOnlyOneOf":"[a -> Bool] -> a -> Bool",
     "satisfiesOneOf":"[a -> Bool] -> a -> Bool", "satisfiesAtLeastOneOf":"[a -> Bool] -> a -> Bool",
     "matches":"String -> String -> Bool", "search":"String -> String -> Bool",
+    "isInteger":"Real -> Bool",
 }
 
 func (c *checker) function(name string, at Span) *term {

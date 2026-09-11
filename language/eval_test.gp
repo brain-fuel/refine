@@ -21,6 +21,9 @@ func execution(t *testing.T,source string,limits validation.Limits) (*evaluator,
 func TestEvaluatorExpressionsAndBuiltins(t *testing.T) {
     cases := []struct{name string; declarations string; typ string; expr string; want string}{
         {"exact thirds","","Real","(1 / 3) * 3.0","1"},
+        {"exact whole rational","","Bool","isInteger ((1 / 3) * 3.0)","True"},
+        {"exact noninteger","","Bool","isInteger (1 / 3)","False"},
+        {"negative whole rational","","Bool","isInteger (-10 / 2)","True"},
         {"large exact integer","","Int","9007199254740993 + 2","9007199254740995"},
         {"signed remainder","","Int","-13 % 5","-3"},
         {"UTF16 length","","Int",`length "\ud83d\ude00"`,"2"},

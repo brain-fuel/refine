@@ -39,6 +39,7 @@ jobs:
           go test ./value -run '^$' -fuzz '^FuzzTextReadShow$' -fuzztime=10s
           go test ./value -run '^$' -fuzz '^FuzzTimestampReadShow$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./pattern -run '^$' -fuzz '^FuzzRegexDifferential$' -fuzztime=10s
+          go test ./provenance -run '^$' -fuzz '^FuzzNativeConstraintRoundTrip$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzCompile$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzEvaluatorDeterminism$' -fuzztime=10s

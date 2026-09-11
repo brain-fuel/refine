@@ -215,6 +215,39 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
 - This is not proof of native regex parity, complete timestamp/conversion
   vocabulary, a cross-runtime stable regex cost profile, or Java conformance.
   Those and the full unchecked release requirements remain outstanding.
+- Checkpoint `035a1f8` passed Linux/macOS
+  [CI](https://github.com/brain-fuel/refine/actions/runs/34649269559). An independent
+  public consumer fetched `v0.0.0-20260911212451-035a1f8d8faa` with `GOWORK=off`
+  and no replacements, then passed race-tested regex, exact leap-second ordering,
+  immutable multi-field candidate updates and timestamp read/show checks.
+
+## Native constraint provenance checkpoint
+
+- `provenance/*.gp` discovers exact local numeric-bound correspondences at Draft
+  2020-12 schema positions. It emits statically checked editable constraint units
+  while retaining the entire native document and each unit's applicator context.
+  It does not infer a numeric type merely from a bound, rewrite fractional
+  integer bounds to rounded integers, or replace native string/regex semantics.
+- Each native constraint has separate source-derived identity/fingerprint and
+  canonical recovery. Editing a minimum breaks only its guarantee, not the
+  maximum's. Adding arbitrary rules leaves existing guarantees intact. Layout
+  changes are tolerated; arbitrary logical equivalence is not guessed.
+- Exact `multipleOf` projection uses a new metered `isInteger :: Real -> Bool`
+  primitive. Divisibility never uses floating-point tolerance. Shadowing that
+  builtin breaks only the native correspondences that depend on its binding.
+- Tests cover immutable/concurrent reuse, canonical forms, native metadata and
+  schema-location traversal, added/edited/removed clauses, and exact native-token
+  recovery. A pinned ecosystem Draft 2020-12 oracle independently checks 1,000
+  generated numeric-bound predicates. A 20-second round-trip fuzz run passed
+  9,344,642 executions with bounded, enabled shrinking. Local race tests, vet,
+  and generated-source checks pass.
+- After adding exact `multipleOf` and builtin-binding checks, a fresh 20-second
+  fuzz run passed 9,324,262 executions; race and vet gates were rerun successfully.
+- This is a reusable per-constraint foundation, not completed native schema
+  validation/ingestion or a substitute for the full schema. Complete type
+  projection, keyword adapters, refs, native/English exports, and OpenAPI/Avro
+  integration remain required. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md)
+  and [dependency roles](DEPENDENCIES.md).
 
 Next: finish conversions, capability inference, and recursive dispatch; connect
 native constraint provenance and Java emission to the checked runtime. The full

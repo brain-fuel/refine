@@ -13,6 +13,7 @@ import (
 func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
     switch name {
     case "not": return boolValue(!boolean(args[0],at))
+    case "isInteger":n,_:=number(args[0],at);e.step(uint64(len(n.Show())),at);return boolValue(n.IsInteger())
     case "show":
         shown := e.show(args[0],at)
         e.step(uint64(len(shown)),at)

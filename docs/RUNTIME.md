@@ -71,6 +71,8 @@ is conclusive. `oneOf` means membership, not exactly-one predicate success.
 Arithmetic uses exact rationals. `/` returns `Real`, even for integer operands.
 `%` is integer remainder with a quotient truncated toward zero. Fixed-width
 results are checked, not silently wrapped. Numeric conversions are not implicit.
+`isInteger :: Real -> Bool` tests exact integrality, without rounding or a
+floating-point tolerance. It charges the canonical number length before testing.
 Text ordering is lexicographic by UTF-16 code units; equality does not normalize.
 
 ### Regex and timestamps
