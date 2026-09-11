@@ -1,0 +1,52 @@
+package com.example.contracts
+
+-- Field predicates and whole-record predicates remain distinct clauses.
+type AccountId = String
+type Person = {
+  id :: AccountId,
+  age :: Int where it >= 0,
+  nickname :: Maybe (String where length it > 0),
+  alias :: Nullable String,
+  note :: Maybe (Nullable String)
+}
+
+type Child = Person
+  where it.age >= 0 && it.age < 18
+    @code "person.child_age_range"
+    @message "Expected 0 <= age < 18; got " ++ show it.age
+
+type Percentage = Int
+  where it >= 0
+  where it <= 100
+
+type CardDetails = { number :: String }
+type BankDetails = { account :: String }
+data Payment
+  = Card CardDetails
+  | BankTransfer BankDetails
+
+data Tree a = Leaf a | Branch (Tree a) (Tree a)
+
+isAdult :: Person -> Bool
+isAdult person = person.age >= 18
+
+nonEmpty :: [a] -> Bool
+nonEmpty [] = False
+nonEmpty (_ : _) = True
+
+sum :: [Int] -> Int
+sum [] = 0
+sum (x : xs) = x + sum xs
+
+every :: (a -> Bool) -> [a] -> Bool
+every predicate [] = True
+every predicate (x : xs) = predicate x && every predicate xs
+
+absolute :: Int -> Int
+absolute n = if n < 0 then -n else n
+
+label :: Maybe Int -> String
+label value = case value of { Nothing -> "missing"; (Just n) -> show n }
+
+double :: Int -> Int
+double n = let result :: Int = n + n in result

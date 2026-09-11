@@ -1,0 +1,65 @@
+package cli
+
+import (
+    "bytes"
+    "encoding/json"
+    "errors"
+    "os"
+    "strings"
+    "testing"
+)
+
+func TestCommandPhases(t *testing.T) {
+    cases := []struct { args []string; input string; status int; phase string; state string; code string }{
+        {[]string{"typecheck","--json","-"},"type Age = Int where it >= 0",0,"typecheck","valid",""},
+        {[]string{"typecheck","--json","-"},"type Age = Int where it",1,"typecheck","invalid","language.type"},
+        {[]string{"typecheck","--json","-"},"type Age =",1,"typecheck","invalid","language.syntax"},
+        {[]string{"typecheck","--json","-"},"f = " + strings.Repeat("1 + ",600) + "1",1,"typecheck","indeterminate","language.limit"},
+        {[]string{"inspect-json","--json","-"},`{"a":1}`,0,"inspect-json","valid",""},
+        {[]string{"inspect-json","--json","-"},`{"a":"secret","a":"secret"}`,1,"inspect-json","invalid","json.duplicate-key"},
+        {[]string{"inspect-json","--json","-"},`{"a":}`,1,"inspect-json","invalid","json.syntax"},
+    }
+    for _, tc := range cases {
+        var out, stderr bytes.Buffer
+        status := Run(tc.args,strings.NewReader(tc.input),&out,&stderr)
+        if status != tc.status { t.Errorf("status %d, want %d; output=%s stderr=%s",status,tc.status,out.String(),stderr.String()); continue }
+        var result report
+        if err := json.Unmarshal(out.Bytes(),&result); err != nil { t.Fatal(err) }
+        if result.Phase != tc.phase || result.State != tc.state { t.Fatalf("wrong report: %+v",result) }
+        if tc.code != "" && (len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != tc.code) { t.Fatalf("wrong diagnostic: %+v",result) }
+        if stderr.Len() != 0 || strings.Contains(out.String(),"secret") { t.Fatal("JSON mode leaked payload or wrote to stderr") }
+    }
+}
+
+func TestFormatterAndHelp(t *testing.T) {
+    var out, stderr bytes.Buffer
+    if Run([]string{"fmt","-"},strings.NewReader("type Age=Int where it>=0"),&out,&stderr) != 0 { t.Fatal(stderr.String()) }
+    if out.String() != "type Age = (Int where (it >= 0))\n\n" { t.Fatalf("formatted source: %q",out.String()) }
+    out.Reset()
+    if Run([]string{"--help"},strings.NewReader(""),&out,&stderr) != 0 || !strings.Contains(out.String(),"not yet native schema") { t.Fatal("help overstates implemented validation") }
+}
+
+func TestUsageAndIOFailures(t *testing.T) {
+    for _, args := range [][]string{{"unknown"},{"fmt"},{"fmt","--json","-"},{"typecheck","-","extra"},{"typecheck","--json","--json","-"}} {
+        var out, stderr bytes.Buffer
+        if Run(args,strings.NewReader(""),&out,&stderr) != 2 || stderr.Len() == 0 { t.Errorf("bad usage accepted: %v",args) }
+    }
+    var out, stderr bytes.Buffer
+    if Run([]string{"typecheck","/nonexistent/refine-file"},strings.NewReader(""),&out,&stderr) != 2 { t.Fatal("missing file not reported") }
+    if Run([]string{"fmt","-"},brokenReader{},&out,&stderr) != 2 { t.Fatal("read failure not reported") }
+    if Run([]string{"typecheck","--json","-"},strings.NewReader("type X = Int"),brokenWriter{},&stderr) != 2 { t.Fatal("write failure not reported") }
+}
+type brokenReader struct{}
+func (brokenReader) Read(_ []byte) (int,error) { return 0, errors.New("read failed") }
+type brokenWriter struct{}
+func (brokenWriter) Write(_ []byte) (int,error) { return 0, errors.New("write failed") }
+
+func TestRealContractFile(t *testing.T) {
+    var out, stderr bytes.Buffer
+    path := "../language/testdata/contracts.refine"
+    before, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+    for _, command := range []string{"typecheck","fmt"} {
+        if Run([]string{command,path},strings.NewReader(""),&out,&stderr) != 0 { t.Fatal(stderr.String()) }
+    }
+    after, err := os.ReadFile(path); if err != nil || !bytes.Equal(before,after) { t.Fatal("input file was modified") }
+}

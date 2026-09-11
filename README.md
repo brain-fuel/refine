@@ -28,9 +28,21 @@ go vet ./...
 
 Implemented foundations (not the complete compiler): immutable exact numbers and
 UTF-16 text; three-outcome validation results and deterministic budget meters;
-lossless ordered JSON syntax ingestion with duplicate-key rejection. Native schema
-validation, language compilation, Java generation, and release orchestration remain
-in progress. No installable CLI or release is advertised yet.
+lossless ordered JSON ingestion/editing; a Haskell-like parser, formatter, and
+static type/pattern checker. Native schema validation, predicate execution,
+Java generation, and release orchestration remain in progress.
+
+The development CLI exposes only the phases currently implemented:
+
+```sh
+go build -o bin/refine ./cmd/refine
+bin/refine typecheck --json language/testdata/contracts.refine
+bin/refine fmt language/testdata/contracts.refine
+bin/refine inspect-json --json value/testdata/numbers.json
+```
+
+`typecheck` is not payload/native schema validation. See
+[docs/LANGUAGE.md](docs/LANGUAGE.md) for syntax, static checks, and remaining gaps.
 
 The module is `goforge.dev/refine`, hosted at
 [brain-fuel/refine](https://github.com/brain-fuel/refine). MIT licensed.

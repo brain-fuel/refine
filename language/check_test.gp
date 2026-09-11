@@ -1,0 +1,121 @@
+package language
+
+import (
+    "errors"
+    "os"
+    "strings"
+    "testing"
+    "testing/quick"
+)
+
+func TestCompileAgreedContracts(t *testing.T) {
+    data, err := os.ReadFile("testdata/contracts.refine"); if err != nil { t.Fatal(err) }
+    program, err := Compile(string(data)); if err != nil { t.Fatal(err) }
+    if program.Summary() != "8 types, 7 functions" { t.Fatal(program.Summary()) }
+    copy := program.Syntax(); copy.Types[0].Name = "Mutated"
+    if program.Syntax().Types[0].Name != "AccountId" { t.Fatal("checked syntax is mutable") }
+    if program.Source() != string(data) { t.Fatal("original source lost") }
+    if _, err := Compile(program.Formatted()); err != nil { t.Fatal("formatted program stopped compiling",err) }
+}
+
+func TestTypeCheckValidCases(t *testing.T) {
+    cases := []string{
+        "type Positive = Int where it > 0\ntype Small = Positive where it < 10",
+        "type Node = {value :: Int, child :: Maybe Node}",
+        "type Tree a = {value :: a, children :: [Tree a]}",
+        "data Flag = Enabled | Disabled\nf :: Flag -> Bool\nf Enabled = True\nf Disabled = False",
+        "f :: Bool -> Bool -> Bool\nf True _ = True\nf False True = True\nf False False = False",
+        "f :: [Bool] -> Bool\nf [] = False\nf (True : _) = True\nf (False : _) = False",
+        "data Box a = Box a\nf :: Box Bool -> Bool\nf (Box True) = True\nf (Box False) = False",
+        "id :: a -> a\nid x = x\nf :: Bool\nf = id True && id False",
+        "id :: a -> a\nid x = x\nf :: Int\nf = id 1\ng :: Bool\ng = id True",
+        "type Parent = {age :: Int}\ntype Child = Parent where it.age < 18\nf :: Parent -> Bool\nf p = p.age >= 0\ng :: Child -> Bool\ng c = f c",
+        "f :: Maybe (Nullable Int) -> Int\nf Nothing = 0\nf (Just Null) = 0\nf (Just (NonNull n)) = n",
+        "f :: String -> Bool\nf s = let n :: Result String Int = read s in case n of { Err _ -> False; (Ok n) -> n > 0 }",
+        "f :: [String] -> [Int]\nf strings = map length strings",
+        "type X = String where length it > 0 @message \"bad: \" ++ show it",
+        "f :: Int -> Real\nf n = n / 3",
+        "f :: [Int]\nf = []",
+    }
+    for _, source := range cases {
+        if _, err := Compile(source); err != nil { t.Errorf("valid contract rejected:\n%s\n%v",source,err) }
+    }
+}
+
+func TestTypeCheckRejectsInvalidContracts(t *testing.T) {
+    cases := []struct { source string; message string }{
+        {"f x = x", "explicit signature"},
+        {"f :: Int -> Int", "no definition"},
+        {"f :: Int -> Bool\nf x = x + 1", "expected Bool"},
+        {"type X = Int where 123", "expected Bool"},
+        {"type X = Int where it > 0 @message 123", "expected String"},
+        {"type X = MissingType", "unknown type"},
+        {"type X = {x :: a}", "undeclared type parameter"},
+        {"type X a a = a", "duplicate type parameter"},
+        {"type X = Maybe", "needs arguments"},
+        {"type X = Int String", "wrong number"},
+        {"type A = B\ntype B = A", "unproductive cycle"},
+        {"type Loop a = Loop [a]", "unproductive cycle"},
+        {"type X = Int where readFile \"secret\" == \"x\"", "unknown function"},
+        {"type X = {age :: Maybe Int} where it.age >= 0", "expected Maybe"},
+        {"type P = {age :: Int}\nf :: Maybe P -> Int\nf p = p.age", "absence/null"},
+        {"f :: a -> a\nf x = 0", "type variable"},
+        {"f :: a -> Int\nf x = x.age", "cannot be inferred"},
+        {"f :: a -> Int\nf x = length x", "requires String or a list"},
+        {"f :: Int -> Bool\nf 0 = True", "not exhaustive"},
+        {"f :: Bool -> Bool\nf True = False", "not exhaustive"},
+        {"f :: [Int] -> Bool\nf [] = True\nf [x] = False", "not exhaustive"},
+        {"f :: Bool -> Bool -> Bool\nf True _ = True\nf False True = False", "not exhaustive"},
+        {"f :: Bool -> Bool -> Bool\nf x x = True", "bound twice"},
+        {"f :: [Bool] -> Bool\nf [] = False\nf (True : _) = True", "not exhaustive"},
+        {"data Box a = Box a\nf :: Box Bool -> Bool\nf (Box True) = True", "not exhaustive"},
+        {"f :: Maybe Int -> Bool\nf (Just _) = True", "not exhaustive"},
+        {"f :: Maybe Int -> Bool\nf Just = True\nf Nothing = False", "wrong number"},
+        {"f :: Int -> Int\nf x = case x of { 0 -> 1 }", "not exhaustive"},
+        {"f :: String -> Bool\nf s = case read s of { Err _ -> False; (Ok _) -> True }", "read target type"},
+        {"type X = String where it > 0", "expected String"},
+        {"f :: Int\nf = 1 + 2.0", "expected Int"},
+        {"f :: Bool\nf = not == not", "functions do not support"},
+        {"f :: Bool\nf = [not] == [not]", "functions do not support"},
+        {"f :: Bool\nf = oneOf not [not]", "functions do not support"},
+        {"same :: a -> a -> Bool\nsame x y = x == y", "equality operand type"},
+        {"type A = String\ntype B = String\nf :: A -> B\nf a = a", "expected B"},
+        {"type Int = String", "cannot redefine"},
+        {"data X = A | A", "duplicate or reserved"},
+        {"f :: (Int where \"bad\") -> Int\nf x = x", "expected Bool"},
+    }
+    for _, tc := range cases {
+        _, err := Compile(tc.source)
+        var problem *Error
+        if !errors.As(err,&problem) || problem.Code != "language.type" || !strings.Contains(problem.Message,tc.message) { t.Errorf("invalid contract:\n%s\nerror = %v; want type error containing %q",tc.source,err,tc.message) }
+    }
+}
+
+func TestBooleanPatternCoverageProperty(t *testing.T) {
+    property := func(rows []uint8) bool {
+        if len(rows) > 40 { rows = rows[:40] }
+        source := "f :: Bool -> Bool -> Bool\n"
+        covered := [4]bool{}
+        for _, row := range rows {
+            left, right := int(row)%3, int(row)/3%3
+            spelling := []string{"True","False","_"}
+            source += "f " + spelling[left] + " " + spelling[right] + " = True\n"
+            for a := 0; a < 2; a++ { for b := 0; b < 2; b++ { if (left == 2 || left == a) && (right == 2 || right == b) { covered[a*2+b] = true } } }
+        }
+        expected := covered[0] && covered[1] && covered[2] && covered[3]
+        _, err := Compile(source)
+        return (err == nil) == expected
+    }
+    if err := quick.Check(property,&quick.Config{MaxCount:3000}); err != nil { t.Fatal(err) }
+}
+
+func FuzzCompile(f *testing.F) {
+    data, err := os.ReadFile("testdata/contracts.refine"); if err != nil { f.Fatal(err) }
+    for _, seed := range []string{string(data),"type A = A","type A = {a :: Maybe A}","f :: Bool -> Bool\nf True = False\nf False = True"} { f.Add(seed) }
+    f.Fuzz(func(t *testing.T,source string) {
+        if len(source) > 16384 { return }
+        program, err := Compile(source); if err != nil { return }
+        _, err = Compile(program.Formatted())
+        if err != nil { t.Fatalf("checked program's formatted source failed: %v",err) }
+    })
+}

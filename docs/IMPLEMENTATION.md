@@ -106,6 +106,29 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   unchanged; identity and restoration properties are checked. This is the
   source-editing primitive, not yet canonical refinement translation.
 
-Next: typed language AST/parser and evaluator, then connect native constraint
-provenance and Java emission to that shared representation. The full checklist
-above remains the release gate.
+## Language front-end checkpoint
+
+- `language/*.gp` now defines a source-spanned Haskell/ML-style syntax tree,
+  lexer/parser, deterministic formatter, static type checker, and nested pattern
+  coverage checker. Records, nominal aliases/parents, Maybe/Nullable, tagged
+  unions, ordinary polymorphic/higher-order named functions, repeated where
+  clauses, custom messages/codes/budgets, and recursive definitions are parsed
+  and checked. These are static checks, not predicate execution.
+- `language/testdata/contracts.refine` is an executable syntax/type-check fixture
+  based on the agreed examples. Positive/negative tables, format/parse properties,
+  nested pattern tests, and a 3,000-case independent Boolean coverage property
+  exercise the front end. Initial 15-second fuzz runs passed 1,147,304 compile
+  cases and 482,013 parse/format cases; later changes receive reruns in CI.
+- `cli/*.gp` and `cmd/refine/main.gp` expose `typecheck`, `fmt`, and `inspect-json`.
+  Tests exercise exit status, file/stdin input, JSON diagnostic output, no default
+  payload leakage, I/O errors, unchanged input files, and the real fixture.
+- Local race tests, vet, generation verification, and an actual built CLI pass.
+  Remote CI for this checkpoint remains to be observed after pushing.
+- Required front-end work remains explicit in `docs/LANGUAGE.md`: imports,
+  constraint-qualified polymorphism, full explicit conversion/numeric semantics,
+  and integration with execution/native/Java backends. No full-language or release
+  checkbox is marked complete based on this checkpoint.
+
+Next: immutable structured payload values and the metered predicate evaluator,
+then connect native constraint provenance and Java emission to the checked
+representation. The full checklist above remains the release gate.

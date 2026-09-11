@@ -27,7 +27,15 @@ jobs:
           git diff --exit-code -- '*.go' go.mod go.sum
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Build and exercise the development CLI
+        run: |
+          go build -o bin/refine ./cmd/refine
+          bin/refine typecheck --json language/testdata/contracts.refine
+          bin/refine fmt language/testdata/contracts.refine > /tmp/refine-formatted.refine
+          bin/refine typecheck /tmp/refine-formatted.refine
       - name: Fuzz lossless ingestion and text codecs
         run: |
           go test ./schemajson -run '^$' -fuzz '^FuzzLosslessDocument$' -fuzztime=10s
           go test ./value -run '^$' -fuzz '^FuzzTextReadShow$' -fuzztime=10s
+          go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=10s
+          go test ./language -run '^$' -fuzz '^FuzzCompile$' -fuzztime=10s
