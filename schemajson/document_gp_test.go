@@ -136,6 +136,91 @@ func TestExactCodeUnitKeysProperty(t *testing.T) {
 	}
 }
 
+func TestPerConstraintEditIsolation(t *testing.T) {
+	source := "{\n  \"allOf\": [ { \"minimum\": 0.00 } ],\n  \"maximum\": 1e2, \"description\": \"minimum stays here\"\n}\n"
+	doc, err := Parse([]byte(source), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := doc.Replace("/allOf/0/minimum", []byte(" 21 \n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := strings.Replace(source, "0.00", "21", 1)
+	if changed.Raw() != expected {
+		t.Fatalf("unrelated native source changed: %s", changed.Raw())
+	}
+	if doc.Raw() != source {
+		t.Fatal("original document mutated")
+	}
+	maximum, err := changed.At("/maximum")
+	if err != nil || maximum.Raw() != "1e2" {
+		t.Fatal("untouched maximum lost original spelling")
+	}
+	restored, err := changed.Replace("/allOf/0/minimum", []byte("0.00"))
+	if err != nil || restored.Raw() != source {
+		t.Fatal("restoring original constraint did not restore original document")
+	}
+	same, err := doc.Replace("/maximum", []byte("1e2"))
+	if err != nil || same.Raw() != source {
+		t.Fatal("identity edit changed document")
+	}
+}
+
+func TestJSONPointersAndEditLimits(t *testing.T) {
+	doc, err := Parse([]byte(`{"a/b":{"~key":[0,1]},"":true}`), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pointer, expected := range map[string]string{"/a~1b/~0key/1": "1", "/": "true", "": doc.Root().Raw()} {
+		node, err := doc.At(pointer)
+		if err != nil || node.Raw() != expected {
+			t.Errorf("pointer %q: %s, %v", pointer, node.Raw(), err)
+		}
+	}
+	for _, pointer := range []string{"x", "/~2", "/~", "/absent", "/a~1b/~0key/01", "/a~1b/~0key/-", "/a~1b/~0key/2", "/a~1b/~0key/0/x"} {
+		if _, err := doc.Replace(pointer, []byte("2")); err == nil {
+			t.Errorf("accepted invalid pointer %q", pointer)
+		}
+	}
+	if _, err := doc.Replace("/", []byte(`{"x":1,"x":2}`)); err == nil {
+		t.Fatal("duplicate-key replacement accepted")
+	}
+	capped, _ := Parse([]byte(`{"x":1}`), Limits{Bytes: 8, Depth: 1})
+	if _, err := capped.Replace("/x", []byte("100")); err == nil {
+		t.Fatal("replacement escaped byte cap")
+	}
+	depthCapped, _ := Parse([]byte(`{"x":1}`), Limits{Depth: 1})
+	if _, err := depthCapped.Replace("/x", []byte("[0]")); err == nil {
+		t.Fatal("replacement escaped depth cap")
+	}
+}
+
+func TestReplaceIdentityProperty(t *testing.T) {
+	property := func(n int64, units []uint16) bool {
+		text := value.TextFromUnits(units)
+		source := " {\"a\": " + value.Integer(n).Show() + ",\"b\":" + text.Show() + "} \n"
+		doc, err := Parse([]byte(source), Limits{})
+		if err != nil {
+			return false
+		}
+		for _, pointer := range []string{"", "/a", "/b"} {
+			node, err := doc.At(pointer)
+			if err != nil {
+				return false
+			}
+			copy, err := doc.Replace(pointer, []byte(node.Raw()))
+			if err != nil || copy.Raw() != source {
+				return false
+			}
+		}
+		return true
+	}
+	if err := quick.Check(property, &quick.Config{MaxCount: 2000}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func FuzzLosslessDocument(f *testing.F) {
 	for _, seed := range []string{`{}`, `[]`, `{"x":1,"x":2}`, `{"a":["\ud800",1e20]}`, `"hello"`, `null`, `{"x":"a\\\"b"}`} {
 		f.Add(seed)

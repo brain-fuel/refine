@@ -97,8 +97,14 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
 - Initial 10-second fuzz runs: 746,799 JSON cases and 5,557,063 text cases passed.
   Counts are evidence of those runs only, not exhaustive correctness or a
   replacement for the missing language/native/Java/end-to-end test suites.
-- CI is configured to repeat generation, race, vet, and fuzz checks on Linux and
-  macOS. Remote CI success still requires observation of the pushed run.
+- CI repeats generation, race, vet, and fuzz checks on Linux and macOS.
+  The first pushed checkpoint `d463bb9` passed both platforms:
+  [verified run](https://github.com/brain-fuel/refine/actions/runs/34638900164).
+- Lossless JSON editing now supports validated JSON Pointer lookup and immutable
+  replacement of an existing node. Tests verify that editing a `minimum` nested
+  inside `allOf` leaves an unrelated `maximum` and all surrounding source bytes
+  unchanged; identity and restoration properties are checked. This is the
+  source-editing primitive, not yet canonical refinement translation.
 
 Next: typed language AST/parser and evaluator, then connect native constraint
 provenance and Java emission to that shared representation. The full checklist

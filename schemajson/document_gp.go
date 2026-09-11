@@ -8,6 +8,7 @@ package schemajson
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -202,6 +203,8 @@ type Node struct {
 	text     value.Text
 	members  []Member
 	elements []Node
+	start    int
+	end      int
 }
 type Member struct {
 	Key   value.Text
@@ -263,8 +266,9 @@ func (e *Error) Error() string {
 }
 
 type Document struct {
-	raw  string
-	root Node
+	raw    string
+	root   Node
+	limits Limits
 }
 
 func (d Document) Raw() string { return d.raw }
@@ -307,7 +311,76 @@ func Parse(input []byte, limits Limits) (Document, error) {
 	if err != nil {
 		return Document{}, err
 	}
-	return Document{raw: p.source, root: root}, nil
+	return Document{raw: p.source, root: root, limits: limits}, nil
+}
+
+// At looks up an existing node by a JSON Pointer. Empty means the document
+// root. Array indexes are canonical nonnegative decimals; '-' is not a lookup.
+func (d Document) At(pointer string) (Node, error) {
+	if pointer == "" {
+		return d.root, nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return Node{}, &Error{Code: "json.pointer", Message: "pointer must be empty or start with slash"}
+	}
+	current := d.root
+	for _, encoded := range strings.Split(pointer[1:], "/") {
+		var token strings.Builder
+		for i := 0; i < len(encoded); i++ {
+			if encoded[i] != '~' {
+				token.WriteByte(encoded[i])
+				continue
+			}
+			i++
+			if i == len(encoded) || encoded[i] != '0' && encoded[i] != '1' {
+				return Node{}, &Error{Code: "json.pointer", Path: pointer, Message: "invalid pointer escape"}
+			}
+			if encoded[i] == '0' {
+				token.WriteByte('~')
+			} else {
+				token.WriteByte('/')
+			}
+		}
+		key := token.String()
+		switch KindName(current.Kind()) {
+		case "object":
+			next, ok := current.Lookup(key)
+			if !ok {
+				return Node{}, &Error{Code: "json.pointer", Path: pointer, Message: "object member does not exist"}
+			}
+			current = next
+		case "array":
+			index, err := strconv.Atoi(key)
+			if err != nil || index < 0 || strconv.Itoa(index) != key || index >= len(current.elements) {
+				return Node{}, &Error{Code: "json.pointer", Path: pointer, Message: "array index does not exist"}
+			}
+			current = current.elements[index]
+		default:
+			return Node{}, &Error{Code: "json.pointer", Path: pointer, Message: "cannot descend into a scalar"}
+		}
+	}
+	return current, nil
+}
+
+// Replace returns a new document, changing only the selected node's source
+// span. Other bytes (including unrelated native constraints) remain untouched.
+// It replaces existing values, not member names or missing members. This is
+// the lossless editing primitive, not a claim of schema-level compatibility.
+func (d Document) Replace(pointer string, replacement []byte) (Document, error) {
+	node, err := d.At(pointer)
+	if err != nil {
+		return Document{}, err
+	}
+	newValue, err := Parse(replacement, d.limits)
+	if err != nil {
+		return Document{}, err
+	}
+	fragment := newValue.Root().Raw()
+	if len(d.raw)-(node.end-node.start) > d.limits.Bytes-len(fragment) {
+		return Document{}, &Error{Code: "json.limit", Path: pointer, Message: "document byte limit exceeded"}
+	}
+	source := d.raw[:node.start] + fragment + d.raw[node.end:]
+	return Parse([]byte(source), d.limits)
 }
 
 func (p *parser) whitespace() {
@@ -419,5 +492,7 @@ func (p *parser) node(depth int, path string) (Node, error) {
 		}
 	}
 	n.raw = p.source[start:p.offset]
+	n.start = start
+	n.end = p.offset
 	return n, nil
 }
