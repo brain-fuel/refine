@@ -207,7 +207,7 @@ func schemaSourceName(name string) (string, schemaSourceKind, bool) {
 	return "", 0, false
 }
 func emptyWireMetadata(metadata native.WireMetadata) bool {
-	return len(metadata.ExtraFields) == 0 && len(metadata.Scalars) == 0 && len(metadata.Discriminators) == 0 && metadata.PublicationNamespace == "" && metadata.NumericExpansion == 0 && metadata.OpenAPI == nil
+	return len(metadata.ExtraFields) == 0 && len(metadata.Scalars) == 0 && len(metadata.Discriminators) == 0 && metadata.PublicationNamespace == "" && metadata.NumericExpansion == 0 && metadata.OpenAPI == nil && metadata.Examples == nil
 }
 
 func loadProject(rootPath, configPath, packageOverride string) (project.GenerateInput, error) {

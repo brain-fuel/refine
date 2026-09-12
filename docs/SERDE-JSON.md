@@ -45,6 +45,15 @@ representability failure emits no bytes. Jackson I/O failures after output begin
 are not claimed to be atomic. Java `null`, malformed wire shapes, and duplicate
 keys at any object depth (including equal-valued duplicates) are rejected.
 
+Explicit `module.readDataWithoutRefinements(byte[])` and
+`module.writeDataWithoutRefinements(Data)` expose the immutable basic payload
+without running `where` predicates. Their overloads accept `Budget.Limits`.
+They still enforce native schema constraints for native-project modules, exact
+wire representation, checked structure, Unicode, duplicate-key and trailing-token
+checks, and codec/caller limits. They neither change normal Jackson behavior nor
+make an invalid model valid. Reads snapshot the input after the byte-size check;
+writes return staged bytes only after all remaining gates pass.
+
 Record decoding discards undeclared fields by default. Preservation can be
 enabled independently for named record types; preserved JSON objects, arrays,
 numbers, strings, Booleans, and nulls remain in the immutable model's raw data

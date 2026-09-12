@@ -64,6 +64,7 @@ func Generate(input GenerateInput)(Bundle,error){
             for _,item:=range generated{relative:=path.Join(layout.SourceDir,item.Path);if layout.Flat{relative=path.Join(layout.SourceDir,path.Base(item.Path))};if err=addFile(all,relative,[]byte(item.Source));err!=nil{return Bundle{},err}}
             properties:=contract.PropertyTests
             if len(properties.Targets)==0{properties.Targets=[]java.PropertyTarget{{Name:contract.RootType}}}
+            properties,err=propertyOptionsWithEmbeddedExamples(contract.Program,contract.Wire,properties);if err!=nil{return Bundle{},err}
             if jsonWire{properties.JSONModule="RefineJSONModule"}
             if jsonWire&&contract.NativeProject!=nil{properties.NativeJSONValidator,err=java.JSONNativeValidatorName(contract.Program,class,properties.JSONModule);if err!=nil{return Bundle{},err}}
             for _,format:=range formats{if format==native.Avro{properties.AvroSerde="RefineAvroSerde"}}

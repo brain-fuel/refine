@@ -139,12 +139,31 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 	if rootIsOpenAPI && !strings.HasPrefix(p.root.Pointer, "/components/schemas/") {
 		return fmt.Errorf("selected OpenAPI root must be a Schema Object under /components/schemas")
 	}
-	target, err := rootDoc.At(p.root.Pointer)
-	if err != nil {
-		return err
+	seeds := []ResourceSelector{p.root}
+	if p.openAPIOperations != nil {
+		for _, operation := range p.openAPIOperations.catalog.Operations {
+			for _, part := range operation.RequestParts {
+				seeds = append(seeds, ResourceSelector{Resource: part.Resource, Pointer: part.Pointer})
+			}
+			for _, response := range operation.Responses {
+				for _, part := range response.Parts {
+					seeds = append(seeds, ResourceSelector{Resource: part.Resource, Pointer: part.Pointer})
+				}
+			}
+		}
 	}
-	if err := walk(p.root.Resource, p.root.Pointer, target); err != nil {
-		return err
+	for _, seed := range seeds {
+		doc, found := docs[seed.Resource]
+		if !found {
+			return fmt.Errorf("schema seed resource %s is absent", seed.Resource)
+		}
+		target, err := doc.At(seed.Pointer)
+		if err != nil {
+			return err
+		}
+		if err := walk(seed.Resource, seed.Pointer, target); err != nil {
+			return err
+		}
 	}
 	for uri, doc := range docs {
 		if uri == p.root.Resource {

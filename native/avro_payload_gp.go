@@ -101,16 +101,12 @@ func (p *Project) avroWriterSchema() (avro.Schema, error) {
 }
 
 // Avro 1.12 requires unknown or invalid logical types to be read as their
-// underlying type. big-decimal is known, but its value-level scale encoding is
-// not yet implemented here, so it is a capability error rather than broadening.
+// underlying type. Known logical types are enforced at their physical carrier.
 func avroSchemaEnforceable(schema avro.Schema, seen map[avro.Schema]bool) error {
 	if seen[schema] {
 		return nil
 	}
 	seen[schema] = true
-	if raw, ok := rawLogicalType(schema); ok && raw == "big-decimal" && schema.Type() == avro.Bytes {
-		return fmt.Errorf("Avro 1.12 big-decimal binary enforcement is not implemented")
-	}
 	switch schema.Type() {
 	case avro.Ref:
 		return avroSchemaEnforceable(schema.(*avro.RefSchema).Schema(), seen)
@@ -292,6 +288,9 @@ func (c *avroBinaryCursor) value(schema avro.Schema, depth int, path string) err
 		if recognized && logical == "decimal" {
 			return validateAvroDecimal(schema, raw, path, c)
 		}
+		if named, ok := rawLogicalType(schema); ok && named == "big-decimal" {
+			return validateAvroBigDecimal(raw, path, c)
+		}
 		return nil
 	case avro.Fixed:
 		fixed := schema.(*avro.FixedSchema)
@@ -431,6 +430,28 @@ func validateAvroDecimal(schema avro.Schema, raw []byte, path string, c *avroBin
 	digits := len(new(big.Int).Abs(integer).String())
 	if digits > logical.Precision() {
 		return c.fail(path, fmt.Sprintf("decimal value has %d digits, exceeding precision %d", digits, logical.Precision()))
+	}
+	return nil
+}
+
+// Avro 1.12 big-decimal stores an Avro bytes value containing a second Avro
+// bytes value (the signed big-endian two's-complement unscaled integer)
+// followed by an Avro int scale. Scale is any signed 32-bit value. Redundant
+// sign-extension bytes are legal and are not canonicalized or rejected.
+func validateAvroBigDecimal(raw []byte, path string, parent *avroBinaryCursor) error {
+	inner := avroBinaryCursor{input: raw, limits: parent.limits}
+	unscaled, err := inner.bytes(path + "<unscaled>")
+	if err != nil {
+		return err
+	}
+	if len(unscaled) == 0 {
+		return parent.fail(path, "big-decimal unscaled integer is empty")
+	}
+	if _, err := inner.signed(path+"<scale>", 5); err != nil {
+		return err
+	}
+	if inner.offset != len(raw) {
+		return parent.fail(path, fmt.Sprintf("big-decimal contains %d trailing bytes", len(raw)-inner.offset))
 	}
 	return nil
 }

@@ -85,7 +85,9 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
 - Native JSON Schema and selected OpenAPI 3.0/3.1/3.2 payloads have offline,
   exact-number native validation composed with checked Refine decoding. Native
   Avro binary validation has bounded preflight and an independent ecosystem
-  oracle; the full Go Avro-to-Refine decoding bridge remains unfinished.
+  oracle. The Go Avro-to-Refine bridge was unfinished at this earlier checkpoint;
+  binary and strict JSON writer boundaries are recorded in the later evidence
+  below.
 - Java generation now includes validated Jackson 3 and Apache Avro 1.12 binary
   and JSON adapters, named scalar metadata, anonymous typed nested records,
   closed generic native lowering, bounded finite float conversion, and generated
@@ -230,6 +232,14 @@ The scopes below extend `d504826`; they do not mark the full release gates done.
 
 ## Bounded validation integration checkpoint (2026-09-12)
 
+- Source checkpoint `dc71871` was committed and pushed with authored GoPlus and
+  generated Go together. The separate Linux/macOS verification is
+  [CI run 34712953922](https://github.com/brain-fuel/refine/actions/runs/34712953922).
+  Both jobs failed: one generated-facade test assumed a Homebrew Java path, and
+  the Maven regex fixture exhausted the payload deadline during cold engine
+  startup (macOS also exposed this in the standalone regex harness). Generation
+  passed; later vet/smoke/fuzz stages were not reached. These jobs have not been
+  rerun unchanged. The following local evidence does not supersede those failures.
 - Frozen authored/generated sources passed `go tool goplus gen --check ./...`
   and `go vet ./...`. One `go test -race ./...` invocation required Java and
   Maven, with the pinned environment listed above and the NetworkNT/GraalJS
@@ -253,7 +263,7 @@ The scopes below extend `d504826`; they do not mark the full release gates done.
 - Seven affected existing native annotation/provenance/bundle/export regressions
   passed under race in 1.451s; exact selections are in TESTING.md. Scoped
   generation consistency and vet passed after the corrections. The whole race
-  suite was not repeated. Maven evidence remains applicable: its unchanged
+  suite was not repeated. At that checkpoint Maven evidence remained applicable: its unchanged
   ordinary native fixtures take the same projection path, and its generated
   refined resources already had projectable shapes and identical annotated
   source. No Maven generator, dependency, or lifecycle fixture changed after
@@ -264,6 +274,79 @@ The scopes below extend `d504826`; they do not mark the full release gates done.
   encodings/refinements; encoding-valid contextual defaults stay explicitly
   unknown. These are bounded checks, not a claim that arbitrary predicates can
   be proved or that the full specification is complete.
+
+## Follow-up integration checkpoint (2026-09-12)
+
+The coherent source batch below passed one full local integration gate, with
+Java and Maven required and all pinned dependency directories enabled:
+
+```sh
+go tool goplus gen -check ./...
+go vet ./...
+REFINE_REQUIRE_JAVA=1 REFINE_JAVA_HOME=/opt/homebrew/opt/openjdk@25 \
+REFINE_JETCHECK_DIR=/tmp/refine-jetcheck-sfZEQ7 \
+REFINE_JACKSON_DIR=/tmp/refine-jackson-dCP3wX \
+REFINE_AVRO_DIR=/tmp/refine-avro-1.12.0 \
+REFINE_NETWORKNT_DIR=/tmp/refine-networknt-jars \
+REFINE_GRAALJS_DIR=/tmp/refine-regex-maven/jars \
+REFINE_REQUIRE_MAVEN=1 \
+REFINE_MAVEN_HOME=/tmp/refine-maven-SoxP0H/apache-maven-3.9.16 \
+go test -race ./...
+```
+
+All packages passed: Java 208.084s, native 36.108s, project 29.989s,
+CLI 5.673s, release 2.635s, OpenAPI 1.672s, and examples 1.614s. Unchanged
+foundation packages reused Go's test cache. The project result includes the
+actual initial, reproducible, changed-schema regeneration, and expected-failure
+Maven builds. No standalone Maven campaign or repeat full suite was run.
+`git diff --check` also passed. Documentation-only evidence updates do not
+invalidate this source-state result. CI still provides separate platform
+verification; the release gaps at the end of this document remain unresolved.
+
+- Regex initialization now has a separate fixed trusted warmup phase; schema
+  patterns and payloads enter only after the aggregate caller deadline begins.
+  No payload limit was raised. The three anchored regex tests listed in
+  TESTING.md passed in 3.913s with Java 25, NetworkNT and GraalJS provisioned.
+  This production template change invalidated the previous Maven evidence;
+  the next lifecycle run was held until the shared generator batch was stable
+  and passed in the integration gate above.
+- The new explicit raw JSON reader/writer skips only Refine predicates. Native
+  schema gates, exact wire representations, duplicate-key checks, parser bounds,
+  structure and caller budgets remain enforced. The initial two-test selection
+  passed the existing Jackson regression but exposed a fixture that had removed
+  its canonical native constraint. After preserving that constraint, only
+  `TestGeneratedJSONRawBypassKeepsNativeAndStructuralValidation` was rerun; it
+  passed in 2.058s. Generated Go was refreshed before each source-state check.
+- Worked examples and separated valid/invalid property seed pools passed their
+  three-test Java/JetCheck selection in 5.821s. This covers all eight worked
+  families through generated models and canonical codecs, not native wire
+  coverage for every family. Existing example checks passed in 0.210s.
+- Embedded examples passed native (0.289s), project (1.487s) and CLI (0.675s)
+  focused selections. Java discovery additionally passed the CI-shaped run with
+  `REFINE_JAVA_HOME` unset and only `JAVA_HOME` configured (1.274s). These are the
+  exact named selections in TESTING.md, not whole-package gates.
+- Go native Avro JSON validation and refined decoding passed four tests plus
+  fixed fuzz seeds in 0.340s. A single Apache Avro Java oracle JVM passed nine
+  exact decoded-data comparisons in 0.702s; the explicit CLI encoding flag and
+  four affected existing CLI regressions passed in 0.292s. JSON and binary
+  writer boundaries are connected; reader resolution remains a generated Java
+  capability rather than an implicit Go decoder feature.
+- Promotion's published-version catalog now rejects duplicate identities and
+  attempts to republish an existing `(family, version)` before staging or writes.
+  Four focused release tests passed in 0.262s. A final assertion-only edit reran
+  just the new atomicity test (0.188s), followed by generation consistency.
+  Three exact affected CLI promotion callers passed in 2.306s and the project
+  shared-lock caller passed in 0.233s before the integration gate.
+- Composed native OpenAPI Java validation passed its focused Java regression
+  in 2.214s and project generation regression in 0.260s. A single generated
+  wrapper shares native node/regex budgets across operation parts. Each input
+  part is separately checked for one-value framing before assembly; constructor
+  caps precede copying. Request tokens bind the instance, project and operation.
+- Native Avro big-decimal validation passed its two pure-Go tests in 0.241s
+  and the pinned Apache Java oracle in 0.996s. This validates the nested native
+  encoding and preserves physical bytes; it does not invent a fixed-scale
+  `Real` mapping. The full gate also covers the added valid/invalid Avro JSON
+  big-decimal composition table rows.
 
 ## Historical evidence (2026-09-11 foundation checkpoint)
 
@@ -1360,3 +1443,34 @@ native formats and project workflows. The full checklist remains the release gat
   generation checks, race tests, vet, CLI checks and all fifteen fuzz gates.
   Authored GoPlus and generated Go were pushed together. No product tag or
   Maven deployment occurred.
+
+## Release integration gaps — 2026-09-12
+
+- Ordinary `project generate`, including the command invoked by the Maven
+  snippet, does not call `PlanMavenVersion`. A `noCodegen` change can therefore
+  remove owned Java classes during a normal Maven build without enforcing the
+  required artifact-version change. The deletion gate currently exists only in
+  `release promote`.
+- `release.maven.previouslyGenerated` is manual and optional. There is no
+  content-bound, persisted publication manifest proving which generated classes
+  were in the prior published artifact, so an omitted history entry can hide a
+  removal. Generated or locally built output must not be assumed published.
+- The configured `release.maven.current` and `intended` versions are not checked
+  against the Maven project's actual POM version or the version of the artifact
+  being built. A valid plan therefore does not yet prove that Maven uses the
+  accepted artifact version.
+- A schema family's `change` classification is author-supplied and is not
+  checked against a semantic structural diff. Compatibility evidence can force
+  a boundary for a proven break, but a compatible API addition can still be
+  labeled `documentation` and receive a patch suggestion.
+- CLI dependency pins currently set `AffectsContract` for every Refine import.
+  This is safe but conservative: a dependency release containing only
+  documentation/original-text changes can prevent a documentation-only importer
+  release even when the effective contract is unchanged.
+- The library-level `PlanMavenVersion` validates family names and artifact
+  versions but does not reject negative components in a `GeneratedVersion`'s
+  schema version. Canonical CLI parsing prevents this through the current CLI,
+  but direct library callers remain insufficiently validated.
+
+These are concrete remaining gates, not claims that publication occurred. The
+current implementation still performs no Maven deployment or product release.

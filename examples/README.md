@@ -2,7 +2,11 @@
 
 These examples are executable Refine source, not promises that every native
 backend can represent every example's wire shape. The GoPlus test suite checks
-positive and negative payloads and English generation for each contract.
+positive and negative payloads and English generation for each contract. One
+grouped Java 25/jetCheck gate also compiles every family together and executes
+typed valid and per-predicate invalid examples through generated model and
+canonical-text boundaries. It keeps Payment model-only because tagged JSON
+discriminators and arbitrary-real wire encodings are never invented.
 
 | File | Root | Contract illustrated |
 | --- | --- | --- |
@@ -25,6 +29,8 @@ printf '%s\n' '{lines = [{price = 1.005, quantity = 1}], totalCents = 100}' | \
 go run ./cmd/refine compare-payload \
   examples/evolution/v1.0.0.refine Age examples/evolution/SNAPSHOT.refine Age
 go test ./examples
+REFINE_REQUIRE_JAVA=1 REFINE_JETCHECK_DIR=/path/to/verified-jars \
+  go test ./java -run '^TestWorkedExamplesGenerateExecutableJava$'
 ```
 
 `validate` takes canonical Refine payload notation, not JSON wire data. Named

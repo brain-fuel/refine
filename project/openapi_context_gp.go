@@ -13,7 +13,7 @@ import (
 const openAPIOperationsClass = "RefineOpenAPIOperations"
 
 func projectWireConfigured(metadata native.WireMetadata) bool {
-	return metadata.PublicationNamespace != "" || metadata.NumericExpansion != 0 || metadata.OpenAPI != nil || len(metadata.Scalars) > 0 || len(metadata.ExtraFields) > 0 || len(metadata.Discriminators) > 0
+	return metadata.PublicationNamespace != "" || metadata.NumericExpansion != 0 || metadata.OpenAPI != nil || metadata.Examples != nil || len(metadata.Scalars) > 0 || len(metadata.ExtraFields) > 0 || len(metadata.Discriminators) > 0
 }
 
 func contractJavaSources(contract Contract, namespace, class string, formats []native.Format) ([]java.File, error) {
@@ -31,7 +31,22 @@ func mergeOpenAPIContext(contract Contract, namespace, class string, files []jav
 	if contract.Wire.OpenAPI == nil {
 		return files, nil
 	}
-	context, err := java.GenerateOpenAPIContext(contract.Program, namespace, class, openAPIOperationsClass, *contract.Wire.OpenAPI)
+	var context []java.File
+	var err error
+	if contract.Wire.OpenAPI.Native != nil {
+		if contract.NativeProject == nil || !contract.NativeProject.HasOpenAPINativeBindings() {
+			return nil, fmt.Errorf("native.enforcement: checked native OpenAPI operation bindings are required")
+		}
+		metadata := contract.NativeProject.Metadata()
+		metadata.PublicationNamespace = namespace
+		configured, configureErr := contract.NativeProject.WithMetadata(metadata)
+		if configureErr != nil {
+			return nil, configureErr
+		}
+		context, err = java.GenerateProjectOpenAPIContext(configured, class, openAPIOperationsClass)
+	} else {
+		context, err = java.GenerateOpenAPIContext(contract.Program, namespace, class, openAPIOperationsClass, *contract.Wire.OpenAPI)
+	}
 	if err != nil {
 		return nil, err
 	}

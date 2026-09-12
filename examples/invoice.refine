@@ -1,8 +1,8 @@
 package example.invoice
 
 type Line = {
-  price :: Real where it >= 0.0,
-  quantity :: Int where it > 0
+  price :: Real where it >= 0.0 @code "invoice.price.nonnegative",
+  quantity :: Int where it > 0 @code "invoice.quantity.positive"
 }
 
 -- Round each line to integer cents, explicitly choosing nearest-even ties.

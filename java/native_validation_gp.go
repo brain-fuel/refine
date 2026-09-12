@@ -19,6 +19,22 @@ import (
 // Pattern-bearing schemas conditionally receive the bounded GraalJS ECMA-262
 // adapter. Helpers without native patterns have no Graal runtime linkage.
 func GenerateProjectNativeJSONValidator(project *native.Project, className string) (files []File, failure error) {
+	if project == nil {
+		return nil, &GenerationError{Message: "a checked native project is required"}
+	}
+	return generateProjectNativeJSONValidatorAt(project, className, project.Root())
+}
+
+// The selector is internal: composed operation generators obtain it only from
+// the native project's checked operation index, never from runtime caller input.
+func generateProjectNativeJSONValidatorAt(project *native.Project, className string, selector native.ResourceSelector) (files []File, failure error) {
+	return generateProjectNativeJSONValidatorWithResources(project, className, selector, nil)
+}
+
+// Composed generators may add a fixed generated schema whose references were
+// obtained from a checked native index. Runtime callers still never choose a
+// resource or pointer.
+func generateProjectNativeJSONValidatorWithResources(project *native.Project, className string, selector native.ResourceSelector, additional []native.Resource) (files []File, failure error) {
 	defer func() {
 		if caught := recover(); caught != nil {
 			if err, ok := caught.(*GenerationError); ok {
@@ -39,11 +55,25 @@ func GenerateProjectNativeJSONValidator(project *native.Project, className strin
 	if err != nil {
 		return nil, &GenerationError{Message: err.Error()}
 	}
+	if len(resources) > 128 {
+		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources"}
+	}
+	if len(additional) > 1 {
+		return nil, &GenerationError{Message: "generated native JSON validation supports at most one trusted generated resource"}
+	}
+	seenResources := map[string]bool{}
+	for _, resource := range resources {
+		seenResources[resource.URI] = true
+	}
+	for _, resource := range additional {
+		if resource.URI == "" || seenResources[resource.URI] {
+			return nil, &GenerationError{Message: "generated native JSON validation has a duplicate or empty resource URI"}
+		}
+		seenResources[resource.URI] = true
+		resources = append(resources, resource)
+	}
 	if len(resources) == 0 {
 		return nil, &GenerationError{Message: "native JSON project has no resources"}
-	}
-	if len(resources) > 128 {
-		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 resources"}
 	}
 	locations, err := project.JSONSchemaKeywordLocations("pattern", "patternProperties")
 	if err != nil {
@@ -59,7 +89,7 @@ func GenerateProjectNativeJSONValidator(project *native.Project, className strin
 		if total > 4<<20 {
 			return nil, &GenerationError{Message: "generated native JSON validation resources exceed 4 MiB"}
 		}
-		if resource.URI == project.Root().Resource {
+		if resource.URI == selector.Resource {
 			rootFound = true
 		}
 		method := fmt.Sprintf("resource%d", index)
@@ -75,9 +105,9 @@ func GenerateProjectNativeJSONValidator(project *native.Project, className strin
 		dialect = "com.networknt.schema.dialect.Dialects.getOpenApi31()"
 		dialects = "java.util.List.of(" + dialect + ",com.networknt.schema.dialect.Dialects.getDraft202012())"
 	}
-	root := project.Root().Resource
-	if project.Root().Pointer != "" {
-		root += "#" + project.Root().Pointer
+	root := selector.Resource
+	if selector.Pointer != "" {
+		root += "#" + selector.Pointer
 	}
 	metadata := project.Metadata()
 	namespace := metadata.PublicationNamespace
@@ -111,7 +141,7 @@ public final class %s {
     private static final int HARD_MAX_BYTES=1<<20,HARD_MAX_DEPTH=128,HARD_MAX_NUMBER_LENGTH=10000,HARD_MAX_STRING_LENGTH=1<<20,HARD_MAX_NAME_LENGTH=10000,HARD_MAX_NUMERIC_EXPANSION=%d%s;private static final long HARD_MAX_NODES=10000;
     public record Limits(int maxBytes,int maxDepth,long maxNodes,int maxNumberLength,int maxStringLength,int maxNameLength,int maxNumericExpansion){public Limits{if(maxBytes<=0||maxDepth<=0||maxNodes<=0||maxNumberLength<=0||maxStringLength<=0||maxNameLength<=0||maxNumericExpansion<=0)throw new IllegalArgumentException("Native JSON limits must be positive.");if(maxBytes>HARD_MAX_BYTES||maxDepth>HARD_MAX_DEPTH||maxNodes>HARD_MAX_NODES||maxNumberLength>HARD_MAX_NUMBER_LENGTH||maxStringLength>HARD_MAX_STRING_LENGTH||maxNameLength>HARD_MAX_NAME_LENGTH||maxNumericExpansion>HARD_MAX_NUMERIC_EXPANSION)throw new IllegalArgumentException("Native JSON limits may only tighten generated hard limits.");}public static Limits defaults(){return new Limits(HARD_MAX_BYTES,HARD_MAX_DEPTH,HARD_MAX_NODES,HARD_MAX_NUMBER_LENGTH,HARD_MAX_STRING_LENGTH,HARD_MAX_NAME_LENGTH,HARD_MAX_NUMERIC_EXPANSION);}}
     public enum Code{INVALID,RESOURCE_LIMIT,ENFORCEMENT}
-    public static final class NativeValidationException extends IllegalArgumentException{private static final long serialVersionUID=1L;private final Code code;private NativeValidationException(String message){this(Code.INVALID,message);}private NativeValidationException(Code code,String message){super(message);this.code=java.util.Objects.requireNonNull(code);}public Code code(){return code;}public boolean isResourceLimit(){return code==Code.RESOURCE_LIMIT;}public boolean isIndeterminate(){return code!=Code.INVALID;}}
+    public static final class NativeValidationException extends IllegalArgumentException{private static final long serialVersionUID=1L;private final Code code;NativeValidationException(String message){this(Code.INVALID,message);}NativeValidationException(Code code,String message){super(message);this.code=java.util.Objects.requireNonNull(code);}public Code code(){return code;}public boolean isResourceLimit(){return code==Code.RESOURCE_LIMIT;}public boolean isIndeterminate(){return code!=Code.INVALID;}}
 %s
     private static final java.util.Map<String,String> RESOURCES=java.util.Map.ofEntries(%s);
 %s

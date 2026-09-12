@@ -1,2 +1,2 @@
 -- Widening this accepted interval is backward-compatible but not forward-compatible.
-type Age = Int where it >= -1
+type Age = Int where it >= -1 @code "age.minimum"

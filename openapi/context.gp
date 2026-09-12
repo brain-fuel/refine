@@ -13,10 +13,20 @@ import (
 )
 
 const SchemaVersion="refine.openapi.operations/v1"
+const NativeBindingsVersion="refine.openapi.native/v1"
 
-type Schema struct {Version string `json:"version"`;Operations []OperationBinding `json:"operations"`}
+// Native is optional because the v1 operation schema is also used by the pure
+// Refine facade. When present it is an authoritative request/response wire
+// binding that the native package reconciles with a validated OpenAPI document.
+type Schema struct {Version string `json:"version"`;Operations []OperationBinding `json:"operations"`;Native *NativeBindings `json:"native,omitempty"`}
 type OperationBinding struct {OperationID string `json:"operationId"`;Method string `json:"method"`;Path string `json:"path"`;RequestType string `json:"requestType"`;Responses []ResponseBinding `json:"responses"`}
 type ResponseBinding struct {Status string `json:"status"`;ResponseType string `json:"responseType"`;ContextType string `json:"contextType,omitempty"`}
+type NativeBindings struct {Version string `json:"version"`;Operations []NativeOperationBinding `json:"operations"`}
+type NativeOperationBinding struct {OperationID string `json:"operationId"`;Parameters []NativeParameterBinding `json:"parameters,omitempty"`;RequestBody *NativeMediaBinding `json:"requestBody,omitempty"`;Responses []NativeResponseBinding `json:"responses"`}
+type NativeParameterBinding struct {In string `json:"in"`;Name string `json:"name"`;FieldPath []string `json:"fieldPath,omitempty"`}
+type NativeMediaBinding struct {MediaType string `json:"mediaType,omitempty"`}
+type NativeResponseBinding struct {Status string `json:"status"`;Headers []NativeHeaderBinding `json:"headers,omitempty"`;Body *NativeMediaBinding `json:"body,omitempty"`}
+type NativeHeaderBinding struct {Name string `json:"name"`;FieldPath []string `json:"fieldPath,omitempty"`}
 type Request struct {Parameters value.Data;Headers value.Data;Body value.Data}
 type Response struct {Headers value.Data;Body value.Data}
 
@@ -27,7 +37,8 @@ type Contract struct {schema Schema;operations map[string]*operation}
 type operation struct {binding OperationBinding;request *language.PayloadType;responses []checkedResponse}
 type checkedResponse struct {binding ResponseBinding;response,context *language.PayloadType}
 
-func copySchema(schema Schema)Schema{out:=Schema{Version:schema.Version,Operations:make([]OperationBinding,len(schema.Operations))};for i,item:=range schema.Operations{out.Operations[i]=item;out.Operations[i].Responses=append([]ResponseBinding(nil),item.Responses...)};return out}
+func copySchema(schema Schema)Schema{out:=Schema{Version:schema.Version,Operations:make([]OperationBinding,len(schema.Operations)),Native:copyNativeBindings(schema.Native)};for i,item:=range schema.Operations{out.Operations[i]=item;out.Operations[i].Responses=append([]ResponseBinding(nil),item.Responses...)};return out}
+func copyNativeBindings(input *NativeBindings)*NativeBindings{if input==nil{return nil};out:=&NativeBindings{Version:input.Version,Operations:make([]NativeOperationBinding,len(input.Operations))};for i,item:=range input.Operations{out.Operations[i]=item;out.Operations[i].Parameters=make([]NativeParameterBinding,len(item.Parameters));for j,parameter:=range item.Parameters{out.Operations[i].Parameters[j]=parameter;out.Operations[i].Parameters[j].FieldPath=append([]string(nil),parameter.FieldPath...)};if item.RequestBody!=nil{body:=*item.RequestBody;out.Operations[i].RequestBody=&body};out.Operations[i].Responses=make([]NativeResponseBinding,len(item.Responses));for j,response:=range item.Responses{out.Operations[i].Responses[j]=response;out.Operations[i].Responses[j].Headers=make([]NativeHeaderBinding,len(response.Headers));for k,header:=range response.Headers{out.Operations[i].Responses[j].Headers[k]=header;out.Operations[i].Responses[j].Headers[k].FieldPath=append([]string(nil),header.FieldPath...)};if response.Body!=nil{body:=*response.Body;out.Operations[i].Responses[j].Body=&body}}};return out}
 func (c *Contract)Schema()Schema{if c==nil{return Schema{}};return copySchema(c.schema)}
 
 func Compile(program *language.Program,schema *Schema)(*Contract,error){

@@ -5,6 +5,9 @@ independently versioned schema families. It is a generation and owned-output
 layer only: it does not edit a POM by default, invoke Maven, sign, deploy, or
 publish anything.
 
+Checked metadata examples and their generated-test behavior are specified in
+[EXAMPLES.md](EXAMPLES.md).
+
 ## Typed contracts and layouts
 
 `Generate(GenerateInput)` accepts a list of `Contract` values. Each contract

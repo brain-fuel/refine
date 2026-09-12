@@ -4,6 +4,8 @@ The `native` package is the validated, immutable boundary for JSON Schema,
 Avro, and OpenAPI. Its complete Go boundaries decode and validate JSON and Avro
 payloads, but it does not perform compatibility analysis or schema evolution.
 It can bundle caller-supplied resources, but never fetches resources itself.
+Executable typed metadata examples are documented in [EXAMPLES.md](EXAMPLES.md);
+ordinary native `examples` annotations remain opaque resources.
 
 ## Supported inputs
 
@@ -220,8 +222,21 @@ block sizes, duplicate map keys, UTF-8, decimal precision, UUID text, time-of-da
 ranges, and caller-bounded bytes, depth, values, and string/bytes sizes. Avro
 1.12 nanos timestamps retain their exact signed `long`; unknown or invalid
 logical types use their underlying type as the Avro specification requires.
-The known `big-decimal` logical type remains explicitly gated with
-`native.enforcement` until its value-carried scale encoding is implemented.
+The Avro 1.12 [`big-decimal`](https://avro.apache.org/docs/1.12.0/specification/#decimal)
+logical type is enforced as an outer Avro `bytes` value containing an Avro
+`bytes` two's-complement unscaled integer followed by an Avro `int` scale, in
+agreement with Apache's `BigDecimalConversion`. The unscaled integer must be
+nonempty, the scale must fit signed 32 bits, and the nested value must consume
+the carrier exactly. Redundant sign extension remains legal; scale and
+precision are intentionally unrestricted. Existing payload byte/depth/value
+limits bound this check without expanding a power of ten. Automatic projection
+and the checked Go boundary preserve this value as its exact physical `[UInt8]`
+carrier. `AvroBytesDecimal` metadata has a fixed schema scale and therefore
+cannot truthfully represent per-value-scale `big-decimal`; editing that carrier
+to `Real` fails `native.decode` instead of silently rounding or discarding the
+scale. A dedicated exact-rational wire policy remains future work.
+Generated Java Avro serde still rejects `big-decimal` until it implements the
+same nested representation; native Go acceptance does not broaden that gate.
 Native schema ingestion also audits every field default from the exact source
 node, closing numeric truncation, overflow, and obsolete branch-zero union
 default behavior in the ecosystem parser. Hamba receives a private structural
@@ -272,6 +287,12 @@ validation accepts them; the refined boundary returns `native.decode` because
 finite exact rational `value.Data` cannot represent them. This distinction is
 intentional and never changes the native-only result.
 
+Avro JSON has corresponding `ValidateAvroJSON` and
+`DecodeAndValidateAvroJSON` boundaries. They use strict Avro JSON tags and byte
+encodings, bounded transcode, then the same native binary and checked refinement
+gates. See [AVRO-JSON.md](AVRO-JSON.md) for framing, limits, strict-input semantics
+and Apache/Hamba conformance evidence. They do not guess a reader schema.
+
 For OpenAPI 3.1 and 3.2, `ValidateJSON` compiles the
 selected Schema Object and all explicit resources with the exact-number Draft
 2020-12 oracle. YAML scalars are converted to an exact JSON value without a
@@ -303,6 +324,38 @@ values, preserved extras, rational records, named scalar encodings, and explicit
 union discriminators are decoded according to checked `WireMetadata`. Avro has
 a distinct binary representation and is rejected by this JSON API.
 
+Native OpenAPI operation composition is opt-in and versioned separately from
+the pure Refine operation facade. `openapi.Schema.Native` uses
+`refine.openapi.native/v1`; when absent, the existing operation facade validates
+only already-decoded Refine request and response records. When present, project
+compilation reconciles every operation, response, parameter, header, media type,
+Schema Object location, and checked field path against the validated OpenAPI
+document. `Project.OpenAPIOperationIndex` returns immutable stable part IDs,
+their proven resource/pointer selectors and the canonical offline resource
+closure. Operation Schema Objects are explicit seeds for OpenAPI 3.0 adaptation,
+dialect checks, and regex keyword discovery. Examples and defaults are never
+scanned as schemas.
+
+`DecodeAndValidateOpenAPIRequest` and `DecodeAndValidateOpenAPIResponse` accept
+semantic JSON values, enforce each native Schema Object first, assemble and
+decode the checked request/response record, and then run Refine validation.
+Exact status has precedence over class status and `default`. Header names are
+case-insensitive; path, query, and cookie names are case-sensitive. Duplicate,
+missing-required, unexpected, null-invalid, and media-mismatched parts are
+native payload failures. Aggregate part, byte, depth, and node limits are
+caller-tightenable below fixed hard caps; exhaustion remains `native.limit`.
+A request token is issued only after a completely valid request report. Context
+validation rejects foreign, stale, or wrong-operation tokens, while an absent
+token produces the same explicit indeterminate request-context diagnostic as
+the pure facade. These APIs do not parse HTTP URI, query, cookie, or header
+encodings: callers must supply semantic JSON values. Non-default parameter
+serialization styles, parameter `content`, ambiguous media types, and non-JSON
+body media are rejected during project compilation rather than guessed.
+
+Until the composed Java OpenAPI boundary consumes this immutable index, project
+Java generation fails with `native.enforcement` when Native bindings are
+configured. It does not silently emit the Refine-only facade.
+
 Generated language-only validators report `GeneratedEnforcement().Supported ==
 false`. `java.GenerateProjectJSONSerde` is the narrower composed path. It emits
 an offline networknt validator and invokes it on
@@ -323,9 +376,16 @@ Non-regex validators contain no Graal class
 reference and retain their smaller runtime closure. A regex validator exposes
 separate tighten-only `RegexLimits` for pattern and subject UTF-16 units,
 evaluation count, aggregate charged units, and the whole schema-evaluation
-deadline. It creates one isolated context and one request-owned virtual
-watchdog per validation; the watchdog inherits neither thread-local state nor
-the caller's context class loader, and is interrupted during request cleanup.
+deadline. Context and fixed matcher initialization has a separate generated
+10-second deployment-startup ceiling. It evaluates only the fixed matcher
+factory and a fixed empty pattern against an empty subject before the caller's
+payload deadline starts; no schema pattern or payload is executed during that
+phase. Context construction is elapsed-time checked because there is not yet a
+context that another thread can cancel, so that portion is bounded as a
+deployment check rather than a hard real-time guarantee. Once a context exists,
+initialization and payload evaluation each have a request-owned virtual
+watchdog. The watchdog inherits neither thread-local state nor the caller's
+context class loader, and is interrupted during request cleanup.
 GraalVM documents that
 [`Context.close(true)`](https://www.graalvm.org/sdk/javadoc/org/graalvm/polyglot/Context.html#close(boolean))
 may cancel a context executing on another thread. Timeout, cancellation, and budget
@@ -337,9 +397,10 @@ and native-`Limits` constructors and additionally accepts `(Limits,
 RegexLimits)` or `(CodecLimits, Limits, RegexLimits)` when regex support is
 present, so callers can tighten every boundary without constructing a sidecar.
 The shared Graal engine lives for the generated helper's class lifetime.
-Missing or incompatible Graal deployment artifacts and static engine
-initialization failures are fatal deployment errors, not payload-validation
-outcomes.
+Its cached fixed source lets contexts share compiled code. Missing or
+incompatible Graal deployment artifacts, static engine initialization failure,
+or exceeding the separate trusted-initialization ceiling are fatal deployment
+errors, not payload-validation outcomes. There is no automatic retry.
 
 Schema keyword and dialect scans traverse only real Schema Object positions and
 follow bundled JSON Pointer references. A payload property named `pattern` or

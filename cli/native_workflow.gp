@@ -19,11 +19,11 @@ func nativeCommand(args []string,input io.Reader,output,errorOutput io.Writer)in
     if len(args)==0{fmt.Fprintln(errorOutput,"expected native ingest, source, update, original, or validate-payload");return 2}
     action:=args[0];flags:=flag.NewFlagSet("native "+action,flag.ContinueOnError);flags.SetOutput(errorOutput)
     resource,pointer,rootType,resourceFile:="urn:refine:root","","ImportedRoot",""
-    nativeOnly,jsonMode:=false,false
+    nativeOnly,jsonMode,avroJSON:=false,false,false
     var totalSteps,clauseSteps uint64
     switch action{
     case "ingest":flags.StringVar(&resource,"resource",resource,"absolute URI identifying the input; never fetched");flags.StringVar(&pointer,"pointer","","selected root JSON Pointer");flags.StringVar(&rootType,"type",rootType,"editable root type name");flags.StringVar(&resourceFile,"resources","","explicit JSON array of offline native resources")
-    case "validate-payload":flags.BoolVar(&nativeOnly,"native-only",false,"validate only original native constraints, not added refinements");flags.BoolVar(&jsonMode,"json",false,"emit machine-readable report");flags.Uint64Var(&totalSteps,"total-steps",0,"refinement evaluation total step limit");flags.Uint64Var(&clauseSteps,"clause-steps",0,"refinement evaluation per-clause step limit")
+    case "validate-payload":flags.BoolVar(&nativeOnly,"native-only",false,"validate only original native constraints, not added refinements");flags.BoolVar(&jsonMode,"json",false,"emit machine-readable report");flags.BoolVar(&avroJSON,"avro-json",false,"read Avro JSON encoding instead of binary; only valid for an Avro bundle");flags.Uint64Var(&totalSteps,"total-steps",0,"refinement evaluation total step limit");flags.Uint64Var(&clauseSteps,"clause-steps",0,"refinement evaluation per-clause step limit")
     case "source","update","original":
     default:fmt.Fprintln(errorOutput,"unknown native command");return 2
     }
@@ -46,6 +46,7 @@ func nativeCommand(args []string,input io.Reader,output,errorOutput io.Writer)in
         }
     }else{project,err=native.ParseBundle(loaded[paths[0]])}
     if err!=nil{return failure(err)}
+    if avroJSON&&project.Format()!=native.Avro{fmt.Fprintln(errorOutput,"--avro-json requires an Avro bundle");return 2}
     var artifact []byte
     switch action{
     case "ingest":artifact,err=project.Bundle()
@@ -54,13 +55,13 @@ func nativeCommand(args []string,input io.Reader,output,errorOutput io.Writer)in
     case "update":project,err=project.WithEditedSource(string(loaded[paths[1]]));if err==nil{artifact,err=project.Bundle()}
     case "validate-payload":
         if !nativeOnly{
-            var checked validation.Report;var decodeErr error;if project.Format()==native.Avro{_,checked,decodeErr=project.DecodeAndValidateAvro(loaded[paths[1]],native.AvroPayloadLimits{},validation.Limits{Total:totalSteps,Clause:clauseSteps})}else{_,checked,decodeErr=project.DecodeAndValidateJSON(loaded[paths[1]],validation.Limits{Total:totalSteps,Clause:clauseSteps})};if decodeErr!=nil{return failure(decodeErr)}
+            var checked validation.Report;var decodeErr error;if avroJSON{_,checked,decodeErr=project.DecodeAndValidateAvroJSON(loaded[paths[1]],native.AvroPayloadLimits{},validation.Limits{Total:totalSteps,Clause:clauseSteps})}else if project.Format()==native.Avro{_,checked,decodeErr=project.DecodeAndValidateAvro(loaded[paths[1]],native.AvroPayloadLimits{},validation.Limits{Total:totalSteps,Clause:clauseSteps})}else{_,checked,decodeErr=project.DecodeAndValidateJSON(loaded[paths[1]],validation.Limits{Total:totalSteps,Clause:clauseSteps})};if decodeErr!=nil{return failure(decodeErr)}
             state:=validation.StateName(checked.State());result:=report{Phase:"native.validate-payload",State:state,Summary:"Native and refined payload validation: "+state,Diagnostics:[]diagnostic{},Result:struct{NativeOnly bool `json:"nativeOnly"`;Validation validation.Report `json:"validation"`}{false,checked}}
             for _,detail:=range checked.Diagnostics(){result.Diagnostics=append(result.Diagnostics,diagnostic{Code:detail.Code,Message:detail.Message})}
             if jsonMode{if err:=json.NewEncoder(output).Encode(result);err!=nil{return 2}}else{writer:=output;if state!="valid"{writer=errorOutput};if _,err:=fmt.Fprintln(writer,result.Summary);err!=nil{return 2};for _,detail:=range result.Diagnostics{if _,err:=fmt.Fprintf(writer,"%s: %s\n",detail.Code,detail.Message);err!=nil{return 2}}}
             if state!="valid"{return 1};return 0
         }
-        if project.Format()==native.Avro{err=project.ValidateAvroBinary(loaded[paths[1]],native.AvroPayloadLimits{})}else{err=project.ValidateJSON(loaded[paths[1]])};if err!=nil{return failure(err)}
+        if avroJSON{err=project.ValidateAvroJSON(loaded[paths[1]],native.AvroPayloadLimits{})}else if project.Format()==native.Avro{err=project.ValidateAvroBinary(loaded[paths[1]],native.AvroPayloadLimits{})}else{err=project.ValidateJSON(loaded[paths[1]])};if err!=nil{return failure(err)}
         summary:="Original native payload constraints passed; added Refine predicates were NOT evaluated."
         if jsonMode{if err:=json.NewEncoder(output).Encode(report{Phase:"native.validate-payload",State:"valid",Summary:summary,Diagnostics:[]diagnostic{},Result:struct{NativeOnly bool `json:"nativeOnly"`}{true}});err!=nil{return 2};return 0};artifact=[]byte(summary+"\n")
     }

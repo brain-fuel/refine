@@ -87,6 +87,8 @@ engine verifies all of the following before installing an output:
   modifying the editable snapshot;
 - every import is an exact release, resolving either to the same batch or an
   explicitly supplied published identity;
+- the supplied published-release catalog has unique family/version identities,
+  and no batch member attempts to republish one of those immutable versions;
 - all destinations are relative, distinct, and do not traverse a known symbolic
   link; immutable outputs must be absent, while an explicitly typed mutable
   replacement must be an existing regular file with the exact expected digest;

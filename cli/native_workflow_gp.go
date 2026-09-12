@@ -27,7 +27,7 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 	flags := flag.NewFlagSet("native "+action, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
 	resource, pointer, rootType, resourceFile := "urn:refine:root", "", "ImportedRoot", ""
-	nativeOnly, jsonMode := false, false
+	nativeOnly, jsonMode, avroJSON := false, false, false
 	var totalSteps, clauseSteps uint64
 	switch action {
 	case "ingest":
@@ -38,6 +38,7 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 	case "validate-payload":
 		flags.BoolVar(&nativeOnly, "native-only", false, "validate only original native constraints, not added refinements")
 		flags.BoolVar(&jsonMode, "json", false, "emit machine-readable report")
+		flags.BoolVar(&avroJSON, "avro-json", false, "read Avro JSON encoding instead of binary; only valid for an Avro bundle")
 		flags.Uint64Var(&totalSteps, "total-steps", 0, "refinement evaluation total step limit")
 		flags.Uint64Var(&clauseSteps, "clause-steps", 0, "refinement evaluation per-clause step limit")
 	case "source", "update", "original":
@@ -140,6 +141,10 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 	if err != nil {
 		return failure(err)
 	}
+	if avroJSON && project.Format() != native.Avro {
+		fmt.Fprintln(errorOutput, "--avro-json requires an Avro bundle")
+		return 2
+	}
 	var artifact []byte
 	switch action {
 	case "ingest":
@@ -157,7 +162,9 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 		if !nativeOnly {
 			var checked validation.Report
 			var decodeErr error
-			if project.Format() == native.Avro {
+			if avroJSON {
+				_, checked, decodeErr = project.DecodeAndValidateAvroJSON(loaded[paths[1]], native.AvroPayloadLimits{}, validation.Limits{Total: totalSteps, Clause: clauseSteps})
+			} else if project.Format() == native.Avro {
 				_, checked, decodeErr = project.DecodeAndValidateAvro(loaded[paths[1]], native.AvroPayloadLimits{}, validation.Limits{Total: totalSteps, Clause: clauseSteps})
 			} else {
 				_, checked, decodeErr = project.DecodeAndValidateJSON(loaded[paths[1]], validation.Limits{Total: totalSteps, Clause: clauseSteps})
@@ -196,7 +203,9 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 			}
 			return 0
 		}
-		if project.Format() == native.Avro {
+		if avroJSON {
+			err = project.ValidateAvroJSON(loaded[paths[1]], native.AvroPayloadLimits{})
+		} else if project.Format() == native.Avro {
 			err = project.ValidateAvroBinary(loaded[paths[1]], native.AvroPayloadLimits{})
 		} else {
 			err = project.ValidateJSON(loaded[paths[1]])

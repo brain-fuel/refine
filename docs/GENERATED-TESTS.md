@@ -39,13 +39,15 @@ For every target, the emitted suite derives a structural `Data` generator. A
 valid candidate must pass the contract filter, the normal generated model
 factory, preserve its raw `Data`, validate through the model, and survive a
 canonical show/read/show round trip. It also emits one invalid property per
-discovered `where` clause. A targeted invalid candidate must be invalid with
-exactly one diagnostic carrying that clause's explicit or deterministically
-derived code. The normal factory and canonical reader must both reject it with
-that diagnostic, while the explicit without-validation factory must preserve
-the raw value and retain the same diagnostic on validation. Thus a property is
-not satisfied merely because the validator used to select candidates returns
-the same result a second time.
+discovered `where` clause. A targeted invalid candidate must have a complete
+`INVALID` outcome containing that clause's explicit or deterministically
+derived code. Other conclusive violations may coexist: dependent predicates can
+make an isolated single-rule counterexample mathematically impossible. An
+incomplete invalid result never receives credit. The normal factory and
+canonical reader must both reject it with the requested diagnostic, while the
+explicit without-validation factory must preserve the raw value and retain the
+same diagnostic on validation. Thus a property is not satisfied merely because
+the validator used to select candidates returns the same result a second time.
 
 The generator supports booleans, strings, exact rational reals, finite exact
 `Float32`/`Float64`, RFC 3339 timestamps, arbitrary and fixed-width integers
@@ -93,17 +95,24 @@ Embedded valid and refinement-invalid examples run before random properties and
 through the same generated model construction/bypass, canonical read, and JSON
 or Avro wire boundaries as generated candidates. Native-valid examples must
 also pass every configured native candidate predicate. Valid examples are mixed
-only into their named target's candidate distribution, after these assertions,
-so a difficult but supplied valid case can satisfy generation without being
-relabelled or weakening exhaustion. A refinement-invalid example names exactly
-one diagnostic and cannot be credited unless the payload is native-compatible.
+only into their named target's positive candidate distribution, after these
+assertions, so a difficult but supplied valid case can satisfy generation
+without being relabelled or weakening exhaustion. Each refinement-invalid
+example names exactly one requested diagnostic and is mixed only into that
+target-and-code invalid distribution. It cannot be credited unless the payload
+is native-compatible and its complete invalid result contains that code.
+Positive, native-invalid and indeterminate examples never enter an invalid seed
+pool; invalid, native-invalid and indeterminate examples never enter the
+positive pool.
 An explicit native-invalid example names no refinement diagnostic: a
 Refine-valid value must be rejected by staged wire output with zero published
 bytes, while a Refine-invalid value must be classified as structurally invalid
-by both normal and bypass model construction. They are supplied through typed
-options until native schema metadata exposes a stable, unambiguous executable
-example API; native `examples` annotations are not guessed or treated as Refine
-metadata.
+by both normal and bypass model construction. Library callers may supply typed
+examples directly, and project generation also adapts versioned
+`native.WireMetadata.Examples` after canonical structural and expected-Refine-
+outcome checks. A declared native-invalid outcome remains unevaluated metadata
+intent until a configured generated JSON or Avro adapter executes it; ordinary
+native `examples` annotations are never guessed or classified.
 
 ## jetCheck dependency and replay
 

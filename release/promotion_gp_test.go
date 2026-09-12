@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,6 +156,48 @@ func TestPromotionValidationLeavesEverythingUnpromoted(t *testing.T) {
 			data, _ := os.ReadFile(filepath.Join(root, "unrelated"))
 			if string(data) != "mine" {
 				t.Fatal("unrelated file changed")
+			}
+		})
+	}
+}
+
+func TestPromotionRejectsAlreadyPublishedVersionIdentityBeforeWrites(t *testing.T) {
+	version := Version{Major: 1}
+	tests := []struct {
+		name      string
+		available func(ContentID) []PublishedRelease
+		want      string
+	}{
+		{"same content", func(snapshot ContentID) []PublishedRelease {
+			return []PublishedRelease{{Family: "foo", Version: version, Content: snapshot}}
+		}, "already published"},
+		{"different content", func(ContentID) []PublishedRelease {
+			return []PublishedRelease{{Family: "foo", Version: version, Content: Digest([]byte("published elsewhere"))}}
+		}, "already published"},
+		{"duplicate catalog identity", func(snapshot ContentID) []PublishedRelease {
+			return []PublishedRelease{{Family: "bar", Version: version, Content: snapshot}, {Family: "bar", Version: version, Content: snapshot}}
+		}, "duplicate published release"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			snapshot := []byte("snapshot")
+			snapshotID := writeSnapshot(t, root, "schemata/foo/SNAPSHOT.refine", snapshot)
+			if err := os.WriteFile(filepath.Join(root, "unrelated"), []byte("mine"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			family := PromotionFamily{Family: "foo", Version: version, SnapshotPath: "schemata/foo/SNAPSHOT.refine", SnapshotFileContent: snapshotID, ReleasePath: "schemata/foo/v1.0.0.refine", ReleaseContent: snapshot, Generated: []Artifact{{Path: "generated/Foo.java", Content: []byte("class Foo {}")}}}
+			if _, err := Promote(PromotionInput{Root: root, Families: []PromotionFamily{family}, Available: tc.available(snapshotID)}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("wanted %q, got %v", tc.want, err)
+			}
+			for _, name := range []string{"schemata/foo/v1.0.0.refine", "generated/Foo.java", TransactionLockName} {
+				if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("immutable rejection created %s: %v", name, err)
+				}
+			}
+			got, err := os.ReadFile(filepath.Join(root, "unrelated"))
+			if err != nil || string(got) != "mine" {
+				t.Fatalf("unrelated file changed: %q %v", got, err)
 			}
 		})
 	}

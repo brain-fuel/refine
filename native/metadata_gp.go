@@ -53,6 +53,8 @@ type WireMetadata struct {
 	// OpenAPI binds explicitly authored request/response context types to
 	// native operation identifiers. No binding is inferred from paths.
 	OpenAPI *refineopenapi.Schema `json:"openapi,omitempty"`
+	// Examples are canonical typed Refine values with executable expectations.
+	Examples *ExampleCatalog `json:"examples,omitempty"`
 }
 
 const DefaultNumericExpansion = 65536
@@ -66,7 +68,7 @@ func (m WireMetadata) NumericExpansionLimit() int {
 }
 
 func copyMetadata(in WireMetadata) WireMetadata {
-	out := WireMetadata{PublicationNamespace: in.PublicationNamespace, NumericExpansion: in.NumericExpansion, OpenAPI: copyOpenAPISchema(in.OpenAPI), ExtraFields: make(map[string]ExtraFieldMode), Scalars: make(map[string]ScalarEncoding), Discriminators: make(map[string]Discriminator)}
+	out := WireMetadata{PublicationNamespace: in.PublicationNamespace, NumericExpansion: in.NumericExpansion, OpenAPI: copyOpenAPISchema(in.OpenAPI), Examples: copyExampleCatalog(in.Examples), ExtraFields: make(map[string]ExtraFieldMode), Scalars: make(map[string]ScalarEncoding), Discriminators: make(map[string]Discriminator)}
 	for k, v := range in.ExtraFields {
 		out.ExtraFields[k] = v
 	}
@@ -87,10 +89,10 @@ func copyMetadata(in WireMetadata) WireMetadata {
 }
 
 func metadataEmpty(value WireMetadata) bool {
-	return value.PublicationNamespace == "" && value.NumericExpansion == 0 && value.OpenAPI == nil && len(value.ExtraFields) == 0 && len(value.Scalars) == 0 && len(value.Discriminators) == 0
+	return value.PublicationNamespace == "" && value.NumericExpansion == 0 && value.OpenAPI == nil && value.Examples == nil && len(value.ExtraFields) == 0 && len(value.Scalars) == 0 && len(value.Discriminators) == 0
 }
 func metadataEqual(a, b WireMetadata) bool {
-	if a.PublicationNamespace != b.PublicationNamespace || a.NumericExpansion != b.NumericExpansion || !openAPISchemaEqual(a.OpenAPI, b.OpenAPI) || len(a.ExtraFields) != len(b.ExtraFields) || len(a.Scalars) != len(b.Scalars) || len(a.Discriminators) != len(b.Discriminators) {
+	if a.PublicationNamespace != b.PublicationNamespace || a.NumericExpansion != b.NumericExpansion || !openAPISchemaEqual(a.OpenAPI, b.OpenAPI) || !exampleCatalogEqual(a.Examples, b.Examples) || len(a.ExtraFields) != len(b.ExtraFields) || len(a.Scalars) != len(b.Scalars) || len(a.Discriminators) != len(b.Discriminators) {
 		return false
 	}
 	for key, value := range a.ExtraFields {
@@ -243,6 +245,9 @@ func validateMetadata(program *language.Program, metadata WireMetadata) error {
 				return fmt.Errorf("unknown constructor %s.%s", name, constructor)
 			}
 		}
+	}
+	if _, err := CheckExamples(program, metadata.Examples); err != nil {
+		return err
 	}
 	return validateOpenAPIMetadata(program, metadata.OpenAPI)
 }

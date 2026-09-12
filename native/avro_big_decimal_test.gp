@@ -1,0 +1,12 @@
+package native
+
+import (
+    "fmt"
+    "testing"
+
+    "goforge.dev/refine/validation"
+)
+
+func TestAvroBigDecimalCheckedBoundaryPreservesPhysicalValue(t *testing.T){project:=avroProject(t,`{"type":"bytes","logicalType":"big-decimal"}`);datum:=[]byte{8,4,4,0xd2,4};data,report,err:=project.DecodeAndValidateAvro(datum,AvroPayloadLimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("checked byte-preserving boundary rejected big-decimal: %v %+v",err,report)};items:=data.Elements();if len(items)!=4{t.Fatalf("big-decimal physical payload was not preserved: %v",items)};for i,want:=range []int64{4,4,0xd2,4}{number,ok:=items[i].Number();if !ok||number.Show()!=fmt.Sprint(want){t.Fatalf("physical byte %d changed",i)}}
+    edited,err:=project.WithEditedSource("type Datum = Real\n");if err!=nil{t.Fatal(err)};if _,_,err:=edited.DecodeAndValidateAvro(datum,AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.decode"{t.Fatalf("per-value scale was silently coerced to checked Real: %v",err)}
+}

@@ -1,9 +1,11 @@
 package project
 
 import (
+    "fmt"
     "os"
     "os/exec"
     "path/filepath"
+    "strconv"
     "strings"
     "testing"
 
@@ -46,9 +48,23 @@ func TestGenerateRejectsInvalidOrExternalNativeOpenAPIMetadata(t *testing.T){
     imported,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"object"}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Root"}});if err!=nil{t.Fatal(err)};input=GenerateInput{Contracts:[]Contract{{Family:"native",NativeProject:imported,Formats:[]native.Format{native.JSONSchema},Wire:projectOperationWire()}}};if bundle,err:=Generate(input);err==nil||len(bundle.Files)!=0{t.Fatal("external native operation metadata override accepted")}
 }
 
+func TestGenerateIncludesComposedNativeOpenAPIOperationFacade(t *testing.T){
+    document:=`{"openapi":"3.1.0","info":{"title":"Items","version":"1"},"paths":{"/items/{id}":{"get":{"operationId":"get","parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}},"additionalProperties":false}}}}}}}},"components":{"schemas":{"Root":{"type":"object","required":["value"],"properties":{"value":{"type":"integer"}},"additionalProperties":false}}}}`
+    imported,err:=native.IngestProjectResources(native.OpenAPI,[]native.Resource{{URI:"https://example.test/items.json",Source:document}},native.ProjectOptions{Root:native.ResourceSelector{Resource:"https://example.test/items.json",Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};imported,err=imported.WithEditedSource(projectOperationSource);if err!=nil{t.Fatal(err)};wire:=projectOperationWire();wire.OpenAPI.Native=&refineopenapi.NativeBindings{Version:refineopenapi.NativeBindingsVersion,Operations:[]refineopenapi.NativeOperationBinding{{OperationID:"get",Responses:[]refineopenapi.NativeResponseBinding{{Status:"200",Body:&refineopenapi.NativeMediaBinding{MediaType:"application/json"}}}}}};imported,err=imported.WithMetadata(wire);if err!=nil{t.Fatal(err)}
+    bundle,err:=Generate(GenerateInput{Contracts:[]Contract{{Family:"nativeitems",NativeProject:imported,Formats:[]native.Format{native.OpenAPI}}}});if err!=nil{t.Fatal(err)};facade,sidecar,requestCodec,responseCodec:=false,false,false,false;for _,file:=range bundle.Files{name:=filepath.Base(file.Path);source:=string(file.Content);if name=="RefineOpenAPIOperations.java"{facade=strings.Contains(source,"ValidatedRequest")&&strings.Contains(source,"validateNative")};if strings.Contains(name,"NativeParts"){sidecar=strings.Contains(source,"urn:refine:openapi-parts:")};if strings.Contains(name,"JSON0"){requestCodec=strings.Contains(source,"readDataWithoutRefinements")};if strings.Contains(name,"JSON1"){responseCodec=strings.Contains(source,"readDataWithoutRefinements")}}
+    if !facade||!sidecar||!requestCodec||!responseCodec{t.Fatalf("composed facade=%t sidecar=%t request codec=%t response codec=%t",facade,sidecar,requestCodec,responseCodec)}
+}
+
 func compileProjectContext(t *testing.T,files []java.File){
-    t.Helper();javaHome:=os.Getenv("REFINE_JAVA_HOME");if javaHome==""{javaHome="/opt/homebrew/opt/openjdk@25"};compiler:=filepath.Join(javaHome,"bin","javac");vm:=filepath.Join(javaHome,"bin","java");if _,err:=os.Stat(compiler);err!=nil{if os.Getenv("REFINE_REQUIRE_JAVA")=="1"{t.Fatal(err)};t.Skip("Java 25 unavailable")}
+    t.Helper();compiler,vm,err:=projectJavaTools();if err!=nil{if os.Getenv("REFINE_REQUIRE_JAVA")=="1"{t.Fatal(err)};t.Skipf("Java 25 unavailable: %v",err)}
     dir:=t.TempDir();paths:=[]string{};for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};paths=append(paths,target)};harness:=filepath.Join(dir,"ProjectContext.java");if err:=os.WriteFile(harness,[]byte(projectContextHarness),0644);err!=nil{t.Fatal(err)};paths=append(paths,harness);classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",classes},paths...);if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("project context javac: %v\n%s",err,output)};if output,err:=exec.Command(vm,"-Xss256k","-cp",classes,"ProjectContext").CombinedOutput();err!=nil{t.Fatalf("project context Java: %v\n%s",err,output)}
+}
+
+func projectJavaTools()(string,string,error){
+    javaHome:=os.Getenv("REFINE_JAVA_HOME");if javaHome==""{javaHome=os.Getenv("JAVA_HOME")};compiler:="";vm:=""
+    if javaHome!=""{compiler=filepath.Join(javaHome,"bin","javac");vm=filepath.Join(javaHome,"bin","java")}else{var err error;compiler,err=exec.LookPath("javac");if err!=nil{return "","",fmt.Errorf("find javac on PATH: %w",err)};vm,err=exec.LookPath("java");if err!=nil{return "","",fmt.Errorf("find java on PATH: %w",err)}}
+    if _,err:=os.Stat(compiler);err!=nil{return "","",fmt.Errorf("Java compiler %s: %w",compiler,err)};if _,err:=os.Stat(vm);err!=nil{return "","",fmt.Errorf("Java VM %s: %w",vm,err)}
+    output,err:=exec.Command(compiler,"-version").CombinedOutput();if err!=nil{return "","",fmt.Errorf("inspect Java compiler %s: %w (%s)",compiler,err,output)};fields:=strings.Fields(string(output));major:=0;if len(fields)>1{major,_=strconv.Atoi(strings.Split(fields[1],".")[0])};if major<25{return "","",fmt.Errorf("Java 25 compiler required, found %q",strings.TrimSpace(string(output)))};return compiler,vm,nil
 }
 
 const projectContextHarness=`

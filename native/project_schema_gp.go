@@ -75,5 +75,9 @@ func validateProject(p *Project) (*Project, error) {
 		}
 		return nil, wrap(p.Format(), "native.schema", "", err)
 	}
-	return validateAvroRefinementDefaults(p)
+	checked, err := validateAvroRefinementDefaults(p)
+	if err != nil {
+		return nil, err
+	}
+	return validateOpenAPINativeBindings(checked)
 }

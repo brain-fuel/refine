@@ -37,7 +37,7 @@ Usage:
   refine native source <bundle|->
   refine native update <bundle|-> <source.refine|->
   refine native original <bundle|->
-  refine native validate-payload [--native-only] [--json] [--total-steps N] [--clause-steps N] <bundle|-> <payload|->
+  refine native validate-payload [--native-only] [--avro-json] [--json] [--total-steps N] [--clause-steps N] <bundle|-> <payload|->
 
 typecheck checks the language's static rules; it is not yet native schema,
 satisfiability, compatibility, or payload validation.

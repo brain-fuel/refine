@@ -175,6 +175,10 @@ func Generate(input GenerateInput) (Bundle, error) {
 			if len(properties.Targets) == 0 {
 				properties.Targets = []java.PropertyTarget{{Name: contract.RootType}}
 			}
+			properties, err = propertyOptionsWithEmbeddedExamples(contract.Program, contract.Wire, properties)
+			if err != nil {
+				return Bundle{}, err
+			}
 			if jsonWire {
 				properties.JSONModule = "RefineJSONModule"
 			}

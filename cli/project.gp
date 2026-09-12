@@ -94,7 +94,7 @@ func schemaSourceName(name string)(string,schemaSourceKind,bool){
     if strings.HasSuffix(name,".refine"){return strings.TrimSuffix(name,".refine"),refineSchema,true}
     return "",0,false
 }
-func emptyWireMetadata(metadata native.WireMetadata)bool{return len(metadata.ExtraFields)==0&&len(metadata.Scalars)==0&&len(metadata.Discriminators)==0&&metadata.PublicationNamespace==""&&metadata.NumericExpansion==0&&metadata.OpenAPI==nil}
+func emptyWireMetadata(metadata native.WireMetadata)bool{return len(metadata.ExtraFields)==0&&len(metadata.Scalars)==0&&len(metadata.Discriminators)==0&&metadata.PublicationNamespace==""&&metadata.NumericExpansion==0&&metadata.OpenAPI==nil&&metadata.Examples==nil}
 
 func loadProject(rootPath,configPath,packageOverride string)(project.GenerateInput,error){
     root,err:=os.OpenRoot(rootPath);if err!=nil{return project.GenerateInput{},err};defer root.Close()

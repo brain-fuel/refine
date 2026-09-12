@@ -113,13 +113,32 @@ partial bundle. For a native contract, operation metadata must live inside the
 native bundle. A `refine.project.json` wire override—even one containing only
 OpenAPI metadata—is rejected instead of being ignored.
 
-This linkage preserves explicitly authored descriptors; it does not yet reconcile
-them with an imported OpenAPI document's operations. The facade validates Refine
-types and predicates only: even a bound request or response is not automatically
-checked against native path/query/header/request-body/response schema locations.
-Native validation of the project's selected payload schema is a separate
-boundary. Full native operation reconciliation and composed serde enforcement
-remain required before this can be presented as a complete OpenAPI validator.
+When a native OpenAPI project carries checked `NativeBindings`, project
+generation instead emits a composed semantic-JSON facade. `ParameterJSON`,
+`HeaderJSON`, and `MediaJSON` values are already-decoded JSON values; the facade
+does not parse HTTP path, query, cookie, header, or media framing. Their byte
+arrays and containing lists are snapshotted behind fixed per-value and part
+caps. Every raw part is first parsed as exactly one bounded JSON value with
+strict duplicate detection. A generated wrapper schema then references the
+immutable operation index's trusted Schema Object locations and validates all
+parts in one native request. This gives the operation one aggregate byte/node
+budget and, for pattern-bearing schemas, one aggregate `RegexLimits` deadline
+and evaluation budget rather than resetting limits per part. Runtime callers
+never supply a schema URI or pointer.
+
+Only after native validation succeeds does the facade assemble the selected
+named request or response, perform canonical structural decoding with generated
+Jackson codecs, and execute the full Refine request, response, or context
+contract. Exact status has priority over class and then `default`. Successful
+request validation returns an immutable, unforgeable `ValidatedRequest` tied to
+that facade instance, generated project fingerprint, and operation ID. A
+foreign token is rejected. A context response without a token remains
+indeterminate with `openapi.request_context.missing`; it is never treated as
+valid. Native `Limits` controls the aggregate wrapper parser (including nodes),
+the facade's tighten-only `Limits` controls aggregate semantic parts/bytes, and
+`Budget.Limits` controls Refine evaluation. Syntax, native validation,
+structural decoding, and predicates are not bypassed or converted into one
+another's outcomes.
 
 Operation-aware native exports include the complete checked module explanation
 alongside a deterministic rendering of every operation ID, method, path,

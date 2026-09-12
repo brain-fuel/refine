@@ -20,7 +20,7 @@ type Resource struct { URI string; Source string }
 // Project couples editable checked language source to an immutable native
 // sidecar. The sidecar remains authoritative for constraints not represented by
 // the language projection.
-type Project struct { document *Document; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool; avroDefaultChecks []AvroDefaultCheck; schemaChecks analysis.SchemaReport }
+type Project struct { document *Document; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool; avroDefaultChecks []AvroDefaultCheck; schemaChecks analysis.SchemaReport; openAPIOperations *openAPIOperationIndex }
 
 func (p *Project) Format()Format{if p==nil||p.document==nil{return ""};return p.document.Format()}
 func (p *Project) Version()string{if p==nil||p.document==nil{return ""};return p.document.Version()}

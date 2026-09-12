@@ -310,8 +310,8 @@ func Promote(input PromotionInput) (PromotionResult, error) {
 			return result, fmt.Errorf("release.available: invalid published release identity")
 		}
 		key := releaseKey(r.Family, r.Version)
-		if old, ok := available[key]; ok && old != r.Content {
-			return result, fmt.Errorf("release.available: conflicting contents for %s %s", r.Family, r.Version.String())
+		if _, ok := available[key]; ok {
+			return result, fmt.Errorf("release.available: duplicate published release %s %s", r.Family, r.Version.String())
 		}
 		available[key] = r.Content
 	}
@@ -362,6 +362,10 @@ func Promote(input PromotionInput) (PromotionResult, error) {
 		if !family.Version.Valid() {
 			return result, fmt.Errorf("release.version: invalid release version for %s", family.Family)
 		}
+		key := releaseKey(family.Family, family.Version)
+		if _, published := available[key]; published {
+			return result, fmt.Errorf("release.immutable: %s %s is already published", family.Family, family.Version.String())
+		}
 		if !family.SnapshotFileContent.Valid() {
 			return result, fmt.Errorf("release.snapshot_digest: invalid digest for %s", family.Family)
 		}
@@ -385,7 +389,6 @@ func Promote(input PromotionInput) (PromotionResult, error) {
 			return result, fmt.Errorf("release.snapshot_changed: %s no longer matches planned content", family.Family)
 		}
 		releaseDigest := Digest(family.ReleaseContent)
-		key := releaseKey(family.Family, family.Version)
 		if _, ok := batch[key]; ok {
 			return result, fmt.Errorf("release.batch: duplicate release %s %s", family.Family, family.Version.String())
 		}

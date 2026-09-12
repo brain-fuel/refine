@@ -35,7 +35,7 @@ func TestValidateAvroLogicalTypesExactly(t *testing.T){
     nanos:=avroProject(t,`{"type":"long","logicalType":"timestamp-nanos"}`);if err:=nanos.ValidateAvroBinary(avroDatum(t,nanos,int64(math.MaxInt64)),AvroPayloadLimits{});err!=nil{t.Fatal(err)}
     unknown:=avroProject(t,`{"type":"string","logicalType":"example-vendor-type"}`);if err:=unknown.ValidateAvroBinary(avroDatum(t,unknown,"underlying"),AvroPayloadLimits{});err!=nil{t.Fatalf("unknown logical type was not read as underlying string: %v",err)}
     if err:=unknown.ValidateAvroBinary(avroDatum(t,unknown,"long"),AvroPayloadLimits{StringBytes:3});problemCode(err)!="native.limit"{t.Fatalf("string limit not enforced: %v",err)}
-    bigDecimal:=avroProject(t,`{"type":"bytes","logicalType":"big-decimal"}`);if err:=bigDecimal.ValidateAvroBinary([]byte{0},AvroPayloadLimits{});problemCode(err)!="native.enforcement"{t.Fatalf("known unsupported logical type not gated: %v",err)}
+    bigDecimal:=avroProject(t,`{"type":"bytes","logicalType":"big-decimal"}`);for _,datum:=range [][]byte{{6,2,0,0},{8,4,4,0xd2,4},{6,2,0xff,3},{8,4,0,1,0}}{if err:=bigDecimal.ValidateAvroBinary(datum,AvroPayloadLimits{});err!=nil{t.Fatalf("valid big-decimal rejected: %x %v",datum,err)}};for _,datum:=range [][]byte{{0},{4,0,0},{4,2,1},{8,2,1,0,0},{14,2,1,0x80,0x80,0x80,0x80,0x10}}{if err:=bigDecimal.ValidateAvroBinary(datum,AvroPayloadLimits{});problemCode(err)!="native.payload"{t.Fatalf("malformed big-decimal accepted: %x %v",datum,err)}}
 }
 
 func TestValidateAvroBinaryUsesOrderedResourceCache(t *testing.T){

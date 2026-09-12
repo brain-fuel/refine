@@ -192,6 +192,42 @@ func TestGeneratedPropertiesUseModelBoundariesAndTypedReplay(t *testing.T) {
 	}
 }
 
+func TestGeneratedPropertyExampleSeedPoolsAreSeparated(t *testing.T) {
+	program, err := language.Compile(`type Age = Int where it >= 0 @code "age.minimum"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := PropertyTestOptions{Targets: []PropertyTarget{{Name: "Age"}}, AvroSerde: "AgeAvroSerde", Examples: []PropertyExample{
+		{Target: "Age", Value: value.OfNumber(value.Integer(7)), Expected: ExampleValid},
+		{Target: "Age", Value: value.OfNumber(value.Integer(-7)), Expected: ExampleInvalid, DiagnosticCodes: []string{"age.minimum"}},
+		{Target: "Age", Value: value.OfNumber(value.Integer(8)), Expected: ExampleValid, NativeExpected: ExampleNativeInvalid},
+		{Target: "Age", Value: value.OfNumber(value.Integer(9)), Expected: ExampleIndeterminate},
+	}}
+	generated, err := GeneratePropertyTests(program, "example", "Contract", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := generated[0].Source
+	validLine, invalidLine := "", ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "var validRaw =") {
+			validLine = line
+		}
+		if strings.Contains(line, "var invalidRaw0 =") {
+			invalidLine = line
+		}
+	}
+	if !strings.Contains(validLine, `Rational.parse("7")`) || strings.Contains(validLine, `Rational.parse("-7")`) || strings.Contains(validLine, `Rational.parse("8")`) || strings.Contains(validLine, `Rational.parse("9")`) {
+		t.Fatalf("positive seed pool leaked: %s", validLine)
+	}
+	if !strings.Contains(invalidLine, `Rational.parse("-7")`) || strings.Contains(invalidLine, `Rational.parse("7")`) || strings.Contains(invalidLine, `Rational.parse("8")`) || strings.Contains(invalidLine, `Rational.parse("9")`) {
+		t.Fatalf("targeted invalid seed pool leaked: %s", invalidLine)
+	}
+	if !strings.Contains(text, "!outcome.incomplete()") || !strings.Contains(text, "anyMatch(d -> d.code().equals(code))") {
+		t.Fatal("targeted invalids do not require complete INVALID containing the requested code")
+	}
+}
+
 func TestGeneratedFixedIntegerProperties(t *testing.T) {
 	source := "type Bit = UInt1\ntype SignedBit = Int1\ntype Byte = Int8\ntype UnsignedByte = UInt8\ntype NativeLong = Int64\ntype Huge = Int1024\n"
 	vm, classpath := compilePropertySuite(t, source, PropertyTestOptions{CaseCount: 20, Seed: 91})

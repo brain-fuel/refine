@@ -39,15 +39,24 @@ command. `--total-steps` and `--clause-steps` optionally cap refinement evaluati
 zero uses the standard defaults. An unsupported wire representation fails
 closed. The result includes the complete refinement report but not the payload.
 
-The explicit command below tests **only the original native contract**:
+The explicit command below tests **only native constraints**, including supported
+canonical native-unit edits, without evaluating additional Refine predicates:
 
 ```sh
 refine native validate-payload --native-only --json person.refined.json payload.json
 ```
 
-For Avro, the payload is one binary datum, not a container file or Avro JSON.
-The JSON report includes `nativeOnly: true`, and the summary states that added
-Refine predicates were not evaluated. Full refined Avro decoding is not connected
-to this CLI yet; omitting the override for Avro fails indeterminate instead of
-claiming complete enforcement. Native-oracle failure details are
-redacted to avoid accidental payload/example/default leakage.
+For Avro, the default input is one binary datum, not a container file. Both
+native and refined validation run by default. Select Avro's JSON encoding
+explicitly with `--avro-json`; `--json` independently selects the report format:
+
+```sh
+refine native validate-payload --avro-json --json event.refined.json event.json
+```
+
+The encoding is never guessed. `--avro-json` with a non-Avro bundle is a usage
+error. Both Avro paths use the selected writer schema; they do not perform
+reader-schema evolution. Generated Java adapters provide reader resolution.
+With `--native-only`, the JSON report includes `nativeOnly: true`, and the
+summary states that added predicates were not evaluated. Native-oracle failure
+details are redacted to avoid accidental payload/example/default leakage.

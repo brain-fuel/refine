@@ -51,6 +51,7 @@ type Project struct {
 	nativeUnitsInEditable map[string]bool
 	avroDefaultChecks     []AvroDefaultCheck
 	schemaChecks          analysis.SchemaReport
+	openAPIOperations     *openAPIOperationIndex
 }
 
 func (p *Project) Format() Format {

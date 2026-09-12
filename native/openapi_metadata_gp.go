@@ -14,10 +14,43 @@ func copyOpenAPISchema(input *refineopenapi.Schema) *refineopenapi.Schema {
 	if input == nil {
 		return nil
 	}
-	out := &refineopenapi.Schema{Version: input.Version, Operations: make([]refineopenapi.OperationBinding, len(input.Operations))}
+	out := &refineopenapi.Schema{Version: input.Version, Operations: make([]refineopenapi.OperationBinding, len(input.Operations)), Native: copyOpenAPINative(input.Native)}
 	for i, operation := range input.Operations {
 		out.Operations[i] = operation
 		out.Operations[i].Responses = append([]refineopenapi.ResponseBinding(nil), operation.Responses...)
+	}
+	return out
+}
+
+func copyOpenAPINative(input *refineopenapi.NativeBindings) *refineopenapi.NativeBindings {
+	if input == nil {
+		return nil
+	}
+	out := &refineopenapi.NativeBindings{Version: input.Version, Operations: make([]refineopenapi.NativeOperationBinding, len(input.Operations))}
+	for i, item := range input.Operations {
+		out.Operations[i] = item
+		out.Operations[i].Parameters = make([]refineopenapi.NativeParameterBinding, len(item.Parameters))
+		for j, parameter := range item.Parameters {
+			out.Operations[i].Parameters[j] = parameter
+			out.Operations[i].Parameters[j].FieldPath = append([]string(nil), parameter.FieldPath...)
+		}
+		if item.RequestBody != nil {
+			body := *item.RequestBody
+			out.Operations[i].RequestBody = &body
+		}
+		out.Operations[i].Responses = make([]refineopenapi.NativeResponseBinding, len(item.Responses))
+		for j, response := range item.Responses {
+			out.Operations[i].Responses[j] = response
+			out.Operations[i].Responses[j].Headers = make([]refineopenapi.NativeHeaderBinding, len(response.Headers))
+			for k, header := range response.Headers {
+				out.Operations[i].Responses[j].Headers[k] = header
+				out.Operations[i].Responses[j].Headers[k].FieldPath = append([]string(nil), header.FieldPath...)
+			}
+			if response.Body != nil {
+				body := *response.Body
+				out.Operations[i].Responses[j].Body = &body
+			}
+		}
 	}
 	return out
 }
@@ -26,7 +59,7 @@ func openAPISchemaEqual(left, right *refineopenapi.Schema) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	if left.Version != right.Version || len(left.Operations) != len(right.Operations) {
+	if left.Version != right.Version || len(left.Operations) != len(right.Operations) || !openAPINativeEqual(left.Native, right.Native) {
 		return false
 	}
 	for i, operation := range left.Operations {
@@ -38,6 +71,57 @@ func openAPISchemaEqual(left, right *refineopenapi.Schema) bool {
 			if response != other.Responses[j] {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+func openAPINativeEqual(left, right *refineopenapi.NativeBindings) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left.Version != right.Version || len(left.Operations) != len(right.Operations) {
+		return false
+	}
+	for i, item := range left.Operations {
+		other := right.Operations[i]
+		if item.OperationID != other.OperationID || len(item.Parameters) != len(other.Parameters) || len(item.Responses) != len(other.Responses) || !openAPIMediaEqual(item.RequestBody, other.RequestBody) {
+			return false
+		}
+		for j, parameter := range item.Parameters {
+			candidate := other.Parameters[j]
+			if parameter.In != candidate.In || parameter.Name != candidate.Name || !stringSliceEqual(parameter.FieldPath, candidate.FieldPath) {
+				return false
+			}
+		}
+		for j, response := range item.Responses {
+			candidate := other.Responses[j]
+			if response.Status != candidate.Status || len(response.Headers) != len(candidate.Headers) || !openAPIMediaEqual(response.Body, candidate.Body) {
+				return false
+			}
+			for k, header := range response.Headers {
+				otherHeader := candidate.Headers[k]
+				if header.Name != otherHeader.Name || !stringSliceEqual(header.FieldPath, otherHeader.FieldPath) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+func openAPIMediaEqual(left, right *refineopenapi.NativeMediaBinding) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.MediaType == right.MediaType
+}
+func stringSliceEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i, item := range left {
+		if item != right[i] {
+			return false
 		}
 	}
 	return true

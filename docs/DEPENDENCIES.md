@@ -65,7 +65,14 @@ release gate.
   `patternProperties`. Refine does not use
   networknt's process-wide Graal context. Each validation gets a locked-down
   context, deterministic aggregate evaluation/work/UTF-16-unit limits, and a
-  watchdog deadline that cancels guest execution. Patterns and subjects cross
+  watchdog deadline that cancels guest execution. A separate fixed 10-second
+  deployment-startup phase evaluates the cached matcher source and warms only a
+  fixed empty pattern on an empty subject; the caller's aggregate payload
+  deadline starts afterward. Context construction is checked against that
+  ceiling after it returns because there is no cancellable context beforehand;
+  subsequent initialization work is actively watched. Startup failure is a
+  fatal enforcement/deployment outcome and is neither retried nor reported as
+  an invalid payload. Patterns and subjects cross
   the host boundary only as values to a fixed generated program; host classes,
   IO, environment, processes, native access, polyglot access, and guest-created
   threads are disabled. Resource exhaustion remains indeterminate and is never

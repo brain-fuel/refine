@@ -1,1 +1,1 @@
-type Age = Int where it >= 0
+type Age = Int where it >= 0 @code "age.minimum"

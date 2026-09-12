@@ -625,7 +625,8 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		known[target.Name] = true
 		indices[target.Name] = i
 	}
-	seeds := map[string][]string{}
+	validSeeds := map[string][]string{}
+	invalidSeeds := map[string]map[string][]string{}
 	for i, example := range options.Examples {
 		if !known[example.Target] {
 			return nil, fmt.Errorf("example %d targets unknown property target %s", i, example.Target)
@@ -645,12 +646,20 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		if example.Expected == ExampleInvalid && example.NativeExpected == ExampleNativeValid && len(example.DiagnosticCodes) != 1 {
 			return nil, fmt.Errorf("refinement-invalid example %d requires exactly one diagnostic code", i)
 		}
-		if example.Expected == ExampleValid && example.NativeExpected == ExampleNativeValid {
+		if example.NativeExpected == ExampleNativeValid && (example.Expected == ExampleValid || example.Expected == ExampleInvalid) {
 			data, err := exampleDataJava(example.Value)
 			if err != nil {
 				return nil, err
 			}
-			seeds[example.Target] = append(seeds[example.Target], data)
+			if example.Expected == ExampleValid {
+				validSeeds[example.Target] = append(validSeeds[example.Target], data)
+			} else {
+				if invalidSeeds[example.Target] == nil {
+					invalidSeeds[example.Target] = map[string][]string{}
+				}
+				code := example.DiagnosticCodes[0]
+				invalidSeeds[example.Target][code] = append(invalidSeeds[example.Target][code], data)
+			}
 		}
 	}
 	emitter := &propertyEmitter{declarations: declarations, visiting: map[string]bool{}}
@@ -666,7 +675,6 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		if err != nil {
 			return nil, fmt.Errorf("property target %s: %w", target.Name, err)
 		}
-		raw = seededPropertyGenerator(raw, seeds[target.Name])
 		rules, err := emitter.rules(target.Name, "", targetType)
 		if err != nil {
 			return nil, err
@@ -684,16 +692,17 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		fmt.Fprintf(&methods, "    private static boolean validBoundary%d(Data data) {\n        try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.validate().state()==Validation.State.VALID && read.showWithoutValidation().equals(shown) && wireValid(data,model) && avroWireValid(data,model); } catch (ValidationException failure) { return false; }\n    }\n", i, factoryDecl, receiver, receiver)
 		fmt.Fprintf(&methods, "    private static boolean invalidBoundary%d(Data data,String code) {\n        %svar bypass=%sfromDataWithoutValidation(data); if (!bypass.rawData().equals(data) || !targeted(bypass.validate(),code) || !wireInvalid(bypass,code) || !avroWireInvalid(bypass,code)) return false; try { %sfromData(data); return false; } catch (ValidationException failure) { if (!targeted(failure.outcome(),code)) return false; } try { %sread(bypass.showWithoutValidation()); return false; } catch (ValidationException failure) { return targeted(failure.outcome(),code); }\n    }\n", i, factoryDecl, receiver, receiver, receiver)
 		if hasNative {
-			fmt.Fprintf(&methods, "    private static boolean nativeInvalidBoundary%d(Data data,Validation.State expected) {\n        if (expected==Validation.State.VALID) { if (nativeCandidate(data)) return false; try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.rawData().equals(data) && read.showWithoutValidation().equals(shown) && nativeWireInvalid(data,model); } catch (ValidationException failure) { return false; } } try { %sfromData(data); return false; } catch (ValidationException failure) { if (failure.outcome().state()!=Validation.State.INVALID) return false; } try { %s%sfromDataWithoutValidation(data); return false; } catch (ValidationException failure) { return structureOnly(failure.outcome()); }\n    }\n", i, factoryDecl, receiver, receiver, receiver, factoryDecl, receiver)
+			fmt.Fprintf(&methods, "    private static boolean nativeInvalidBoundary%d(Data data,Validation.State expected) {\n        if (expected==Validation.State.VALID) { if (nativeCandidate(data)) return false; try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.rawData().equals(data) && read.showWithoutValidation().equals(shown) && nativeWireInvalid(data,model); } catch (ValidationException failure) { return false; } } try { %sfromData(data); return false; } catch (ValidationException failure) { if (failure.outcome().state()!=Validation.State.INVALID || failure.outcome().incomplete()) return false; } try { %s%sfromDataWithoutValidation(data); return false; } catch (ValidationException failure) { return structureOnly(failure.outcome()); }\n    }\n", i, factoryDecl, receiver, receiver, receiver, factoryDecl, receiver)
 		}
-		fmt.Fprintf(&methods, "    private static void target%d() {\n        var raw = %s;\n        var valid = requiring(raw, d -> nativeCandidate(d) && %s.validate(%s,d).state() == Validation.State.VALID, %d, %s);\n        check(valid, %sGeneratedProperties::validBoundary%d, %s);\n", i, raw, contractName, javaQuote(target.Name), attempts, javaQuote("valid "+target.Name), contractName, i, javaQuote(validReplay))
+		fmt.Fprintf(&methods, "    private static void target%d() {\n        var raw = %s;\n        var validRaw = %s;\n        var valid = requiring(validRaw, d -> nativeCandidate(d) && %s.validate(%s,d).state() == Validation.State.VALID, %d, %s);\n        check(valid, %sGeneratedProperties::validBoundary%d, %s);\n", i, raw, seededPropertyGenerator("raw", validSeeds[target.Name]), contractName, javaQuote(target.Name), attempts, javaQuote("valid "+target.Name), contractName, i, javaQuote(validReplay))
 		for j, rule := range rules {
 			key := replayKey(target.Name, ReplayInvalid, rule.code)
 			replay := replays[key]
 			if replay != "" {
 				usedReplays[key] = true
 			}
-			fmt.Fprintf(&methods, "        var invalid%d = requiring(raw, d -> nativeCandidate(d) && targeted(%s.validate(%s,d),%s), %d, %s);\n        check(invalid%d, d -> invalidBoundary%d(d,%s), %s);\n", j, contractName, javaQuote(target.Name), javaQuote(rule.code), attempts, javaQuote("invalid "+target.Name+" "+rule.code), j, i, javaQuote(rule.code), javaQuote(replay))
+			invalidRaw := seededPropertyGenerator("raw", invalidSeeds[target.Name][rule.code])
+			fmt.Fprintf(&methods, "        var invalidRaw%d = %s;\n        var invalid%d = requiring(invalidRaw%d, d -> nativeCandidate(d) && targeted(%s.validate(%s,d),%s), %d, %s);\n        check(invalid%d, d -> invalidBoundary%d(d,%s), %s);\n", j, invalidRaw, j, j, contractName, javaQuote(target.Name), javaQuote(rule.code), attempts, javaQuote("invalid "+target.Name+" "+rule.code), j, i, javaQuote(rule.code), javaQuote(replay))
 		}
 		methods.WriteString("    }\n")
 	}
@@ -716,7 +725,11 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		} else if example.Expected != ExampleValid {
 			return nil, fmt.Errorf("example %d has invalid expected outcome", i)
 		}
-		fmt.Fprintf(&examples, "        var exampleData%d=%s; var example%d = %s.validate(%s,exampleData%d); if (example%d.state() != Validation.State.%s) throw new AssertionError(\"embedded example %d outcome\");\n", i, data, i, contractName, javaQuote(example.Target), i, i, state, i)
+		complete := ""
+		if example.Expected == ExampleInvalid {
+			complete = " || example" + fmt.Sprint(i) + ".incomplete()"
+		}
+		fmt.Fprintf(&examples, "        var exampleData%d=%s; var example%d = %s.validate(%s,exampleData%d); if (example%d.state() != Validation.State.%s%s) throw new AssertionError(\"embedded example %d outcome\");\n", i, data, i, contractName, javaQuote(example.Target), i, i, state, complete, i)
 		for _, code := range example.DiagnosticCodes {
 			fmt.Fprintf(&examples, "        if (example%d.diagnostics().stream().noneMatch(d -> d.code().equals(%s))) throw new AssertionError(\"embedded example %d diagnostic\");\n", i, javaQuote(code), i)
 		}
@@ -837,8 +850,8 @@ public final class %s {
     private static final int CASES=%d; private static final long SEED=%dL;
     private static <T> org.jetbrains.jetCheck.Generator<T> requiring(org.jetbrains.jetCheck.Generator<T> raw, java.util.function.Predicate<T> wanted, int attempts, String label) { return org.jetbrains.jetCheck.Generator.from(env -> { for (int i=0;i<attempts;i++) { T value=env.generate(raw); if (wanted.test(value)) { env.generate(org.jetbrains.jetCheck.Generator.integers()); return value; } } throw new AssertionError("property generation exhausted: "+label+" after "+attempts+" attempts"); }); }
     private static <T extends Data> void check(org.jetbrains.jetCheck.Generator<T> generator, java.util.function.Predicate<T> property, String replay) { if (replay.isEmpty()) org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property); else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property); }
-    private static boolean targeted(Validation.Outcome outcome,String code) { return outcome.state()==Validation.State.INVALID && outcome.diagnostics().size()==1 && outcome.diagnostics().getFirst().code().equals(code); }
-    private static boolean structureOnly(Validation.Outcome outcome) { return outcome.state()==Validation.State.INVALID && !outcome.diagnostics().isEmpty() && outcome.diagnostics().stream().allMatch(d -> d.code().equals("validation.structure")); }
+    private static boolean targeted(Validation.Outcome outcome,String code) { return outcome.state()==Validation.State.INVALID && !outcome.incomplete() && outcome.diagnostics().stream().anyMatch(d -> d.code().equals(code)); }
+    private static boolean structureOnly(Validation.Outcome outcome) { return outcome.state()==Validation.State.INVALID && !outcome.incomplete() && !outcome.diagnostics().isEmpty() && outcome.diagnostics().stream().allMatch(d -> d.code().equals("validation.structure")); }
 %s
 %s
     public static void main(String[] args) { %s %s }
