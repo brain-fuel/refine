@@ -672,6 +672,17 @@ native formats and project workflows. The full checklist remains the release gat
   GoPlus latest remains v0.158.0. Generated simple-fold tables and rune/assertion
   semantics retain Go's full BSD-style notice; final binary attribution remains
   a release gate.
+- A fresh public consumer fetched `v0.0.0-20260912023956-abbbe6d0af81` with
+  `GOWORK=off` and no replacements. Its race-tested harness compiled generated
+  Java 25 runtime sources and Go-exported plans with warnings-as-errors, then
+  verified full/search results, Unicode folding, lone surrogates, code points,
+  word boundaries, ambiguous repetition and exact budget thresholds at
+  `-Xss256k`. It also checked the preserved Go `Fold` API and continued explicit
+  rejection of incomplete Java DSL regex generation.
+- Checkpoint `abbbe6d` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34668287773), including
+  generation, race, vet, CLI and all fuzz gates. No product tag or Maven
+  deployment was made; the full release checklist remains open.
 - This is the shared instruction executor, not complete Java regex support.
   Dynamic pattern parsing/compilation and compile-cost parity remain required
   before enabling `matches`/`search`; Java generation still rejects those builtins.
