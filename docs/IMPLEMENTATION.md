@@ -541,3 +541,14 @@ native formats and project workflows. The full checklist remains the release gat
   nested validating path are complete. Regex/timestamps, complete model shapes,
   native formats, validated serde, English output, analysis, versioning,
   schema-derived tests, Maven wiring and full CLI workflows remain required.
+- A fresh public consumer fetched `v0.0.0-20260912012910-0ce812855fe2` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated semantic
+  models, compiled with Java 25 warnings-as-errors, then verified exact display,
+  UTF-16 preservation, Unicode scalar record ordering, computed error messages,
+  explicit invalid-model bypass display, budget exceptions, and depth-510 raw
+  traversal at `-Xss256k`.
+  Checkpoint `0ce8128` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34664959672), including
+  generation, race, vet, CLI and all fuzz gates. GoPlus latest remains pinned at
+  v0.158.0. No product tag or Maven deployment was made; the full release
+  checklist remains open.
