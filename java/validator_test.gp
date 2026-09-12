@@ -107,7 +107,7 @@ func TestGeneratedContractValidation(t *testing.T){
     }
     var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input);input.WriteByte('\n')}
     ctx,cancel:=context.WithTimeout(context.Background(),time.Minute);defer cancel()
-    command:=exec.CommandContext(ctx,vm,"-cp",classes+string(os.PathListSeparator)+dependencies,"ContractConformance");command.Stdin=strings.NewReader(input.String())
+    command:=exec.CommandContext(ctx,vm,"-Xss256k","-cp",classes+string(os.PathListSeparator)+dependencies,"ContractConformance");command.Stdin=strings.NewReader(input.String())
     var stderr bytes.Buffer;command.Stderr=&stderr
     output,err:=command.Output();if err!=nil{t.Fatalf("Java contract: %v\n%s",err,stderr.String())}
     lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n");if len(lines)!=len(vectors){t.Fatalf("expected %d results, got %d: %s",len(vectors),len(lines),output)}

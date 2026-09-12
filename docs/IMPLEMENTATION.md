@@ -354,3 +354,25 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
 
 Next: complete model shapes and generated function/codec execution, then connect
 native formats and project workflows. The full checklist remains the release gate.
+
+## Java stack-safety correction
+
+- Checkpoint `67fa270` passed the local model tests and an independent public
+  consumer, but [CI failed](https://github.com/brain-fuel/refine/actions/runs/34659362646):
+  Ubuntu's JVM exhausted its host stack during deep structural validation before
+  reaching the intended logical depth guard. The macOS matrix job was cancelled.
+  This is a runtime defect, not a reason to increase the JVM stack or relax tests.
+- Data transfer, structural validation, optional-type expansion, expression
+  execution, and deep equality now use iterative work/continuation frames. The
+  existing 512-level logical guard, charging order, short circuits, traversal
+  order, diagnostic paths, and normal/explicit-bypass semantics are unchanged.
+- The original 26,500 full-report comparisons now run with `-Xss256k`. Separate
+  stress tests add 528 deep-equality comparisons and 18,006 long-expression
+  comparisons, including mismatches at the deepest field, per-clause/overall
+  budget boundaries, and structural bypass. Within-policy cases must remain
+  conclusively valid or invalid; matching unknowns are not accepted as success
+  for those cases. All tests compare complete reports with the Go evaluator.
+- Full local race tests, vet and deterministic generation passed after the
+  traversal correction. GoPlus latest resolves to the pinned v0.158.0.
+  A 10-second validator-emitter fuzz run passed 4,723,184 executions.
+  Fresh CI evidence remains required before this correction is verified upstream.

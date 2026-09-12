@@ -139,6 +139,13 @@ resource limits; separate over-limit cases require Go/Java agreement instead.
 Emitter tests cover all-or-nothing rejection, unsafe class names, detached syntax
 copies, escaped controls/lone surrogates, deterministic output and size limits.
 
+Traversal and expression execution use explicit continuation frames, not Java
+recursion. The logical 512-level guard and budget charges remain the same as Go's
+current evaluator policy. Full-report tests run with a deliberately small
+`-Xss256k` JVM stack; an additional 18,534 comparisons stress deep record equality,
+deep mismatches, long arithmetic expressions and their total/per-clause budget
+boundaries. Within-policy inputs must still produce conclusive results.
+
 The report comparisons exercise both normal validation and structural-only
 bypasses. Java `validateStructure` corresponds to Go's explicit
 `ValidateDataWithoutRefinements`; both preserve structural traversal/limits while

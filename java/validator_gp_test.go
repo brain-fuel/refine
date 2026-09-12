@@ -180,7 +180,7 @@ func TestGeneratedContractValidation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, vm, "-cp", classes+string(os.PathListSeparator)+dependencies, "ContractConformance")
+	command := exec.CommandContext(ctx, vm, "-Xss256k", "-cp", classes+string(os.PathListSeparator)+dependencies, "ContractConformance")
 	command.Stdin = strings.NewReader(input.String())
 	var stderr bytes.Buffer
 	command.Stderr = &stderr

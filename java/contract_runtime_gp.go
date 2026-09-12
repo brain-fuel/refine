@@ -9,11 +9,14 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Execution support for statically generated contracts. No schema loading or I/O. */
 public final class ContractRuntime {
@@ -47,6 +50,13 @@ public final class ContractRuntime {
         BigInteger width = new BigInteger(digits);
         return width.signum() > 0 && width.bitLength() <= 32 && width.toString().equals(digits);
     }
+    /** Continuations are queued, never recursively invoked on the host stack. */
+    private static final class Work {
+        final ArrayDeque<Runnable> tasks = new ArrayDeque<>();
+        void later(Runnable task) { tasks.push(task); }
+        <T> void complete(Consumer<T> receiver, T value) { later(() -> receiver.accept(value)); }
+        void run() { while (!tasks.isEmpty()) tasks.pop().run(); }
+    }
     private static final class Eval {
         final Budget.Meter meter;
         int depth;
@@ -55,36 +65,60 @@ public final class ContractRuntime {
         void step(BigInteger cost) {
             try { meter.step(cost); } catch (Budget.Exceeded e) { throw fail("evaluation.budget", "validation step budget exhausted"); }
         }
-        <T> T node(Supplier<T> action) {
+        <T> T atDepth(int logicalDepth, Supplier<T> action) {
+            int previous = depth; depth = logicalDepth;
+            try { return action.get(); } finally { depth = previous; }
+        }
+        void enterDepth(int logicalDepth) {
             step(1);
-            if (depth >= 512) throw fail("evaluation.depth", "evaluation nesting limit exceeded");
-            depth++;
-            try { return action.get(); } finally { depth--; }
+            if (logicalDepth >= 512) throw fail("evaluation.depth", "evaluation nesting limit exceeded");
         }
         Data transfer(Data value) {
-            return node(() -> switch (value) {
-                case Data.Number n -> { step(n.value().show().length()); yield new Data.Number(n.value()); }
-                case Data.Text t -> t;
-                case Data.Bool b -> b;
-                case Data.Sequence list -> {
-                    step(list.values().size()); var result = new ArrayList<Data>();
-                    for (Data item : list.values()) result.add(transfer(item)); yield new Data.Sequence(result);
+            Work work = new Work(); Data[] result = new Data[1];
+            class Transfer {
+                void visit(Data input, int logicalDepth, Consumer<Data> done) {
+                    work.later(() -> {
+                        enterDepth(logicalDepth);
+                        switch (input) {
+                            case Data.Number n -> { step(n.value().show().length()); work.complete(done, new Data.Number(n.value())); }
+                            case Data.Text t -> work.complete(done, t);
+                            case Data.Bool b -> work.complete(done, b);
+                            case Data.Sequence list -> { step(list.values().size()); items(list.values(), logicalDepth, values -> new Data.Sequence(values), done); }
+                            case Data.Variant v -> { step((long)v.values().size() + utf8Size(v.name())); items(v.values(), logicalDepth, values -> new Data.Variant(v.name(), values), done); }
+                            case Data.Struct record -> {
+                                step(record.fields().size());
+                                work.later(new Runnable() {
+                                    int index; final List<Data.Field> fields = new ArrayList<>();
+                                    @Override public void run() {
+                                        if (index == record.fields().size()) { work.complete(done, new Data.Struct(fields)); return; }
+                                        Data.Field field = record.fields().get(index++); step(utf8Size(field.name()));
+                                        visit(field.value(), logicalDepth + 1, item -> { fields.add(new Data.Field(field.name(), item)); work.later(this); });
+                                    }
+                                });
+                            }
+                        }
+                    });
                 }
-                case Data.Struct record -> {
-                    step(record.fields().size()); var result = new ArrayList<Data.Field>();
-                    for (Data.Field field : record.fields()) { step(utf8Size(field.name())); result.add(new Data.Field(field.name(), transfer(field.value()))); }
-                    yield new Data.Struct(result);
+                void items(List<Data> inputs, int logicalDepth, Function<List<Data>, Data> finish, Consumer<Data> done) {
+                    work.later(new Runnable() {
+                        int index; final List<Data> values = new ArrayList<>();
+                        @Override public void run() {
+                            if (index == inputs.size()) { work.complete(done, finish.apply(values)); return; }
+                            visit(inputs.get(index++), logicalDepth + 1, item -> { values.add(item); work.later(this); });
+                        }
+                    });
                 }
-                case Data.Variant variant -> {
-                    step((long)variant.values().size() + utf8Size(variant.name())); var result = new ArrayList<Data>();
-                    for (Data item : variant.values()) result.add(transfer(item)); yield new Data.Variant(variant.name(), result);
-                }
-            });
+            }
+            new Transfer().visit(value, depth, data -> result[0] = data); work.run(); return result[0];
         }
         Data expression(Expr expression, Map<String, Data> environment) {
-            return node(() -> {
-                List<Expr> args = expression.arguments(); String text = expression.text();
-                return switch (expression.kind()) {
+            Work work = new Work(); Data[] result = new Data[1];
+            class Expression {
+                void visit(Expr expr, Map<String, Data> env, int logicalDepth, Consumer<Data> done) {
+                    work.later(() -> {
+                        enterDepth(logicalDepth);
+                        List<Expr> args = expr.arguments(); String text = expr.text();
+                        switch (expr.kind()) {
                     case "number" -> {
                         BigInteger cost = BigInteger.valueOf(text.length()); int at = Math.max(text.indexOf('e'), text.indexOf('E'));
                         if (at >= 0) {
@@ -92,43 +126,55 @@ public final class ContractRuntime {
                             if (cost.compareTo(Budget.MAX) > 0) throw fail("evaluation.budget", "numeric literal expansion exceeds evaluation resources");
                         }
                         step(cost);
-                        yield new Data.Number(Rational.parse(text), text.indexOf('.') >= 0 || at >= 0 ? "Real" : "Int");
+                        work.complete(done, new Data.Number(Rational.parse(text), text.indexOf('.') >= 0 || at >= 0 ? "Real" : "Int"));
                     }
-                    case "text" -> { step(utf8Size(text)); yield new Data.Text(TextCodec.read(text)); }
-                    case "bool" -> new Data.Bool(expression.flag());
-                    case "variable" -> environment.get(text);
-                    case "project" -> {
-                        Data.Struct record = (Data.Struct)expression(args.getFirst(), environment); Data found = null;
+                    case "text" -> { step(utf8Size(text)); work.complete(done, new Data.Text(TextCodec.read(text))); }
+                    case "bool" -> work.complete(done, new Data.Bool(expr.flag()));
+                    case "variable" -> work.complete(done, env.get(text));
+                    case "project" -> visit(args.getFirst(), env, logicalDepth + 1, input -> {
+                        Data.Struct record = (Data.Struct)input; Data found = null;
                         for (Data.Field field : record.fields()) { step(1); if (field.name().equals(text)) { found = field.value(); break; } }
-                        if (found == null) throw fail("evaluation.field", "record field is missing"); yield found;
-                    }
-                    case "unary" -> {
-                        Data.Number n = (Data.Number)expression(args.getFirst(), environment); step(n.value().show().length());
-                        yield checkedNumber(n.value().negate(), n.numericType());
-                    }
-                    case "binary" -> {
-                        Data left = expression(args.get(0), environment);
-                        if (text.equals("&&") && !((Data.Bool)left).value()) yield new Data.Bool(false);
-                        if (text.equals("||") && ((Data.Bool)left).value()) yield new Data.Bool(true);
-                        yield binary(text, left, expression(args.get(1), environment));
-                    }
-                    case "if" -> expression(args.get(((Data.Bool)expression(args.get(0), environment)).value() ? 1 : 2), environment);
-                    case "let" -> {
-                        Data value = expression(args.get(0), environment); var local = new HashMap<>(environment); local.put(text, value);
-                        yield expression(args.get(1), local);
-                    }
-                    case "list" -> {
-                        step(args.size()); var values = new ArrayList<Data>(); for (Expr arg : args) values.add(expression(arg, environment));
-                        yield new Data.Sequence(values);
-                    }
-                    case "record" -> {
-                        step(args.size()); var fields = new ArrayList<Data.Field>();
-                        for (int i = 0; i < args.size(); i++) fields.add(new Data.Field(expression.names().get(i), expression(args.get(i), environment)));
-                        yield new Data.Struct(fields);
+                        if (found == null) throw fail("evaluation.field", "record field is missing"); work.complete(done, found);
+                    });
+                    case "unary" -> visit(args.getFirst(), env, logicalDepth + 1, input -> {
+                        Data.Number n = (Data.Number)input; step(n.value().show().length());
+                        work.complete(done, checkedNumber(n.value().negate(), n.numericType()));
+                    });
+                    case "binary" -> visit(args.get(0), env, logicalDepth + 1, left -> {
+                        if (text.equals("&&") && !((Data.Bool)left).value()) { work.complete(done, new Data.Bool(false)); return; }
+                        if (text.equals("||") && ((Data.Bool)left).value()) { work.complete(done, new Data.Bool(true)); return; }
+                        visit(args.get(1), env, logicalDepth + 1, right -> work.complete(done,
+                            atDepth(logicalDepth + 1, () -> binary(text, left, right))));
+                    });
+                    case "if" -> visit(args.get(0), env, logicalDepth + 1, condition ->
+                        visit(args.get(((Data.Bool)condition).value() ? 1 : 2), env, logicalDepth + 1, done));
+                    case "let" -> visit(args.get(0), env, logicalDepth + 1, value -> {
+                        var local = new HashMap<>(env); local.put(text, value); visit(args.get(1), local, logicalDepth + 1, done);
+                    });
+                    case "list", "record" -> {
+                        step(args.size());
+                        work.later(new Runnable() {
+                            int index; final List<Data> values = new ArrayList<>();
+                            @Override public void run() {
+                                if (index == args.size()) {
+                                    if (expr.kind().equals("list")) work.complete(done, new Data.Sequence(values));
+                                    else {
+                                        var fields = new ArrayList<Data.Field>();
+                                        for (int i = 0; i < values.size(); i++) fields.add(new Data.Field(expr.names().get(i), values.get(i)));
+                                        work.complete(done, new Data.Struct(fields));
+                                    }
+                                    return;
+                                }
+                                visit(args.get(index++), env, logicalDepth + 1, value -> { values.add(value); work.later(this); });
+                            }
+                        });
                     }
                     default -> throw new AssertionError("unhandled generated expression");
-                };
-            });
+                        }
+                    });
+                }
+            }
+            new Expression().visit(expression, environment, depth, data -> result[0] = data); work.run(); return result[0];
         }
         Data.Number checkedNumber(Rational number, String type) {
             if (!type.equals("Int") && !type.equals("Real")) {
@@ -139,27 +185,52 @@ public final class ContractRuntime {
             return new Data.Number(number, type);
         }
         boolean equal(Data a, Data b) {
-            return node(() -> switch (a) {
-                case Data.Number n -> { Rational r = ((Data.Number)b).value(); step((long)n.value().show().length() + r.show().length()); yield n.value().equals(r); }
-                case Data.Text t -> { String r = ((Data.Text)b).value(); step((long)t.value().length() + r.length()); yield t.value().equals(r); }
-                case Data.Bool v -> v.value() == ((Data.Bool)b).value();
-                case Data.Sequence list -> equalItems(list.values(), ((Data.Sequence)b).values());
-                case Data.Variant v -> v.name().equals(((Data.Variant)b).name()) && equalItems(v.values(), ((Data.Variant)b).values());
-                case Data.Struct record -> {
-                    var other = ((Data.Struct)b).fields(); boolean same = record.fields().size() == other.size();
-                    if (same) for (Data.Field field : record.fields()) {
-                        boolean found = false;
-                        for (Data.Field candidate : other) { step(1); if (candidate.name().equals(field.name())) { found = equal(field.value(), candidate.value()); break; } }
-                        if (!found) { same = false; break; }
-                    }
-                    yield same;
+            Work work = new Work(); boolean[] same = { true };
+            class Equality {
+                void visit(Data left, Data right, int logicalDepth) {
+                    work.later(() -> {
+                        enterDepth(logicalDepth);
+                        switch (left) {
+                            case Data.Number n -> { Rational r = ((Data.Number)right).value(); step((long)n.value().show().length() + r.show().length()); same[0] = n.value().equals(r); }
+                            case Data.Text t -> { String r = ((Data.Text)right).value(); step((long)t.value().length() + r.length()); same[0] = t.value().equals(r); }
+                            case Data.Bool v -> same[0] = v.value() == ((Data.Bool)right).value();
+                            case Data.Sequence list -> items(list.values(), ((Data.Sequence)right).values(), logicalDepth);
+                            case Data.Variant v -> {
+                                var other = (Data.Variant)right; same[0] = v.name().equals(other.name());
+                                if (same[0]) items(v.values(), other.values(), logicalDepth);
+                            }
+                            case Data.Struct record -> {
+                                var other = ((Data.Struct)right).fields(); same[0] = record.fields().size() == other.size();
+                                if (same[0]) work.later(new Runnable() {
+                                    int index;
+                                    @Override public void run() {
+                                        if (index == record.fields().size()) return;
+                                        Data.Field field = record.fields().get(index++);
+                                        for (Data.Field candidate : other) {
+                                            step(1);
+                                            if (candidate.name().equals(field.name())) { work.later(this); visit(field.value(), candidate.value(), logicalDepth + 1); return; }
+                                        }
+                                        same[0] = false;
+                                    }
+                                });
+                            }
+                        }
+                    });
                 }
-            });
-        }
-        boolean equalItems(List<Data> a, List<Data> b) {
-            if (a.size() != b.size()) return false;
-            for (int i = 0; i < a.size(); i++) if (!equal(a.get(i), b.get(i))) return false;
-            return true;
+                void items(List<Data> left, List<Data> right, int logicalDepth) {
+                    same[0] = left.size() == right.size();
+                    if (same[0]) work.later(new Runnable() {
+                        int index;
+                        @Override public void run() {
+                            if (index == left.size()) return;
+                            int i = index++; work.later(this); visit(left.get(i), right.get(i), logicalDepth + 1);
+                        }
+                    });
+                }
+            }
+            new Equality().visit(a, b, depth);
+            while (same[0] && !work.tasks.isEmpty()) work.tasks.pop().run();
+            return same[0];
         }
         Data binary(String op, Data a, Data b) {
             switch (op) {
@@ -209,12 +280,16 @@ public final class ContractRuntime {
         final Eval structure;
         final List<Validation.Check> checks = new ArrayList<>();
         final boolean refinements;
+        final Work work = new Work();
         String currentPath = "";
         Validator(Map<String, Definition> definitions, Budget.Limits caller, boolean refinements) {
             this.definitions = definitions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure());
         }
         Validation.Outcome run(String root, Data input) {
-            try { check(new Type("named", root, List.of(), List.of(), List.of()), structure.transfer(input), Map.of(), ""); }
+            try {
+                schedule(new Type("named", root, List.of(), List.of(), List.of()), structure.transfer(input), Map.of(), "", 0, ignored -> {});
+                work.run();
+            }
             catch (Failure e) { checks.add(new Validation.Undecided(new Validation.Diagnostic(e.code, List.of(currentPath), "", e.getMessage()))); }
             return Validation.collect(checks);
         }
@@ -222,89 +297,108 @@ public final class ContractRuntime {
             checks.add(new Validation.Violated(new Validation.Diagnostic("validation.structure", List.of(path), "", message)));
             return new Checked(null, false);
         }
-        Checked check(Type type, Data input, Map<String, Binding> env, String path) {
-            currentPath = path;
-            return structure.node(() -> {
+        void schedule(Type type, Data input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
+            work.later(() -> {
+                currentPath = path;
+                structure.enterDepth(depth);
                 switch (type.kind()) {
                     case "refined": {
-                        Checked result = check(type.arguments().getFirst(), input, env, path);
-                        if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path);
-                        return result;
+                        schedule(type.arguments().getFirst(), input, env, path, depth + 1, result -> {
+                            if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path);
+                            work.complete(done, result);
+                        });
+                        return;
                     }
                     case "named": {
                         Binding binding = env.get(type.name());
-                        return binding == null ? named(type, input, env, path) : check(binding.type(), input, binding.environment(), path);
+                        if (binding == null) named(type, input, env, path, depth, done);
+                        else schedule(binding.type(), input, binding.environment(), path, depth + 1, done);
+                        return;
                     }
                     case "list": {
-                        if (!(input instanceof Data.Sequence list)) return wrong(path, "Expected a list.");
-                        structure.step(list.values().size()); var items = new ArrayList<Data>(); boolean all = true;
-                        for (int i = 0; i < list.values().size(); i++) { Checked result = check(type.arguments().getFirst(), list.values().get(i), env, pointer(path, Integer.toString(i))); all &= result.shape(); if (result.shape()) items.add(result.data()); }
-                        return new Checked(all ? new Data.Sequence(items) : null, all);
+                        if (!(input instanceof Data.Sequence list)) { work.complete(done, wrong(path, "Expected a list.")); return; }
+                        structure.step(list.values().size());
+                        items(list.values(), ignored -> type.arguments().getFirst(), env, path, depth, values -> new Data.Sequence(values), done);
+                        return;
                     }
                     case "record": {
-                        if (!(input instanceof Data.Struct record)) return wrong(path, "Expected a record.");
+                        if (!(input instanceof Data.Struct record)) { work.complete(done, wrong(path, "Expected a record.")); return; }
                         structure.step((long)record.fields().size() + type.fields().size()); var actual = new HashMap<String, Data>();
                         for (Data.Field field : record.fields()) actual.put(field.name(), field.value());
-                        var result = new ArrayList<Data.Field>(); boolean all = true;
-                        for (Member field : type.fields()) {
-                            Data value = actual.get(field.name()); String childPath = pointer(path, field.name());
-                            if (value == null) {
-                                if (optional(field.type(), env, 0)) value = new Data.Variant("Nothing", List.of());
-                                else { wrong(childPath, "Required field is absent."); all = false; continue; }
+                        work.later(new Runnable() {
+                            int index; boolean all = true; final List<Data.Field> result = new ArrayList<>();
+                            @Override public void run() {
+                                if (index == type.fields().size()) { work.complete(done, new Checked(all ? new Data.Struct(result) : null, all)); return; }
+                                Member field = type.fields().get(index++);
+                                Data value = actual.get(field.name()); String childPath = pointer(path, field.name());
+                                if (value == null) {
+                                    if (optional(field.type(), env, 0)) value = new Data.Variant("Nothing", List.of());
+                                    else { wrong(childPath, "Required field is absent."); all = false; work.later(this); return; }
+                                }
+                                schedule(field.type(), value, env, childPath, depth + 1, checked -> {
+                                    all &= checked.shape(); if (checked.shape()) result.add(new Data.Field(field.name(), checked.data())); work.later(this);
+                                });
                             }
-                            Checked checked = check(field.type(), value, env, childPath); all &= checked.shape();
-                            if (checked.shape()) result.add(new Data.Field(field.name(), checked.data()));
-                        }
-                        return new Checked(all ? new Data.Struct(result) : null, all);
+                        });
+                        return;
                     }
                     default: throw new AssertionError("unhandled generated type");
                 }
             });
         }
-        Checked named(Type type, Data input, Map<String, Binding> env, String path) {
+        void items(List<Data> inputs, Function<Integer, Type> type, Map<String, Binding> env, String path, int depth, Function<List<Data>, Data> finish, Consumer<Checked> done) {
+            work.later(new Runnable() {
+                int index; boolean all = true; final List<Data> values = new ArrayList<>();
+                @Override public void run() {
+                    if (index == inputs.size()) { work.complete(done, new Checked(all ? finish.apply(values) : null, all)); return; }
+                    int i = index++;
+                    schedule(type.apply(i), inputs.get(i), env, pointer(path, Integer.toString(i)), depth + 1, checked -> {
+                        all &= checked.shape(); if (checked.shape()) values.add(checked.data()); work.later(this);
+                    });
+                }
+            });
+        }
+        void named(Type type, Data input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
             String name = type.name(); var args = type.arguments();
             switch (name) {
-                case "Bool": return input instanceof Data.Bool ? new Checked(input, true) : wrong(path, "Expected a Boolean.");
-                case "String": return input instanceof Data.Text ? new Checked(input, true) : wrong(path, "Expected text.");
+                case "Bool": work.complete(done, input instanceof Data.Bool ? new Checked(input, true) : wrong(path, "Expected a Boolean.")); return;
+                case "String": work.complete(done, input instanceof Data.Text ? new Checked(input, true) : wrong(path, "Expected text.")); return;
                 case "Maybe", "Nullable", "Result": {
-                    if (!(input instanceof Data.Variant v)) return wrong(path, "Expected an explicit optional, nullable, or result constructor.");
+                    if (!(input instanceof Data.Variant v)) { work.complete(done, wrong(path, "Expected an explicit optional, nullable, or result constructor.")); return; }
                     String none = name.equals("Maybe") ? "Nothing" : name.equals("Nullable") ? "Null" : "Err";
                     String some = name.equals("Maybe") ? "Just" : name.equals("Nullable") ? "NonNull" : "Ok";
-                    if (!name.equals("Result") && v.name().equals(none) && v.values().isEmpty()) return new Checked(input, true);
+                    if (!name.equals("Result") && v.name().equals(none) && v.values().isEmpty()) { work.complete(done, new Checked(input, true)); return; }
                     if ((v.name().equals(some) || name.equals("Result") && v.name().equals(none)) && v.values().size() == 1) {
                         int index = name.equals("Result") && v.name().equals("Ok") ? 1 : 0;
-                        Checked checked = check(args.get(index), v.values().getFirst(), env, path);
-                        return new Checked(checked.shape() ? new Data.Variant(v.name(), List.of(checked.data())) : null, checked.shape());
+                        schedule(args.get(index), v.values().getFirst(), env, path, depth + 1, checked -> work.complete(done,
+                            new Checked(checked.shape() ? new Data.Variant(v.name(), List.of(checked.data())) : null, checked.shape())));
+                        return;
                     }
-                    return wrong(path, "Constructor does not match the declared optional, nullable, or result type.");
+                    work.complete(done, wrong(path, "Constructor does not match the declared optional, nullable, or result type.")); return;
                 }
             }
             if (numericPrimitive(name)) {
-                if (!(input instanceof Data.Number n)) return wrong(path, "Expected an exact number.");
+                if (!(input instanceof Data.Number n)) { work.complete(done, wrong(path, "Expected an exact number.")); return; }
                 structure.step(n.value().show().length());
-                if (!name.equals("Real") && !n.value().isInteger()) return wrong(path, "Expected an integer without fractional coercion.");
+                if (!name.equals("Real") && !n.value().isInteger()) { work.complete(done, wrong(path, "Expected an integer without fractional coercion.")); return; }
                 if (!name.equals("Real") && !name.equals("Int")) {
                     long width = Long.parseLong(name.replace("UInt", "").replace("Int", "")); structure.step(width);
                     if (width > 65536) throw fail("evaluation.unsupported", "integer width exceeds the current numeric backend limit");
                     try { n.value().fixedWidth((int)width, !name.startsWith("UInt")); }
-                    catch (ArithmeticException e) { return wrong(path, "Integer is outside its declared fixed-width range."); }
+                    catch (ArithmeticException e) { work.complete(done, wrong(path, "Integer is outside its declared fixed-width range.")); return; }
                 }
-                return new Checked(new Data.Number(n.value(), name), true);
+                work.complete(done, new Checked(new Data.Number(n.value(), name), true)); return;
             }
             Definition definition = definitions.get(name); var bindings = bindings(definition, args, env);
-            if (definition.body() != null) return check(definition.body(), input, bindings, path);
-            if (!(input instanceof Data.Variant value)) return wrong(path, "Expected a tagged data alternative.");
+            if (definition.body() != null) { schedule(definition.body(), input, bindings, path, depth + 1, done); return; }
+            if (!(input instanceof Data.Variant value)) { work.complete(done, wrong(path, "Expected a tagged data alternative.")); return; }
             for (Alternative alternative : definition.alternatives()) {
                 structure.step(1); if (!alternative.name().equals(value.name())) continue;
-                if (alternative.arguments().size() != value.values().size()) return wrong(path, "Constructor has the wrong number of arguments.");
-                var result = new ArrayList<Data>(); boolean all = true;
-                for (int i = 0; i < value.values().size(); i++) {
-                    Checked checked = check(alternative.arguments().get(i), value.values().get(i), bindings, pointer(path, Integer.toString(i)));
-                    all &= checked.shape(); if (checked.shape()) result.add(checked.data());
-                }
-                return new Checked(all ? new Data.Variant(value.name(), result) : null, all);
+                if (alternative.arguments().size() != value.values().size()) { work.complete(done, wrong(path, "Constructor has the wrong number of arguments.")); return; }
+                items(value.values(), i -> alternative.arguments().get(i), bindings, path, depth, values -> new Data.Variant(value.name(), values), done);
+                return;
             }
-            return wrong(path, "Constructor does not belong to the declared data type.");
+            work.complete(done, wrong(path, "Constructor does not belong to the declared data type."));
         }
         Map<String, Binding> bindings(Definition definition, List<Type> arguments, Map<String, Binding> environment) {
             var result = new HashMap<String, Binding>();
@@ -312,13 +406,16 @@ public final class ContractRuntime {
             return result;
         }
         boolean optional(Type type, Map<String, Binding> env, int depth) {
-            structure.step(1); if (depth >= 512) throw fail("evaluation.depth", "optional type expansion nesting limit exceeded");
-            if (type.kind().equals("refined")) return optional(type.arguments().getFirst(), env, depth + 1);
-            if (!type.kind().equals("named")) return false;
-            Binding binding = env.get(type.name()); if (binding != null) return optional(binding.type(), binding.environment(), depth + 1);
-            if (type.name().equals("Maybe") && type.arguments().size() == 1) return true;
-            Definition definition = definitions.get(type.name());
-            return definition != null && definition.body() != null && optional(definition.body(), bindings(definition, type.arguments(), env), depth + 1);
+            while (true) {
+                structure.step(1); if (depth++ >= 512) throw fail("evaluation.depth", "optional type expansion nesting limit exceeded");
+                if (type.kind().equals("refined")) { type = type.arguments().getFirst(); continue; }
+                if (!type.kind().equals("named")) return false;
+                Binding binding = env.get(type.name()); if (binding != null) { type = binding.type(); env = binding.environment(); continue; }
+                if (type.name().equals("Maybe") && type.arguments().size() == 1) return true;
+                Definition definition = definitions.get(type.name());
+                if (definition == null || definition.body() == null) return false;
+                env = bindings(definition, type.arguments(), env); type = definition.body();
+            }
         }
         void rule(Rule rule, Data input, String path) {
             String code = rule.code();
