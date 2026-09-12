@@ -375,4 +375,12 @@ native formats and project workflows. The full checklist remains the release gat
 - Full local race tests, vet and deterministic generation passed after the
   traversal correction. GoPlus latest resolves to the pinned v0.158.0.
   A 10-second validator-emitter fuzz run passed 4,723,184 executions.
-  Fresh CI evidence remains required before this correction is verified upstream.
+- Correction `ffd0519` passed the complete Linux and macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34660566145), including
+  race tests, vet, generation, CLI checks and all fuzz gates. A fresh module
+  fetched `v0.0.0-20260912000740-ffd0519ebb37` with `GOWORK=off` and no replacements,
+  then generated/compiled Java models and passed race-tested consumer checks:
+  120-level recursive records, deep equality/mismatches, atomic updates and
+  bypasses, 160-term expressions, and over-limit indeterminate results, all with
+  a 256 KiB JVM stack. The same consumer fails with `StackOverflowError` on
+  `67fa270` and passes again after restoring `ffd0519`.
