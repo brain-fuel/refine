@@ -944,3 +944,15 @@ native formats and project workflows. The full checklist remains the release gat
   English output, analysis, generated tests, versioning, Maven/CLI integration
   and the full release audit also remain required. No product tag or Maven deploy
   is made. GoPlus remains pinned to the latest v0.158.0.
+- Checkpoint `00e853d` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34678640955), including
+  generation, race, vet, CLI and all fifteen fuzz gates.
+- A fresh external Go module fetched public pseudo-version
+  `v0.0.0-20260912063805-00e853d1b2cd` with `GOWORK=off` and no replacements.
+  Its race-tested harness generated Java 25 static payload-type handles, compiled
+  with warnings-as-errors, and checked exact Go-derived budgets, recursive generic
+  reads, inferred generic `read`, anonymous argument refinements, snapshots,
+  structural bypasses, optional/extra-field read views and candidate privacy at
+  `-Xss256k`. The initial consumer compile failure was its own incorrect plain-Go
+  construction syntax for an exported GoPlus enum variant; correcting the
+  harness required no production changes. No product tag or Maven deploy occurred.
