@@ -498,3 +498,13 @@ native formats and project workflows. The full checklist remains the release gat
   the release checklist. Java builtin show/read, regex/timestamps, complete
   models, native formats, validated serde, English output, analysis, versioning,
   schema-derived tests, Maven wiring and full CLI workflows remain required.
+- A fresh external module fetched `v0.0.0-20260912011209-7e2def006ae6` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated semantic
+  models and compiled them with Java 25 warnings-as-errors, then verified local
+  function guards, whole-record function preconditions, atomic updates,
+  exceptions, bypass revalidation, tiny-budget unknowns, and recovery from a
+  recursively guarded function at `-Xss256k`.
+  Checkpoint `7e2def0` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34664106288), including
+  generation, race, vet, CLI and all fuzz gates. No product tag or Maven
+  deployment was made; the full release checklist remains open.
