@@ -306,7 +306,8 @@ not backtracking. It preserves UTF-16 surrogate identity while treating valid
 pairs as one code point. Word boundaries remain ASCII, as in the Go refinement
 dialect; case folding uses embedded Go Unicode tables, not JDK case conversion.
 Programs can be shared concurrently; mutable state belongs to each invocation.
-Program construction is an unmetered trusted-compiler boundary. Matching charges
+Direct instruction-plan construction is an unmetered trusted-compiler boundary.
+Matching charges
 the same traversal, instruction, rune-range and folding costs as Go. Exhaustion
 throws `RegexProgram.Error` with `code() == "regex.budget"`, retaining the shared
 meter's exact used/exhausted state and allowing enclosing-scope recovery when

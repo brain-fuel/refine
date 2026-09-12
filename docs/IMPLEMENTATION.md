@@ -720,6 +720,17 @@ native formats and project workflows. The full checklist remains the release gat
   496,669 ns/op, 1,662,316 B/op and 11,393 allocations/op on Darwin/arm64
   (Apple M5 Max). These are source-generation measurements, not compilation or
   matching throughput. Latest published GoPlus remains v0.158.0.
+- A fresh public consumer fetched `v0.0.0-20260912030447-a7093ec8f529` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated standalone
+  Java 25 sources, compiled with warnings-as-errors, and verified exact Go
+  instruction digests, compilation budgets, full/search results and match
+  budgets at `-Xss256k`. Cases included captures, Unicode folding/surrogates,
+  nullable cycles and large counted repetitions. Incomplete DSL regex generation
+  remained explicitly rejected.
+- Checkpoint `a7093ec` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34669397606), including
+  generation, race, vet, CLI and all fuzz gates. No product tag or Maven
+  deployment was made; the full release checklist remains open.
 - Dynamic Java pattern-text parsing/normalization and source-compilation cost
   parity remain required before enabling DSL `matches`/`search`. Generation
   continues to reject those builtins explicitly. Full native formats, models,
