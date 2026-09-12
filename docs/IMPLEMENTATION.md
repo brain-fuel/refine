@@ -835,6 +835,17 @@ native formats and project workflows. The full checklist remains the release gat
   model source generation measured 1,655,637 ns/op, 2,999,998 B/op and 15,624
   allocations/op on Darwin/arm64 (Apple M5 Max); this is source generation,
   not payload-validation throughput. Latest GoPlus remains v0.158.0.
+- A fresh external module fetched public pseudo-version
+  `v0.0.0-20260912041112-e61d4efe226d` with `GOWORK=off` and no local
+  replacements. Its race-tested harness generated standalone Java 25 models,
+  compiled with all warnings treated as errors, and ran exhaustive nominal
+  matching, raw identity, dynamic refinement updates, escaped-draft isolation,
+  bypass/read rejection, exact single-pass budgets and recursive unions at
+  `-Xss256k`. This is a tested development pseudo-version, not a product release.
+- Checkpoint `e61d4ef` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34672340680), including
+  generation, race, vet, CLI and all fuzz gates. Source and generated Go were
+  pushed together; no product tag or Maven deployment was made.
 - Generic domain models, anonymous nested record classes and wide regular
   record emission remain required; regular models still retain their 48,000-byte
   source guard. Native formats, validated serde, remaining language work,
