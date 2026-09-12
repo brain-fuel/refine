@@ -216,9 +216,7 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
         "type T = String where matches \"a\" it",
         "type T = Int where show it == \"1\"",
         "type T = Int where (read \"1\" == Ok it)",
-        "f :: (Int where it > 0) -> Bool\nf _ = True\ntype T = Int where f it",
         "type T = Timestamp",
-        "type T = Int where (let x :: (Int where it > 0) = it in x > 0)",
     }{
         program,err:=language.Compile(source);if err!=nil{t.Fatalf("invalid rejection fixture: %s: %v",source,err)}
         files,err:=GenerateValidator(program,"example","Contract")
@@ -234,7 +232,10 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
 }
 
 func FuzzValidatorGeneration(f *testing.F){
-    for _,source:=range []string{functionContract, "type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}
+    for _,source:=range []string{baseFunctionContract,
+        "f :: (Int where f it) -> Bool\nf _ = True\ntype T = Int where f it",
+        "id :: a -> a\nid x = x\ntype T = Int where (let f :: (Int where it > 0) -> Int = id in f it == it)",
+        "type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}
     f.Fuzz(func(t *testing.T,source string){
         if len(source)>8192{return}
         program,err:=language.Compile(source);if err!=nil{return}

@@ -12,7 +12,7 @@ import (
 // before their dependents. Initialization therefore does not recurse over the
 // expression/type graph on the JVM stack.
 type initializerNode struct { typ string; source string }
-type initializer struct { prefix string; nodes []initializerNode; checked *language.CheckedModule }
+type initializer struct { prefix string; nodes []initializerNode; checked *language.CheckedModule; signatures []*language.Type; signatureIDs map[*language.Type]int }
 const initializerChunk = 32
 const initializerLoader = 128
 
@@ -40,7 +40,13 @@ func (e *initializer) list(typ string,items []string)string {
     groups:=e.list("java.util.List<"+typ+">",parts)
     return e.node("java.util.List<"+typ+">",e.prefix+"Support.concat("+groups+")")
 }
-func (e *initializer) source(root string)string {
+func (e *initializer) signature(t *language.Type)string{
+    if t==nil{return "null"}
+    if e.signatureIDs==nil{e.signatureIDs=make(map[*language.Type]int)}
+    index,found:=e.signatureIDs[t];if !found{index=len(e.signatures);e.signatureIDs[t]=index;e.signatures=append(e.signatures,t)}
+    return fmt.Sprintf("() -> %sTypes.get(%d)",e.prefix,index)
+}
+func (e *initializer) source(root,signatures string)string {
     chunks:=(len(e.nodes)+initializerChunk-1)/initializerChunk
     loaders:=(chunks+initializerLoader-1)/initializerLoader
     var out strings.Builder
@@ -59,6 +65,7 @@ func (e *initializer) source(root string)string {
         for i:=start;i<end;i++{fmt.Fprintf(&out,"        %sChunk%d.init();\n",e.prefix,i)}
         out.WriteString("    }\n}\n")
     }
+    fmt.Fprintf(&out,"final class %sTypes {\n    private %sTypes() {}\n    static ContractRuntime.Type get(int index) { return %s.get(index); }\n}\n",e.prefix,e.prefix,signatures)
     fmt.Fprintf(&out,`final class %sSupport {
     private %sSupport() {}
     static <T> java.util.List<T> concat(java.util.List<java.util.List<T>> parts) {
@@ -69,7 +76,7 @@ func (e *initializer) source(root string)string {
     static <T> java.util.Map<String, T> dictionary(java.util.List<java.util.Map.Entry<String, T>> entries) {
         var result = new java.util.LinkedHashMap<String, T>();
         for (var entry : entries) if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) throw new AssertionError("duplicate checked type");
-        return java.util.Map.copyOf(result);
+        return java.util.Collections.unmodifiableMap(result);
     }
 }
 `,e.prefix,e.prefix)

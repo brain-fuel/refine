@@ -19,6 +19,9 @@ const modelContract = `
 positive :: Int -> Bool
 positive n = n > 0
 type FunctionAge = Int where positive it
+guarded :: (Int where it > 0) -> Bool
+guarded _ = True
+type GuardedAge = Int where guarded it
 type AccountId = String
 type OtherId = String
 type Age = Int where it >= 0 @code "age.nonnegative"
@@ -94,6 +97,9 @@ public final class Models {
         require(new FunctionAge(n(1)).value().equals(n(1)));
         rejects(() -> new FunctionAge(n(0)));
         require(FunctionAge.createWithoutValidation(n(-1)).validate().state() == Validation.State.INVALID);
+        require(new GuardedAge(n(1)).value().equals(n(1)));
+        rejects(() -> new GuardedAge(n(0)));
+        require(GuardedAge.createWithoutValidation(n(-1)).validate().state() == Validation.State.INDETERMINATE);
         ProofChecks.run();
         String spelling = new String(new char[]{'x', (char)0xd800}); AccountId id = new AccountId(spelling);
         require(id.value() == spelling);

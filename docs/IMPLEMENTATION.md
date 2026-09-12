@@ -462,3 +462,39 @@ native formats and project workflows. The full checklist remains the release gat
   [CI run](https://github.com/brain-fuel/refine/actions/runs/34662998323), including
   generation, race, vet, CLI and all fuzz gates. The remaining execution forms
   and the full release checklist above are still required.
+
+## Java inline refinement contracts
+
+- Generated Java now enforces anonymous refinements on local bindings and
+  function arguments/results. Immutable guards survive currying, higher-order
+  arguments, returned functions, and function values nested inside local
+  records/lists. Named parent predicates are not re-run for substitution.
+- Nested contract predicates use child meters on the same continuation queue;
+  recursion observes Go's logical depth guard without recursive JVM calls.
+  All clauses are collected with invalid-over-unknown precedence; failed custom
+  messages still consume budget but do not erase a conclusive false predicate.
+  Inline assertion failures remain evaluation errors, making the enclosing
+  payload clause indeterminate rather than falsely reporting a Boolean result.
+- Deferred expression/signature references form a finite metadata table, even
+  when a signature predicate recursively invokes its own function. Bounded
+  initializer chunks remain in use. Immutable definition maps retain source
+  order for exact metered generic-declaration lookup.
+- Function conformance now compares 166,054 complete Go/Java reports, including
+  84,006 inline-contract cases across total/clause budgets and bypasses. Coverage
+  includes optional/result/recursive generic types, record-field ordering,
+  declaration-rule erasure, partial-call preconditions, nullary postconditions,
+  recursive guards, recovery after unknowns, and message failures. The 3,000-case
+  jetCheck suite now independently asserts inline boundary behavior and rule
+  aggregation as well as the earlier function laws. Semantic models exercise
+  validated construction, ordinary exceptions, and bypass revalidation of
+  inline function contracts.
+- Full local race tests, vet and deterministic generation pass with Java 25;
+  function conformance runs with `-Xss256k`. A 10-second emitter fuzz run passed
+  4,966,112 executions, including new recursive-signature and local-guard seeds.
+  The regular validator generation benchmark measured 332,858 ns/op,
+  1,121,633 B/op and 9,632 allocations/op on Darwin/arm64 (Apple M5 Max).
+  GoPlus latest remains v0.158.0, reverified through the module registry.
+- This closes the inline-assertion limitation of the preceding checkpoint, not
+  the release checklist. Java builtin show/read, regex/timestamps, complete
+  models, native formats, validated serde, English output, analysis, versioning,
+  schema-derived tests, Maven wiring and full CLI workflows remain required.

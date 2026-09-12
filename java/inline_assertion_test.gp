@@ -1,0 +1,84 @@
+package java
+
+// Included in the full-report function harness: every root is swept through
+// total and per-clause budgets, valid/invalid inputs, and explicit bypasses.
+// In particular, RecursiveGuard makes expression metadata refer to its own
+// signature; generation must preserve that finite graph without expanding it.
+const inlineContract = `
+guard :: (Int where it > 0) -> Bool
+guard _ = True
+post :: Int -> (Int where it > 0)
+post n = n
+curried :: (Int where it > 0) -> (Int where it < 2) -> Int
+curried a b = a + b
+applyPre :: ((Int where it > 0) -> Int) -> Int -> Int
+applyPre f n = f n
+applyPost :: (Int -> (Int where it > 0)) -> Int -> Int
+applyPost f n = f n
+makeGuard :: Int -> ((Int where it > 0) -> Int)
+makeGuard n = add n
+guardedConstant :: (Int where it > 0)
+guardedConstant = 0
+recursiveGuard :: (Int where recursiveGuard it) -> Bool
+recursiveGuard _ = True
+guardedUnknown :: (Int where 1 / 0 > 0.0) -> Bool
+guardedUnknown _ = True
+same :: (a where True) -> a
+same x = x
+data Parcel a = EmptyParcel | Parcel a a
+type Envelope a = { marker :: Int where False @steps 1, item :: a } where False @steps 1
+type NamedParent = Int where False @steps 1
+acceptParent :: NamedParent -> Bool
+acceptParent _ = True
+type InlineLocal = Int where (let x :: (Int where it > 0) = it in True)
+type InlinePre = Int where guard it
+type InlinePost = Int where post it == it
+type InlinePartial = Int where (let f = curried it in True)
+type InlineSecond = Int where curried 1 it > 0
+type InlineHigherPre = Int where applyPre id it == it
+type InlineHigherPost = Int where applyPost id it == it
+type InlineReturned = Int where makeGuard 2 it == it + 2
+type InlineLocalFunction = Int where (let f :: (Int where it > 0) -> Int = id in f it == it)
+type InlineNestedGuards = Int where applyPre post it == it
+type InlineConstant = Int where guardedConstant == it
+type InlineList = Int where (let xs :: [Int where it > 0] = [1, it] in True)
+type InlineEmptyList = Int where (let xs :: [Int where False] = [] in True)
+type InlineRecord = Int where (let r :: {a :: Int, b :: Int where it > 0} = {b = it, a = 0} in True)
+type InlineMaybe = Int where (let x :: Maybe (Int where it > 0) = Just it in True)
+type InlineNothing = Int where (let x :: Maybe (Int where False) = Nothing in True)
+type InlineNullable = Int where (let x :: Nullable (Int where it > 0) = NonNull it in True)
+type InlineNull = Int where (let x :: Nullable (Int where False) = Null in True)
+type InlineOk = Int where (let x :: Result (Int where False) (Int where it > 0) = Ok it in True)
+type InlineErr = Int where (let x :: Result (Int where it > 0) (Int where False) = Err it in True)
+type InlineParcel = Int where (let x :: Parcel (Int where it > 0) = Parcel 1 it in True)
+type InlineEmptyParcel = Int where (let x :: Parcel (Int where False) = EmptyParcel in True)
+type InlineTree = Int where (let x :: Tree (Int where it > 0) = Branch (Leaf 1) (Leaf it) in True)
+type InlineFunctionList = Int where (let fs :: [(Int where it > 0) -> Int] = [id] in (case fs of { [] -> False; f : _ -> f it == it }))
+type InlineFunctionRecord = Int where (let r :: {f :: (Int where it > 0) -> Int} = {f = id} in r.f it == it)
+type InlinePoly = Int where same it == it
+type InlineEnvelope = Envelope Int where (let x :: Envelope (Int where it > 0) = it in True)
+type InlineNamedParent = NamedParent where acceptParent it
+type InlineUnknown = Int where guardedUnknown it
+type InlineRecursive = Int where recursiveGuard it
+type InlineRecovery = Int where satisfiesOneOf [recursiveGuard, positive] it
+type InlineUnknownRecovery = Int where satisfiesOneOf [guardedUnknown, positive] it
+type InlineInvalidRecovery = Int where satisfiesOneOf [guard, positive] it
+type InlineMessage = Int where (let x :: (Int where it > 0 @message (reason it)) = it in True)
+type InlineBadMessage = Int where (let x :: (Int where it > 0 @message (if 1 / 0 > 0.0 then "a" else "b")) = it in True)
+type InlineAllRules = Int where (let x :: (Int where 1 / 0 > 0.0 where it > 0) = it in True)
+type InlineRulesReversed = Int where (let x :: (Int where it > 0 where 1 / 0 > 0.0) = it in True)
+type InlineRuleBudget = Int where (let x :: (Int where it > 0 @steps 1) = it in True)
+type InlineMessageBudget = Int where (let x :: (Int where False @steps 1 @message "expensive") = it in True)
+`
+
+var inlineNames = []string{
+    "InlineLocal", "InlinePre", "InlinePost", "InlinePartial", "InlineSecond",
+    "InlineHigherPre", "InlineHigherPost", "InlineReturned", "InlineLocalFunction",
+    "InlineNestedGuards", "InlineConstant", "InlineList", "InlineEmptyList",
+    "InlineRecord", "InlineMaybe", "InlineNothing", "InlineNullable", "InlineNull",
+    "InlineOk", "InlineErr", "InlineParcel", "InlineEmptyParcel", "InlineEnvelope",
+    "InlineTree", "InlineFunctionList", "InlineFunctionRecord", "InlinePoly",
+    "InlineNamedParent", "InlineUnknown", "InlineRecursive", "InlineRecovery",
+    "InlineUnknownRecovery", "InlineInvalidRecovery", "InlineMessage", "InlineBadMessage",
+    "InlineAllRules", "InlineRulesReversed", "InlineRuleBudget", "InlineMessageBudget",
+}

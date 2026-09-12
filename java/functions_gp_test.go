@@ -18,7 +18,9 @@ import (
 	"time"
 )
 
-const functionContract = `
+const functionContract = baseFunctionContract + inlineContract
+
+const baseFunctionContract = `
 id :: a -> a
 id x = x
 positive :: Int -> Bool
@@ -142,6 +144,9 @@ func TestGeneratedFunctionExecution(t *testing.T) {
 		if name == "Concrete" {
 			data = testRecord(value.DataField{Name: "item", Value: testVariant("Just", data)})
 		}
+		if name == "InlineEnvelope" {
+			data = testRecord(value.DataField{Name: "item", Value: data}, value.DataField{Name: "marker", Value: testNumber("0")})
+		}
 		limits := validation.Limits{Total: total, Clause: clause}
 		for _, bypass := range []bool{false, true} {
 			report := program.ValidateData(name, data, limits)
@@ -152,6 +157,7 @@ func TestGeneratedFunctionExecution(t *testing.T) {
 		}
 	}
 	names := []string{"Direct", "Sum", "Map", "Filter", "Fold", "Higher", "Partial", "Choice", "Constructors", "Patterns", "Literals", "CaseList", "All", "Any", "Nested", "Exactly", "AtLeast", "Nontermination", "SurvivesDepth", "PolymorphicRecursion", "PolyRecovery", "Eager", "Membership", "Unique", "Reverse", "TextLength", "Whole", "Negation", "Constant", "Concrete", "RecordArgument", "EagerFailure", "PartialConstructor", "Annotated", "BuiltinShadow"}
+	names = append(names, inlineNames...)
 	for _, name := range names {
 		for _, n := range []string{"-1", "0", "1"} {
 			for limit := uint64(1); limit < 180; limit++ {
@@ -240,6 +246,7 @@ public final class FunctionConformance {
                 data = new Data.Sequence(items);
             } else data = new Data.Number(Rational.parse(f[1]));
             if (f[0].equals("Concrete")) data = new Data.Struct(List.of(new Data.Field("item", new Data.Variant("Just", List.of(data)))));
+            if (f[0].equals("InlineEnvelope")) data = new Data.Struct(List.of(new Data.Field("item", data), new Data.Field("marker", new Data.Number(Rational.ZERO))));
             var limits = new Budget.Limits(Long.parseLong(f[2]), Long.parseLong(f[3]));
             var outcome = Boolean.parseBoolean(f[4]) ? Contract.validateStructure(f[0], data, limits) : Contract.validate(f[0], data, limits);
             var report = new StringBuilder(outcome.state().name().toLowerCase(java.util.Locale.ROOT)).append('|').append(outcome.incomplete());
@@ -251,6 +258,16 @@ public final class FunctionConformance {
             if (Contract.validate("Sum", value).state() != Validation.State.VALID) throw new AssertionError("recursive sum");
             var expected = n > 0 ? Validation.State.VALID : Validation.State.INVALID;
             if (Contract.validate("Higher", value).state() != expected || Contract.validate("Nested", value).state() != expected) throw new AssertionError("higher-order/unknown composition");
+            var asserted = n > 0 ? Validation.State.VALID : Validation.State.INDETERMINATE;
+            for (String root : List.of("InlineLocal", "InlinePre", "InlinePost", "InlinePartial", "InlineHigherPre", "InlineHigherPost", "InlineReturned", "InlineLocalFunction", "InlineNestedGuards", "InlineList", "InlineRecord", "InlineMaybe", "InlineNullable", "InlineOk", "InlineErr", "InlineParcel", "InlineMessage", "InlineBadMessage")) {
+                if (Contract.validate(root, value).state() != asserted) throw new AssertionError("lost inline contract: " + root);
+                if (Contract.validateStructure(root, value, Budget.Limits.defaults()).state() != Validation.State.VALID) throw new AssertionError("inline bypass: " + root);
+            }
+            for (String root : List.of("InlineAllRules", "InlineRulesReversed")) {
+                var outcome = Contract.validate(root, value);
+                String failure = n > 0 ? "evaluation.refinement_unknown:" : "evaluation.refinement:";
+                if (outcome.state() != Validation.State.INDETERMINATE || !outcome.diagnostics().getFirst().message().contains(failure)) throw new AssertionError("inline rule aggregation: " + root);
+            }
             return true;
         });
     }

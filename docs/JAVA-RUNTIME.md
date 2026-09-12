@@ -122,7 +122,7 @@ Custom-message failure preserves the conclusive violation and generated fallback
 
 The expression emitter handles literals, `it`, field projection, numeric/Boolean
 operators, equality, concatenation/cons, conditionals, record/list literals, and
-local bindings with ordinary type annotations. Named functions support generic
+local bindings with ordinary and inline-refined type annotations. Named functions support generic
 instantiation, recursion, partial application, higher-order arguments/results,
 zero-argument definitions and ordered equations. Case/function patterns support
 bindings, wildcards, literals, constructors, lists and cons patterns.
@@ -135,11 +135,20 @@ unknown; nested attempts resume at the correct outer continuation/depth.
 Arguments are eager, even when the function ignores them. First-class functions
 remain private execution values, never variants in the public `Data` payload API.
 
-Java builtin `show`/`read`, regex `matches`/`search`, timestamps, and anonymous
-refinement assertions in local/function contracts (including inferred function
-signatures carrying anonymous refinements) still reject generation with
-`java.unsupported` and a source position. Named model/payload refinements already
-execute. Function-valued payload fields are not serializable payload types.
+Anonymous refinements execute at local binding and function boundaries, including
+fields, lists, optional/result types and generic constructors. Immutable function
+guards enforce preconditions at each curried application and postconditions on
+results, including higher-order and returned functions. Named parent predicates
+are not re-run merely for substitution. Every inline `where` executes; a false
+predicate dominates unknown inner clauses, even if its custom message fails.
+An inline assertion failure is an evaluation error: the enclosing payload rule
+reports indeterminate, rather than mistaking a failed computation for `False`.
+Nested clauses share their enclosing budgets and the continuation queue, so
+recursive contract predicates obey logical depth limits without JVM recursion.
+
+Java builtin `show`/`read`, regex `matches`/`search`, and timestamps still reject
+generation with `java.unsupported` and a source position.
+Function-valued payload fields are not serializable payload types.
 Unsupported rules are never dropped. The missing execution forms remain release
 obligations, not optional extensions.
 
@@ -150,6 +159,10 @@ contract-source guard without raising JVM stack or method-size limits. Helpers
 are package-private implementation classes in the same contract source file;
 the public API and eight-file validator source set are unchanged. This does not
 remove the separate development limits on semantic model shapes/source sizes.
+Expression-to-signature links use a deferred, finite metadata table: a function's
+contract may refer recursively to the same function without infinite expansion
+during generation or class initialization. Declaration lookup retains source
+order because the Go evaluator charges for that traversal.
 
 Verification compares **26,500 complete Go/Java validation reports**, including
 diagnostic paths, codes, predicates and messages, across successful, malformed,
@@ -174,11 +187,15 @@ current evaluator policy. Full-report tests run with a deliberately small
 deep mismatches, long arithmetic expressions and their total/per-clause budget
 boundaries. Within-policy inputs must still produce conclusive results.
 
-Function execution adds 82,048 complete-report comparisons across recursion, generic
+Function execution adds 166,054 complete-report comparisons across recursion, generic
 and higher-order calls, patterns, all quantifier truth-table sequences through
 length four, tiny budgets, nontermination/depth recovery, fixed-width overflow,
-eager ignored arguments and custom-message functions. An additional 3,000
-jetCheck cases exercise recursive sum and higher-order/unknown composition.
+eager ignored arguments and custom-message functions. These include 84,006
+inline-contract comparisons covering eager partial-application checks, guarded
+arguments/results, nested containers, anonymous local function annotations,
+recursive contracts, rule aggregation and failing/budget-limited messages.
+An additional 3,000 jetCheck cases exercise recursive sum, higher-order/unknown
+composition, inline boundary enforcement, bypasses and inner-rule aggregation.
 Generated semantic model tests also enforce function-backed predicates in normal
 constructors while preserving explicit bypass behavior.
 

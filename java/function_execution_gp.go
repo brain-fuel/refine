@@ -9,7 +9,11 @@ const functionExecutionJava = `
                     if (function != null) {
                         int arity = function.equations().getFirst().patterns().size();
                         if (arity == 0) invoke(name, List.of(), signature, level, done);
-                        else work.complete(done, new FunctionValue(name, arity, List.of(), signature));
+                        else {
+                            Val value = new FunctionValue(name, arity, List.of(), signature);
+                            if (hasInline(function.signature())) assertInline(function.signature(), value, functionBindings(name, signature), level, done);
+                            else work.complete(done, value);
+                        }
                         return;
                     }
                     Integer arity = constructors.get(name);
@@ -28,6 +32,12 @@ const functionExecutionJava = `
                 void apply(Val function, Val argument, int level, Consumer<Val> done) {
                     work.later(() -> {
                         enterDepth(level);
+                        if (function instanceof GuardedFunction guarded) {
+                            assertInline(guarded.argument(), argument, guarded.types(), level + 1, checked ->
+                                apply(guarded.function(), checked, level + 1, result ->
+                                    assertInline(guarded.result(), result, guarded.types(), level + 1, done)));
+                            return;
+                        }
                         if (!(function instanceof FunctionValue fn)) throw fail("evaluation.type", "application requires a function");
                         step((long)fn.arguments().size() + 1); var arguments = new ArrayList<>(fn.arguments()); arguments.add(argument);
                         if (arguments.size() < fn.arity()) work.complete(done, new FunctionValue(fn.name(), fn.arity(), arguments, fn.signature()));
@@ -45,7 +55,10 @@ const functionExecutionJava = `
                                     if (index == function.equations().size()) throw fail("evaluation.pattern", "no function equation matched");
                                     Equation equation = function.equations().get(index++); var env = new HashMap<String, Val>();
                                     patterns(equation.patterns(), args, env, types, level + 1, matched -> {
-                                        if (matched) visit(equation.body(), env, types, level + 1, done); else work.later(this);
+                                        if (matched) visit(equation.body(), env, types, level + 1, result -> {
+                                            if (args.isEmpty() && hasInline(function.signature())) assertInline(function.signature(), result, types, level + 1, done);
+                                            else work.complete(done, result);
+                                        }); else work.later(this);
                                     });
                                 }
                             });

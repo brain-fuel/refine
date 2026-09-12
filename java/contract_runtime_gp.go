@@ -36,11 +36,13 @@ public final class ContractRuntime {
     public record Equation(List<Pattern> patterns, Expr body) { public Equation { patterns = List.copyOf(patterns); } }
     public record FunctionDef(Type signature, List<Equation> equations, List<Scope> scopes) { public FunctionDef { equations = List.copyOf(equations); scopes = List.copyOf(scopes); } }
     public record Rule(String code, int offset, String predicate, Expr expression, Expr message, BigInteger steps) {}
-    public record Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names, Type signature, List<Arm> arms) {
+    public record Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names, Supplier<Type> inferred, List<Arm> arms, Type annotation) {
         public Expr { arguments = List.copyOf(arguments); names = List.copyOf(names); arms = List.copyOf(arms); }
-        public Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names) { this(kind, text, flag, arguments, names, null, List.of()); }
+        public Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names) { this(kind, text, flag, arguments, names, null, List.of(), null); }
+        public Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names, Type signature, List<Arm> arms) { this(kind, text, flag, arguments, names, () -> signature, arms, null); }
+        public Type signature() { return inferred == null ? null : inferred.get(); }
     }
-    // Private execution values can later carry partial applications without
+    // Private execution values carry partial applications without
     // putting functions into the public payload Data hierarchy.
     private sealed interface Val {}
     private record NumberValue(Rational value, String numericType) implements Val {
@@ -53,6 +55,7 @@ public final class ContractRuntime {
     private record RecordValue(List<FieldValue> fields) implements Val { RecordValue { fields = List.copyOf(fields); } }
     private record VariantValue(String name, List<Val> values) implements Val { VariantValue { values = List.copyOf(values); } }
     private record FunctionValue(String name, int arity, List<Val> arguments, Type signature) implements Val { FunctionValue { arguments = List.copyOf(arguments); } }
+    private record GuardedFunction(Val function, Type argument, Type result, Map<String, Binding> types) implements Val { GuardedFunction { types = Map.copyOf(types); } }
     private record Binding(Type type, Map<String, Binding> environment) {}
     private record Checked(Val data, boolean shape) {}
     private static final class Failure extends RuntimeException {
@@ -159,7 +162,11 @@ public final class ContractRuntime {
         }
         Val expression(Expr expression, Map<String, Val> environment, Map<String, Binding> typeEnvironment) {
             Work work = new Work(); Val[] result = new Val[1];
-            class Expression {
+            new Engine(work).visit(expression, environment, typeEnvironment, depth, data -> result[0] = data); work.run(); return result[0];
+        }
+        private final class Engine {
+                final Work work;
+                Engine(Work work) { this.work = work; }
                 void visit(Expr expr, Map<String, Val> env, Map<String, Binding> types, int logicalDepth, Consumer<Val> done) {
                     work.later(() -> {
                         enterDepth(logicalDepth);
@@ -210,7 +217,8 @@ public final class ContractRuntime {
                     case "if" -> visit(args.get(0), env, types, logicalDepth + 1, condition ->
                         visit(args.get(((BoolValue)condition).value() ? 1 : 2), env, types, logicalDepth + 1, done));
                     case "let" -> visit(args.get(0), env, types, logicalDepth + 1, value -> {
-                        var local = new HashMap<>(env); local.put(text, value); visit(args.get(1), local, types, logicalDepth + 1, done);
+                        Consumer<Val> bind = checked -> { var local = new HashMap<>(env); local.put(text, checked); visit(args.get(1), local, types, logicalDepth + 1, done); };
+                        if (expr.annotation() == null) work.complete(bind, value); else assertInline(expr.annotation(), value, types, logicalDepth + 1, bind);
                     });
                     case "list", "record" -> {
                         step(args.size());
@@ -235,8 +243,7 @@ public final class ContractRuntime {
                     });
                 }
                 ` + functionExecutionJava + `
-            }
-            new Expression().visit(expression, environment, typeEnvironment, depth, data -> result[0] = data); work.run(); return result[0];
+                ` + inlineAssertionJava + `
         }
         ` + functionTypesJava + `
         NumberValue checkedNumber(Rational number, String type) {
@@ -255,6 +262,7 @@ public final class ContractRuntime {
                         enterDepth(logicalDepth);
                         switch (left) {
                             case FunctionValue ignored -> throw fail("evaluation.type", "functions do not support value equality");
+                            case GuardedFunction ignored -> throw fail("evaluation.type", "functions do not support value equality");
                             case NumberValue n -> { Rational r = ((NumberValue)right).value(); step((long)n.value().show().length() + r.show().length()); same[0] = n.value().equals(r); }
                             case TextValue t -> { String r = ((TextValue)right).value(); step((long)t.value().length() + r.length()); same[0] = t.value().equals(r); }
                             case BoolValue v -> same[0] = v.value() == ((BoolValue)right).value();
