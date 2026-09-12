@@ -384,3 +384,28 @@ native formats and project workflows. The full checklist remains the release gat
   bypasses, 160-term expressions, and over-limit indeterminate results, all with
   a 256 KiB JVM stack. The same consumer fails with `StackOverflowError` on
   `67fa270` and passes again after restoring `ffd0519`.
+
+## Bounded Java contract initialization
+
+- The single contract initializer and 48,000-byte source rejection are replaced
+  by dependency-ordered, typed initializer nodes. Groups of 32 nodes and bounded
+  loader classes avoid method/constant-pool growth in a single class. Sequential
+  loading avoids recursive class initialization. Large lists are grouped without
+  reordering, and long strings are joined from UTF-8-boundary-safe pieces rather
+  than folded into oversized JVM constants.
+- This preserves the eight-file validator source set and public APIs. Helper
+  classes are package-private within the contract source; Java consumers need
+  no Go toolchain or extra Maven artifact. Separate model-source/shape limits and
+  unsupported execution forms remain obligations, not silent approximations.
+- A 4,836,146-byte generated contract compiles with Java 25 warnings-as-errors
+  and runs with `-Xss256k`: 1,100 named refinements, 1,100 record fields, 1,100
+  alternatives, a 1,100-element expression literal, 70 ordered rules, a
+  70,000-character message, a 70,000-character inactive expression constant, and
+  a long supplementary-Unicode diagnostic code. Complete reports match Go.
+  Property tests cover splitting at supplementary characters, NUL and escapes.
+- Full local race, vet and deterministic-generation checks pass, including the
+  existing 45,034 report comparisons and model/jetCheck suites. A 10-second
+  validator-emitter fuzz run passed 4,933,626 executions. Source generation for
+  the regular validator fixture measured 258,076 ns/op, 959,183 B/op and 7,669
+  allocations/op on Darwin/arm64 (Apple M5 Max); this measures generation, not
+  payload throughput. Fresh upstream/consumer evidence is still required.

@@ -64,13 +64,6 @@ func javaQuote(text string) string {
 	return out.String()
 }
 func javaList(items []string) string { return "java.util.List.of(" + strings.Join(items, ",") + ")" }
-func quoteList(items []string) string {
-	result := make([]string, len(items))
-	for i, item := range items {
-		result[i] = javaQuote(item)
-	}
-	return javaList(result)
-}
 
 func javaClassName(className string) error {
 	reserved := " Data ContractRuntime Rational TextCodec Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
@@ -80,10 +73,10 @@ func javaClassName(className string) error {
 	return packageName(className)
 }
 
-func emitExpr(expr *language.Expr, scope map[string]bool) string {
+func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 	kind, text, flag := "", "", false
 	args, names := []string{}, []string{}
-	child := func(e *language.Expr) string { return emitExpr(e, scope) }
+	child := func(arg *language.Expr) string { return e.expr(arg, scope) }
 	switch __gp_m0 := any(expr.Form).(type) {
 	case language.NumberLiteral:
 		raw := __gp_m0.Text
@@ -138,7 +131,7 @@ func emitExpr(expr *language.Expr, scope map[string]bool) string {
 			local[key] = v
 		}
 		local[name] = true
-		args = append(args, emitExpr(body, local))
+		args = append(args, e.expr(body, local))
 	case language.ListLiteral:
 		elements := __gp_m0.Elements
 		kind = "list"
@@ -159,10 +152,11 @@ func emitExpr(expr *language.Expr, scope map[string]bool) string {
 	default:
 		panic("goplus: impossible enum value in match")
 	}
-	return fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s)", javaQuote(kind), javaQuote(text), flag, javaList(args), quoteList(names))
+	source := fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s)", javaQuote(kind), e.literal(text), flag, e.list("ContractRuntime.Expr", args), e.strings(names))
+	return e.node("ContractRuntime.Expr", source)
 }
 
-func emitType(t *language.Type) string {
+func (e *initializer) typ(t *language.Type) string {
 	kind, name := "", ""
 	args, fields, rules := []string{}, []string{}, []string{}
 	switch __gp_m1 := any(t.Form).(type) {
@@ -176,27 +170,29 @@ func emitType(t *language.Type) string {
 	case language.ListType:
 		element := __gp_m1.Element
 		kind = "list"
-		args = append(args, emitType(element))
+		args = append(args, e.typ(element))
 	case language.RecordType:
 		members := __gp_m1.Fields
 
 		kind = "record"
 		for _, member := range members {
-			fields = append(fields, "new ContractRuntime.Member("+javaQuote(member.Name)+","+emitType(member.Type)+")")
+			source := "new ContractRuntime.Member(" + e.literal(member.Name) + "," + e.typ(member.Type) + ")"
+			fields = append(fields, e.node("ContractRuntime.Member", source))
 		}
 	case language.RefinedType:
 		base := __gp_m1.Base
 		conditions := __gp_m1.Rules
 
 		kind = "refined"
-		args = append(args, emitType(base))
+		args = append(args, e.typ(base))
 		for _, rule := range conditions {
 			scope := map[string]bool{"it": true}
 			message := "null"
 			if rule.Message != nil {
-				message = emitExpr(rule.Message, scope)
+				message = e.expr(rule.Message, scope)
 			}
-			rules = append(rules, fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s))", javaQuote(rule.Code), rule.At.Start.Offset, javaQuote(language.FormatExpression(rule.Predicate)), emitExpr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps))))
+			source := fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s))", e.literal(rule.Code), rule.At.Start.Offset, e.literal(language.FormatExpression(rule.Predicate)), e.expr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps)))
+			rules = append(rules, e.node("ContractRuntime.Rule", source))
 		}
 	case language.AppliedType:
 
@@ -225,14 +221,15 @@ func emitType(t *language.Type) string {
 			unsupported(t.At, "unsupported type constructor")
 		}
 		for _, arg := range arguments {
-			args = append(args, emitType(arg))
+			args = append(args, e.typ(arg))
 		}
 	case language.ArrowType:
 		unsupported(t.At, "function-valued types are not payload types")
 	default:
 		panic("goplus: impossible enum value in match")
 	}
-	return fmt.Sprintf("new ContractRuntime.Type(%s,%s,%s,%s,%s)", javaQuote(kind), javaQuote(name), javaList(args), javaList(fields), javaList(rules))
+	source := fmt.Sprintf("new ContractRuntime.Type(%s,%s,%s,%s,%s)", javaQuote(kind), e.literal(name), e.list("ContractRuntime.Type", args), e.list("ContractRuntime.Member", fields), e.list("ContractRuntime.Rule", rules))
+	return e.node("ContractRuntime.Type", source)
 }
 
 // GenerateValidator emits a checked contract and its Java 25 runtime. It does
@@ -268,23 +265,26 @@ func GenerateValidator(program *language.Program, namespace, className string) (
 	if len(module.Functions) != 0 {
 		unsupported(module.Functions[0].At, "named function emission remains required")
 	}
+	e := &initializer{prefix: className + "$Refine"}
 	entries := []string{}
 	for _, decl := range module.Types {
 		body := "null"
 		if decl.Body != nil {
-			body = emitType(decl.Body)
+			body = e.typ(decl.Body)
 		}
 		alternatives := []string{}
 		for _, variant := range decl.Variants {
 			args := []string{}
 			for _, arg := range variant.Arguments {
-				args = append(args, emitType(arg))
+				args = append(args, e.typ(arg))
 			}
-			alternatives = append(alternatives, "new ContractRuntime.Alternative("+javaQuote(variant.Name)+","+javaList(args)+")")
+			source := "new ContractRuntime.Alternative(" + e.literal(variant.Name) + "," + e.list("ContractRuntime.Type", args) + ")"
+			alternatives = append(alternatives, e.node("ContractRuntime.Alternative", source))
 		}
-		definition := fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s)", quoteList(decl.Parameters), body, javaList(alternatives))
-		entries = append(entries, "java.util.Map.entry("+javaQuote(decl.Name)+","+definition+")")
+		definition := e.node("ContractRuntime.Definition", fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s)", e.strings(decl.Parameters), body, e.list("ContractRuntime.Alternative", alternatives)))
+		entries = append(entries, e.node("java.util.Map.Entry<String, ContractRuntime.Definition>", "java.util.Map.entry("+e.literal(decl.Name)+","+definition+")"))
 	}
+	definitions := e.node("java.util.Map<String, ContractRuntime.Definition>", e.prefix+"Support.definitions("+e.list("java.util.Map.Entry<String, ContractRuntime.Definition>", entries)+")")
 	header := "// Generated by Refine: development Java 25 contract. MIT licensed.\n"
 	if namespace != "" {
 		header += "package " + namespace + ";\n"
@@ -292,19 +292,12 @@ func GenerateValidator(program *language.Program, namespace, className string) (
 	source := fmt.Sprintf(`
 public final class %s {
     private %s() {}
-    private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = java.util.Map.ofEntries(%s);
+    private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = definitions();
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
     public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, root, input, caller); }
     public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, root, input, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
-}
-`, className, className, strings.Join(entries, ","))
-	// Development emitter guard: a future chunked initializer must lift this
-	// limit without exceeding JVM method/constant-pool limits. Fail explicitly
-	// now rather than return a source set known to risk an oversized initializer.
-	if len(source) > 48000 {
-		unsupported(language.Span{}, "contract initializer exceeds the current 48000-byte emission limit; chunked emission remains required")
-	}
+`, className, className) + e.source(definitions)
 	files, failure = GenerateRuntime(namespace)
 	if failure != nil {
 		return nil, failure

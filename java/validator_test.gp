@@ -230,8 +230,6 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
     syntax:=program.Syntax();syntax.Types[0].Name="Corrupted"
     second,err:=GenerateValidator(program,"example","Contract");if err!=nil{t.Fatal(err)}
     for i:=range first{if first[i]!=second[i]{t.Fatal("generation depends on mutable syntax copy")}}
-    large,err:=language.Compile("type T = String where it == "+fmt.Sprintf("%q",strings.Repeat("a",50000)));if err!=nil{t.Fatal(err)}
-    if files,err:=GenerateValidator(large,"","Contract");err==nil||files!=nil{t.Fatal("oversized initializer not rejected")}
 }
 
 func FuzzValidatorGeneration(f *testing.F){

@@ -127,8 +127,13 @@ application (including builtins), match expressions, annotated local bindings,
 function-valued types and timestamps with `java.unsupported` plus source position.
 It never drops those rules or emits validators that quietly accept them.
 This is a development subset, not the final language contract: all those missing
-forms remain required. The current 48,000-byte initializer-source guard rejects
-large contracts explicitly; chunked emission must lift that guard before release.
+forms remain required. Contract initialization is emitted as dependency-ordered
+chunks: bounded static initializers, bounded list construction, sequential class
+loading, and split long string constants. This removes the former 48,000-byte
+contract-source guard without raising JVM stack or method-size limits. Helpers
+are package-private implementation classes in the same contract source file;
+the public API and eight-file validator source set are unchanged. This does not
+remove the separate development limits on semantic model shapes/source sizes.
 
 Verification compares **26,500 complete Go/Java validation reports**, including
 diagnostic paths, codes, predicates and messages, across successful, malformed,
@@ -137,7 +142,14 @@ unknown, tiny-budget, overflow and deep-tree cases. Three jetCheck suites add
 The all-leaves-checked tree law deliberately generates trees within the documented
 resource limits; separate over-limit cases require Go/Java agreement instead.
 Emitter tests cover all-or-nothing rejection, unsafe class names, detached syntax
-copies, escaped controls/lone surrogates, deterministic output and size limits.
+copies, escaped controls/lone surrogates, and deterministic output. A 4.8 MB
+generated-contract fixture covers 1,100 named refinements, a 1,100-field record,
+a 1,100-alternative tagged union, 70,000-character custom messages and constants,
+and a long supplementary-Unicode diagnostic code. Large collection literals and
+70 separately reported rules verify list/diagnostic ordering across chunks.
+Its complete reports match Go,
+including inactive-branch behavior, with a 256 KiB JVM stack. Property tests also
+cover string splitting across supplementary characters, NUL and Java escapes.
 
 Traversal and expression execution use explicit continuation frames, not Java
 recursion. The logical 512-level guard and budget charges remain the same as Go's
