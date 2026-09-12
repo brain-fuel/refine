@@ -1099,3 +1099,15 @@ native formats and project workflows. The full checklist remains the release gat
   anonymous nested model records, the outstanding language/native/serde/English/
   analysis/versioning/generated-test/Maven/CLI work and the full release audit
   remain required. No product tag or Maven deployment is made.
+- A fresh external module fetched public pseudo-version
+  `v0.0.0-20260912134911-c70912d79f6b` with `GOWORK=off` and no replacements.
+  Its race-tested harness compiled Java 25 with warnings-as-errors and ran at
+  `-Xss256k`, checking exact Go-derived constructor and parent-update budgets,
+  transformed parent arguments, reordered fields, shared raw-payload identity,
+  dynamic child updates, retained inline predicates, bypasses and read
+  revalidation. The consumer passed without production or harness corrections.
+- Source checkpoint `c70912d` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34697484327), including
+  generation checks, race tests, vet, CLI checks and all fifteen fuzz gates.
+  Authored GoPlus and generated Go were pushed together. No product tag or
+  Maven deployment occurred.
