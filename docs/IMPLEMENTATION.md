@@ -408,4 +408,13 @@ native formats and project workflows. The full checklist remains the release gat
   validator-emitter fuzz run passed 4,933,626 executions. Source generation for
   the regular validator fixture measured 258,076 ns/op, 959,183 B/op and 7,669
   allocations/op on Darwin/arm64 (Apple M5 Max); this measures generation, not
-  payload throughput. Fresh upstream/consumer evidence is still required.
+  payload throughput.
+- A fresh consumer fetched `v0.0.0-20260912002054-17e9fb761d91` without workspace
+  replacements, generated 401 semantic models plus their large contract, compiled
+  with Java 25 warnings-as-errors, and passed a race-tested harness at `-Xss256k`.
+  It verifies normal/rejected constructors and the exact 70,000-character custom
+  message. The independent deep-model/equality/atomic-update consumer also passes
+  after fetching this checkpoint. Checkpoint `17e9fb7` passed the full Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34661325983), including
+  all fuzz gates. This verifies bounded initialization, not the unfinished full
+  compiler/model/serde/release requirements above.
