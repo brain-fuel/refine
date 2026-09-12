@@ -111,13 +111,79 @@ Setter case collisions receive distinct suffixes. Case-insensitive source-name
 collisions are rejected. The generation CLI still needs complete output ownership,
 host-filesystem planning, project-layout detection and naming override support.
 
+## Tagged unions and nominal refinements
+
+Monomorphic tagged unions generate a sealed interface and nested immutable
+alternative classes. For example:
+
+```haskell
+data Payment = Cash Int | Split Int Int | Free
+type Paid = Payment
+  where (case it of { Cash n -> n > 0; Split a b -> a + b > 0; Free -> False })
+```
+
+```java
+Paid paid = new Paid.Cash(BigInteger.ONE);
+Payment parent = paid; // Same object, no copying or revalidation.
+BigInteger total = switch (parent.variant()) {
+    case Payment.Cash cash -> cash.value();
+    case Payment.Split split -> split.value1().add(split.value2());
+    case Payment.Free ignored -> BigInteger.ZERO;
+};
+Paid.Split split = Paid.Split.create(draft -> {
+    draft.setValue1(BigInteger.ONE);
+    draft.setValue2(BigInteger.TWO);
+});
+```
+
+`Paid` extends `Payment`; `Paid.Cash` extends `Payment.Cash` and implements
+`Paid`. Longer refinement chains preserve both relationships. The closed
+`Payment.Variant` view permits only the original alternative classes. `variant()`
+returns the exact same object with that view type, making a switch over the
+original alternatives exhaustive even when nominal refinement interfaces extend
+the root. Java's exhaustiveness analysis does not recognize that coverage for
+a switch directly over the root interface with those additional permitted
+refinement interfaces. No fallback arm, wrapper allocation or validation is
+needed for the view. All nominal refinement views use the root family's
+alternatives for exhaustive matching.
+
+A single constructor argument has a typed `value()` getter; several arguments
+have `value1()`, `value2()`, and so on, in declaration order. Alternative classes
+support validated construction, `fromData`, canonical `read`, validation outcomes,
+explicit bypasses and atomic `update` drafts. Factories on an alternative reject
+another constructor even when it is valid for the overall union. Refinement
+alternatives retain their dynamic predicates and covariant update result when
+accessed through a parent reference. Recursive union arguments retain their
+declared nominal types. These language constructors do not select JSON
+discriminators or alter native wire representations.
+
+`create(initialize[, limits])` stages every constructor argument and validates
+once after the callback completes. Missing arguments fail structurally, including
+optional/nullable arguments: those require their explicit language constructors.
+`createWithoutValidation` also supports drafts but skips only predicates.
+Creation and update drafts have the same snapshot/callback-failure guarantees
+as record updates. Nullary alternatives accept empty drafts. Alternatives with
+more than 253 arguments use these builders or raw-data factories instead of
+positional constructors, respecting the JVM parameter-slot limit without dropping
+typed getters or setters. Large alternative dispatch tables and draft encoders
+are emitted in bounded helper methods.
+
+Nested constructor class names are deterministically suffixed when they would
+shadow runtime helpers, top-level domain types or each other. For example,
+`data Token = Token String` emits `Token.Token_` but retains the language tag
+`Token`. If a domain declaration is named `Variant`, the closed view is named
+`Variant_` (with further suffixes as needed); its method remains `variant()`.
+
 ## Coverage and remaining scope
 
 Current models cover monomorphic named scalars, records, lists and aliases,
 nominal refinement chains, recursive records through named references/optional
-fields, and composed optional/nullable/result values. Generic domain declarations,
-tagged-union model alternatives and anonymous nested record classes still reject
-model generation explicitly. The validator can already handle more structural
+fields, tagged unions and their recursive/refined alternatives, and composed
+optional/nullable/result values. Generic domain declarations and anonymous nested
+record classes still reject model generation explicitly. Regular record/scalar
+model emission also retains a 48,000-byte source guard; wide regular records
+still need the bounded construction/draft emission now used for unions.
+The validator can already handle more structural
 forms than the model emitter. Unsupported predicate execution and source-size
 limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
 
@@ -134,6 +200,16 @@ updates. A boundary derived from Go's validator proves one completed update uses
 exactly the budget required for one validation pass. Two jetCheck suites add
 4,000 fresh-seeded construction/update cases. Model source generation also has
 determinism, collision, rejection, fuzz and benchmark coverage.
+
+The union suite adds 18,729 complete Go/Java report and canonical-read
+comparisons, including caller/per-clause budget boundaries, and 6,000 jetCheck
+cases for construction, atomic updates and recursive trees. It compiles exhaustive
+switches without defaults, rejects illegal nominal assignments and unpermitted
+implementations, and checks parent/sibling/alternative evidence isolation.
+Separate scale tests compile and execute a 1,100-alternative union, a
+260-argument constructor and its nominal refinement, and the exact 253-argument
+positional-constructor boundary. Go-derived minimum budgets prove wide draft
+creation and update each perform one complete validation pass.
 
 The complete release still requires all model shapes and language execution,
 validated Jackson and Avro serde, native schema formats,

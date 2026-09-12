@@ -104,6 +104,28 @@ final class ModelSupport {
         for (var entry : remaining.entrySet()) result.add(new Data.Field(entry.getKey(), entry.getValue()));
         return new Data.Struct(result);
     }
+    static Validation.Outcome alternativeShape(Data raw, String name, int arity) {
+        if (raw instanceof Data.Variant variant && variant.name().equals(name) && variant.values().size() == arity) return new Validation.Valid();
+        return new Validation.Invalid(java.util.List.of(new Validation.Diagnostic(
+            "validation.structure", java.util.List.of(""), "", "Expected constructor " + name + " with " + arity + " arguments.")), false);
+    }
+    static Data alternative(Data raw, String name, int arity) { alternativeShape(raw,name,arity).orThrow(); return raw; }
+    static Data argument(Data raw, int index) { return ((Data.Variant)raw).values().get(index); }
+    static Data applyArgumentChanges(Data raw, java.util.Map<Integer, Data> changes) {
+        if (changes.isEmpty()) return raw;
+        var before = (Data.Variant)raw; var values = new java.util.ArrayList<>(before.values());
+        for (var entry : changes.entrySet()) values.set(entry.getKey(), entry.getValue());
+        return new Data.Variant(before.name(), values);
+    }
+    static Data constructVariant(String name, int arity, java.util.Map<Integer, Data> arguments) {
+        var values = new java.util.ArrayList<Data>();
+        for (int i = 0; i < arity; i++) {
+            if (!arguments.containsKey(i)) throw new ValidationException(new Validation.Invalid(java.util.List.of(
+                new Validation.Diagnostic("validation.structure", java.util.List.of("/"+i), "", "Missing constructor argument.")), false));
+            values.add(arguments.get(i));
+        }
+        return new Data.Variant(name, values);
+    }
 }
 `
 

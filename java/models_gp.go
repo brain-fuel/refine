@@ -27,6 +27,8 @@ type modelEmitter struct {
 	parents      map[string]string
 	children     map[string][]string
 	fields       map[string][]modelField
+	alternatives map[string]map[string]string
+	unionViews   map[string]string
 	locals       map[string]bool
 	next         int
 }
@@ -78,7 +80,7 @@ func (m *modelEmitter) shape(name string) *language.Type {
 		seen[name] = true
 		decl := m.declarations[name]
 		if decl.Body == nil {
-			unsupported(decl.At, "Java model alternatives remain required; validator generation already supports them")
+			return nil
 		}
 		t := unrefined(decl.Body)
 		switch __gp_m1 := any(t.Form).(type) {
@@ -488,7 +490,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	if failure != nil {
 		return nil, failure
 	}
-	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, locals: map[string]bool{"value": true}}
+	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}}
 	sourceNames := map[string]bool{}
 	for _, file := range files {
 		sourceNames[sourceNameKey(path.Base(file.Path))] = true
@@ -515,7 +517,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	}
 	for _, decl := range m.module.Types {
 		if decl.Body == nil {
-			unsupported(decl.At, "tagged-union model emission remains required")
+			continue
 		}
 		switch __gp_m9 := any(unrefined(decl.Body).Form).(type) {
 		case language.NamedType:
@@ -535,6 +537,10 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 			root = m.parents[root]
 		}
 		shape := m.shape(root)
+		if shape == nil {
+			m.unionNames(root)
+			continue
+		}
 		switch any(shape.Form).(type) {
 		case language.RecordType:
 			m.recordFields(root, shape)
@@ -560,7 +566,13 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		files = append(files, File{Path: path.Join(prefix, item.name+".java"), Source: header + item.body})
 	}
 	for _, decl := range m.module.Types {
-		files = append(files, File{Path: path.Join(prefix, decl.Name+".java"), Source: header + m.model(decl)})
+		source := ""
+		if m.shape(decl.Name) == nil {
+			source = m.unionModel(decl)
+		} else {
+			source = m.model(decl)
+		}
+		files = append(files, File{Path: path.Join(prefix, decl.Name+".java"), Source: header + source})
 	}
 	return files, nil
 }

@@ -796,3 +796,48 @@ native formats and project workflows. The full checklist remains the release gat
   English output, analysis, versioning, schema-derived tests, Maven wiring and
   CLI workflows remain release obligations. No product tag or Maven deploy has
   been made.
+
+## Semantic Java tagged-union checkpoint
+
+- `java/model_unions.gp` extends `GenerateModels` to monomorphic tagged unions,
+  recursive alternatives and nominal refinement chains. Generated sealed
+  interfaces and nested immutable classes preserve both the declared parent
+  interface and each original alternative's class hierarchy. Typed constructor
+  arguments/getters, immutable raw access, validation outcomes, validating
+  canonical reads and explicitly named structural-only bypasses are retained.
+- A closed `variant()` view returns the same object and supports exhaustive
+  switches over the root alternatives without a default arm. This addresses
+  Java's inability to infer that coverage directly over a root whose permitted
+  subinterfaces include nominal refinements. Neither substitution nor the view
+  performs validation or copying. Alternative-specific factories check the tag
+  and arity; unrelated/parent/sibling evidence cannot manufacture a refined type.
+- Typed creation and atomic-update drafts share the root alternative's shape.
+  Only the completed candidate is validated; failed callbacks or validation and
+  subsequently mutated escaped drafts cannot change old or returned values.
+  Refined alternatives keep their dynamic predicates and covariant result types
+  through parent references. Missing creation arguments fail structurally even
+  through bypass builders. Native serde/discriminator behavior is not invented.
+- More than 253 constructor arguments use draft builders/raw factories instead
+  of invalid JVM method signatures. Dispatch and argument encoding use bounded
+  helpers. Actual Java 25 warnings-as-errors compilation/execution passes for
+  1,100 alternatives, a 260-argument constructor and its refinement, and the
+  exact 253-argument positional boundary. Go-derived minimum budgets prove wide
+  creation and updates each use one complete validation pass.
+- The union suite passes 18,729 complete Go/Java validation/bypass/read reports,
+  plus 6,000 jetCheck cases covering construction, updates and recursive trees.
+  Tests include wrong alternatives, invalid/indeterminate predicates, caller and
+  per-clause limits, nested collections/optional union fields, immutable drafts,
+  nominal evidence isolation, negative Java compilation and exhaustive matching.
+  Unnamed, Unicode and restricted-identifier package fixtures compile; collision
+  escaping preserves original language constructor names.
+- Full local race tests, vet and deterministic generated-source checks pass.
+  A ten-second model-generation fuzz run passed 2,686,008 executions. Existing
+  model source generation measured 1,655,637 ns/op, 2,999,998 B/op and 15,624
+  allocations/op on Darwin/arm64 (Apple M5 Max); this is source generation,
+  not payload-validation throughput. Latest GoPlus remains v0.158.0.
+- Generic domain models, anonymous nested record classes and wide regular
+  record emission remain required; regular models still retain their 48,000-byte
+  source guard. Native formats, validated serde, remaining language work,
+  English output, analysis, schema-derived tests, versioning, Maven integration,
+  CLI workflows and the full release audit are not completed by this checkpoint.
+  No product tag or Maven deployment is made.

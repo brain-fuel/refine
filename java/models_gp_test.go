@@ -261,7 +261,7 @@ public final class Models {
 `
 
 func TestModelGenerationBoundaries(t *testing.T) {
-	for _, source := range []string{"type Box a = { value :: a }", "data Choice = A | B", "type Nested = { value :: { inner :: Int } }", "type Contract = Int", "type ModelSupport = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"} {
+	for _, source := range []string{"type Box a = { value :: a }", "type Nested = { value :: { inner :: Int } }", "type Contract = Int", "type ModelSupport = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"} {
 		program, err := language.Compile(source)
 		if err != nil {
 			t.Fatal(err)
@@ -302,7 +302,7 @@ func TestModelGenerationBoundaries(t *testing.T) {
 
 func TestModelPackageLayouts(t *testing.T) {
 	compiler, _ := javaTools(t)
-	program, err := language.Compile("type Id = String\ntype Item = { id :: Id, tags :: [String] }\ntype Child = Item\ntype Empty = {}")
+	program, err := language.Compile("type Id = String\ntype Item = { id :: Id, tags :: [String] }\ntype Child = Item\ntype Empty = {}\ntype Variant = Int\ndata Choice = A | B Id | C Variant\ntype SubChoice = Choice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestModelPackageLayouts(t *testing.T) {
 }
 
 func FuzzModelGeneration(f *testing.F) {
-	for _, source := range []string{"type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"} {
+	for _, source := range []string{unionModelContract, "data Choice = A | B Int\ntype SubChoice = Choice", "data Node = Nil | Cons Int Node", "type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"} {
 		f.Add(source)
 	}
 	f.Fuzz(func(t *testing.T, source string) {
