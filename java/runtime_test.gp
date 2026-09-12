@@ -31,7 +31,7 @@ func TestRuntimeGeneration(t *testing.T){
     for _,namespace:=range []string{"", "com.me.project.runtime", "δοκιμή.映像", "$project.runtime", "record.var"}{
         files,err:=GenerateRuntime(namespace);if err!=nil{t.Fatal(err)}
         again,err:=GenerateRuntime(namespace);if err!=nil{t.Fatal(err)}
-        if len(files)!=6{t.Fatal("missing runtime source")}
+        if len(files)!=7{t.Fatal("missing runtime source")}
         for i,file:=range files{if file!=again[i]||strings.Contains(file.Path,"\\")||filepath.IsAbs(file.Path)||strings.Contains(file.Path,".."){t.Fatal("nondeterministic or unsafe generated path")}}
         files[0].Source="changed";if again[0].Source=="changed"{t.Fatal("mutable source backing escaped")}
     }
@@ -42,7 +42,7 @@ func BenchmarkGenerateRuntime(b *testing.B) {
     b.ReportAllocs()
     for i := 0; i < b.N; i++ {
         files, err := GenerateRuntime("com.me.project.refine.runtime")
-        if err != nil || len(files) != 6 { b.Fatal("runtime generation failed", err) }
+        if err != nil || len(files) != 7 { b.Fatal("runtime generation failed", err) }
     }
 }
 

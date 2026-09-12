@@ -39,7 +39,7 @@ func javaQuote(text string) string {
 func javaList(items []string)string{return "java.util.List.of("+strings.Join(items,",")+")"}
 
 func javaClassName(className string)error {
-    reserved:=" Data ContractRuntime Rational TextCodec Timestamp Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
+    reserved:=" Data ContractRuntime Rational TextCodec Timestamp RegexProgram Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
     if className==""||strings.Contains(className,".")||strings.Contains(reserved," "+className+" "){return fmt.Errorf("invalid or reserved Java class name: %s",className)}
     return packageName(className)
 }

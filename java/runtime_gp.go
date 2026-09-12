@@ -61,7 +61,7 @@ func GenerateRuntime(namespace string) ([]File, error) {
 		body string
 	}{
 		{"Rational", rationalJava}, {"TextCodec", textJava}, {"Validation", validationJava},
-		{"ValidationException", validationExceptionJava}, {"Budget", budgetJava}, {"Timestamp", timestampJava},
+		{"ValidationException", validationExceptionJava}, {"Budget", budgetJava}, {"Timestamp", timestampJava}, {"RegexProgram", regexProgramJava()},
 	}
 	files := make([]File, len(types))
 	for i, typ := range types {

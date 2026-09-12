@@ -62,7 +62,7 @@ func TestRuntimeGeneration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(files) != 6 {
+		if len(files) != 7 {
 			t.Fatal("missing runtime source")
 		}
 		for i, file := range files {
@@ -86,7 +86,7 @@ func BenchmarkGenerateRuntime(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		files, err := GenerateRuntime("com.me.project.refine.runtime")
-		if err != nil || len(files) != 6 {
+		if err != nil || len(files) != 7 {
 			b.Fatal("runtime generation failed", err)
 		}
 	}

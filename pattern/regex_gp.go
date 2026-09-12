@@ -35,21 +35,21 @@ type Search struct{}
 
 func (Search) isMode() {}
 
-// ModeCases selects one handler per Mode variant for Fold.
+// ModeCases selects one handler per Mode variant for ModeFold.
 type ModeCases[R any] struct {
 	Full   func() R
 	Search func() R
 }
 
-// Fold reduces Mode by one-level case analysis.
-func Fold[R any](m Mode, cs ModeCases[R]) R {
+// ModeFold reduces Mode by one-level case analysis.
+func ModeFold[R any](m Mode, cs ModeCases[R]) R {
 	switch any(m).(type) {
 	case Full:
 		return cs.Full()
 	case Search:
 		return cs.Search()
 	default:
-		panic("goplus: impossible enum value in Fold")
+		panic("goplus: impossible enum value in ModeFold")
 	}
 }
 

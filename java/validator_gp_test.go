@@ -361,7 +361,7 @@ func FuzzValidatorGeneration(f *testing.F) {
 			}
 			return
 		}
-		if again != nil || len(first) != 9 || len(second) != 9 {
+		if again != nil || len(first) != 10 || len(second) != 10 {
 			t.Fatal("invalid source set")
 		}
 		for i := range first {

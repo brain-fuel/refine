@@ -1,7 +1,7 @@
 # Java runtime generation (development)
 
 `goforge.dev/refine/java.GenerateRuntime(packageName)` returns deterministic
-`File{Path, Source}` values for six Java 25 source files. It performs no I/O.
+`File{Path, Source}` values for seven Java 25 source files. It performs no I/O.
 The caller owns output placement; generation does not deploy a Maven artifact.
 Runtime source is authored in GoPlus templates and emitted with an MIT header.
 
@@ -32,6 +32,9 @@ contextual-keyword packages with Java 25.
   and offset metadata, instant equality/order, and pinned leap-second knowledge.
   Explicit civil-coordinate and elapsed-SI duration methods do not silently
   substitute for one another.
+- `RegexProgram`: immutable compiled instruction execution with metered full
+  matching/search and pinned Unicode simple folding. This is a matcher building
+  block, not yet a Java pattern compiler or working DSL regex builtin.
 - `Validation`: sealed outcomes and checks, immutable diagnostics, ordered
   collection and the three predicate combiners. Invalid dominates unknown while
   retaining an incomplete flag and all collected diagnostics.
@@ -91,7 +94,7 @@ are test-only; see [dependency roles](DEPENDENCIES.md).
 ## Compiled contract validators
 
 `GenerateValidator(program, packageName, className)` accepts a statically checked
-`*language.Program` and emits nine files: the six primitives above, immutable
+`*language.Program` and emits ten files: the seven primitives above, immutable
 `Data` payload trees, `ContractRuntime` execution support, and the named contract
 class. It returns no files if generation fails and performs no filesystem writes.
 The generated contract holds a private immutable definition graph; it does not
@@ -279,6 +282,46 @@ Every UTC month boundary in the pinned history and every legal minute offset
 around a known leap are covered. Three 2,000-case jetCheck suites exercise offset
 equivalence, typed model round trips, exact durations, atomic multi-field updates,
 bypass revalidation and arbitrary UTF-16 inputs, with a 256 KiB JVM stack.
+
+### Regex instruction execution
+
+`pattern.Regex.Program()` exports a detached Go instruction snapshot with
+`Profile`, `UnicodeVersion`, `Start`, and typed `Instructions`. Mutating any
+snapshot field, instruction or rune range cannot affect the compiled Go regex.
+The original `pattern.Fold` helper remains available for existing Go consumers.
+This development instruction profile is not a native schema encoding or a
+promise that different compiler versions produce identical instruction graphs.
+
+Java `RegexProgram` takes the matching instruction profile/Unicode version,
+entry point, and immutable instructions. It rejects unknown profiles, invalid
+targets, malformed rune ranges and unsupported assertion masks before execution.
+Go `OpcodeName` supplies the corresponding Java enum names. Captures are traversed
+but not exposed: the current predicate API returns only a Boolean match result.
+
+`match(subject, Mode.FULL | Mode.SEARCH, Budget.Meter)` uses iterative state sets,
+not backtracking. It preserves UTF-16 surrogate identity while treating valid
+pairs as one code point. Word boundaries remain ASCII, as in the Go refinement
+dialect; case folding uses embedded Go Unicode tables, not JDK case conversion.
+Programs can be shared concurrently; mutable state belongs to each invocation.
+Program construction is an unmetered trusted-compiler boundary. Matching charges
+the same traversal, instruction, rune-range and folding costs as Go. Exhaustion
+throws `RegexProgram.Error` with `code() == "regex.budget"`, retaining the shared
+meter's exact used/exhausted state and allowing enclosing-scope recovery when
+the budget permits.
+
+Tests compare 420 Go-compiled programs and 87,252 full match/budget traces,
+including nested scopes, post-failure recovery, both matching modes, all
+instruction kinds, zero-width assertions, surrogate subjects, nullable cycles,
+large programs and ambiguous repetition. They compare simple folding for every
+Unicode code point. Three 2,000-case jetCheck suites check literal matching,
+code-point matching and exact budget thresholds; further checks cover immutable
+snapshots, malformed plans and concurrent reuse, at `-Xss256k`.
+
+Dynamic Java pattern parsing/compilation, compilation-cost conformance, and
+connecting `matches`/`search` to the evaluator are still required. Java contract
+generation continues to reject those builtins rather than treating this matcher
+foundation as complete regex support. Native schema regex dialects remain a
+separate requirement.
 
 Canonical reading is not JSON/Avro serde or native schema ingestion; those remain
 separate release obligations.

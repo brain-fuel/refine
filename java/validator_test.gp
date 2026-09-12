@@ -239,7 +239,7 @@ func FuzzValidatorGeneration(f *testing.F){
         first,err:=GenerateValidator(program,"example","Contract")
         second,again:=GenerateValidator(program,"example","Contract")
         if err!=nil{if again==nil||first!=nil||second!=nil{t.Fatal("partial or nondeterministic failed generation")};return}
-        if again!=nil||len(first)!=9||len(second)!=9{t.Fatal("invalid source set")}
+        if again!=nil||len(first)!=10||len(second)!=10{t.Fatal("invalid source set")}
         for i:=range first{if first[i]!=second[i]{t.Fatal("nondeterministic validator")}}
     })
 }

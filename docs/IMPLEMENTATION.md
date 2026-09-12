@@ -644,3 +644,37 @@ native formats and project workflows. The full checklist remains the release gat
   export, full language/conversions/imports, analysis, versioning, generated
   schema-derived tests, Maven wiring and the full CLI remain release obligations.
   No product tag or Maven deployment is implied by this checkpoint.
+
+## Java regex instruction matcher
+
+- `pattern.Regex.Program()` provides a detached, typed instruction snapshot with
+  an explicit execution profile and Unicode version. Snapshot mutation cannot
+  change the compiled Go regex. Adding the instruction enum preserves the
+  original public Mode `Fold` helper through a GoPlus-authored forwarding API.
+- Generated `RegexProgram` validates and freezes instruction plans, then runs
+  full matching or substring search through iterative Thompson state sets.
+  It preserves UTF-16 surrogate identity, ASCII word-boundary semantics, pinned
+  Go Unicode simple-fold orbits and the exact Go matcher step-accounting order.
+  Programs are immutable; invocation state and budget meters are local.
+- Tests compare 420 compiled programs and 87,252 complete result/budget traces,
+  including enclosing/nested used counts and recovery after exhaustion. Every
+  Unicode code point is checked against Go's simple-fold mapping. Cases cover
+  all opcodes, malformed plans, captures, zero-width assertions, nullable cycles,
+  ambiguous repetition, lone surrogates and large programs at `-Xss256k`.
+  Three fresh-seeded jetCheck suites add 6,000 literal/code-point/budget-law
+  cases, with further mutation-isolation and concurrent-reuse checks.
+- Full local race tests, vet and deterministic GoPlus generation pass.
+  Ten-second fuzz runs passed 6,381,160 Go regex differential executions and
+  2,907,444 validator-generation executions. Runtime generation measured
+  12,355 ns/op, 115,137 B/op and 34 allocations/op; validator generation measured
+  622,399 ns/op, 1,629,868 B/op and 11,394 allocations/op on Darwin/arm64
+  (Apple M5 Max). These measure source generation, not match throughput.
+  GoPlus latest remains v0.158.0. Generated simple-fold tables and rune/assertion
+  semantics retain Go's full BSD-style notice; final binary attribution remains
+  a release gate.
+- This is the shared instruction executor, not complete Java regex support.
+  Dynamic pattern parsing/compilation and compile-cost parity remain required
+  before enabling `matches`/`search`; Java generation still rejects those builtins.
+  Native regex dialects, full language and model shapes, native schema formats,
+  validated serde, English exports, analysis, versioning, automatic generated
+  tests, Maven/project integration and complete CLI workflows remain required.
