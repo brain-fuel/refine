@@ -24,20 +24,21 @@ type modelTypeLocation struct {
 	steps []int
 }
 type modelEmitter struct {
-	module        *language.Module
-	namespace     string
-	contract      string
-	declarations  map[string]language.TypeDecl
-	parents       map[string]string
-	children      map[string][]string
-	fields        map[string][]modelField
-	alternatives  map[string]map[string]string
-	unionViews    map[string]string
-	locals        map[string]bool
-	next          int
-	parameters    map[string]string
-	witnesses     map[string]string
-	typeLocations map[*language.Type]modelTypeLocation
+	module          *language.Module
+	namespace       string
+	contract        string
+	declarations    map[string]language.TypeDecl
+	parents         map[string]string
+	children        map[string][]string
+	fields          map[string][]modelField
+	alternatives    map[string]map[string]string
+	unionViews      map[string]string
+	locals          map[string]bool
+	next            int
+	parameters      map[string]string
+	witnesses       map[string]string
+	typeLocations   map[*language.Type]modelTypeLocation
+	genericFamilies map[string]bool
 }
 
 func unrefined(t *language.Type) *language.Type {
@@ -79,6 +80,7 @@ func (m *modelEmitter) qualified(name string) string {
 	return m.namespace + "." + name
 }
 func (m *modelEmitter) shape(name string) *language.Type {
+	name = m.modelRoot(name)
 	seen := map[string]bool{}
 	for {
 		if seen[name] {
@@ -263,6 +265,9 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 			return "Timestamp.parse(((Data.Text)" + input + ").value())"
 		}
 		m.javaType(t)
+		if m.genericFamilies[m.modelRoot(name)] && m.parents[name] != "" {
+			return m.witness(t) + ".decode(" + input + ")"
+		}
 		return m.qualified(name) + ".fromDataWithoutValidation(" + input + ")"
 	case language.ListType:
 		element := __gp_m6.Element
@@ -540,7 +545,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	if failure != nil {
 		return nil, failure
 	}
-	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}, typeLocations: map[*language.Type]modelTypeLocation{}}
+	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}, typeLocations: map[*language.Type]modelTypeLocation{}, genericFamilies: map[string]bool{}}
 	sourceNames := map[string]bool{}
 	for _, file := range files {
 		sourceNames[sourceNameKey(path.Base(file.Path))] = true
@@ -583,7 +588,8 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		case language.AppliedType:
 			parent, _ := applied(base)
 			if _, found := m.declarations[parent]; found {
-				unsupported(decl.At, "instantiated nominal parent model emission remains required")
+				m.parents[decl.Name] = parent
+				m.children[parent] = append(m.children[parent], decl.Name)
 			}
 		default:
 		}
@@ -596,19 +602,27 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 			}
 		default:
 		}
-		if len(decl.Parameters) > 0 && m.parents[decl.Name] != "" {
-			unsupported(decl.At, "generic nominal parent model emission remains required")
+	}
+	for _, decl := range m.module.Types {
+		root := m.modelRoot(decl.Name)
+		if len(decl.Parameters) > 0 {
+			m.genericFamilies[root] = true
 		}
 		m.shape(decl.Name)
 	}
+	for root := range m.genericFamilies {
+		if m.declarations[root].Body == nil {
+			unsupported(m.declarations[root].At, "generic tagged-union model emission remains required")
+		}
+	}
 	// Populate every field spelling before allocating lambda-local names.
 	for _, decl := range m.module.Types {
-		m.genericContext(decl)
 		root := decl.Name
 		for m.parents[root] != "" {
 			root = m.parents[root]
 		}
 		shape := m.shape(root)
+		m.genericContext(m.declarations[root])
 		if shape == nil {
 			m.unionNames(root)
 			continue
@@ -630,17 +644,18 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 			parents = append(parents, "java.util.Map.entry("+javaQuote(decl.Name)+","+javaQuote(parent)+")")
 		}
 	}
+	supportSource := strings.Replace(fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName, contractName), "    private ModelSupport() {}", "    private ModelSupport() {}\n"+strings.ReplaceAll(genericEvidenceJava, "@CONTRACT@", contractName), 1)
 	support := []struct {
 		name string
 		body string
-	}{{"ModelSupport", fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName, contractName)}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}, {"ModelType", strings.ReplaceAll(modelTypeJava, "@CONTRACT@", contractName)}, {"ModelTypes", m.modelTypes()}}
+	}{{"ModelSupport", supportSource}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}, {"ModelType", strings.ReplaceAll(modelTypeJava, "@CONTRACT@", contractName)}, {"ModelTypes", m.modelTypes()}}
 	for _, item := range support {
 		files = append(files, File{Path: path.Join(prefix, item.name+".java"), Source: header + item.body})
 	}
 	for _, decl := range m.module.Types {
 		m.genericContext(decl)
 		source := ""
-		if len(decl.Parameters) > 0 {
+		if m.genericFamilies[m.modelRoot(decl.Name)] {
 			source = m.genericModel(decl)
 		} else if m.shape(decl.Name) == nil {
 			source = m.unionModel(decl)

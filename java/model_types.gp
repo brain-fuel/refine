@@ -30,9 +30,10 @@ func (m *modelEmitter) witness(t *language.Type)string{
     match t.Form{
     case language.RefinedType(base,_):
         location,found:=m.typeLocations[t];if !found{panic("missing checked model type location")}
-        steps,arguments:=[]string{},[]string{};for _,step:=range location.steps{steps=append(steps,fmt.Sprint(step))}
-        for _,parameter:=range m.declarations[location.owner].Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"missing generic refinement scope")};arguments=append(arguments,witness+".type")}
-        return "ModelType.refined("+m.witness(base)+","+m.contract+".modelRefinement("+javaQuote(location.owner)+",new int[]{"+strings.Join(steps,",")+"},"+javaList(arguments)+"))"
+        steps,arguments,keys:=[]string{},[]string{},[]string{};for _,step:=range location.steps{steps=append(steps,fmt.Sprint(step))}
+        for _,parameter:=range m.declarations[location.owner].Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"missing generic refinement scope")};arguments=append(arguments,witness+".type");keys=append(keys,witness)}
+        extra:="";if len(keys)>0{extra=","+strings.Join(keys,",")}
+        return "ModelType.refined("+m.witness(base)+","+m.contract+".modelRefinement("+javaQuote(location.owner)+",new int[]{"+strings.Join(steps,",")+"},"+javaList(arguments)+"),"+javaQuote(location.owner+":"+strings.Join(steps,","))+extra+")"
     case language.NamedType(name):
         if found:=m.witnesses[name];found!=""{return found}
         if name=="Int"{return "ModelTypes.integer()"}
@@ -55,7 +56,11 @@ func (m *modelEmitter) modelTypes()string{
         rawType:="ModelType.named("+javaQuote(decl.Name)+")"
         for _,arg:=range arguments{rawType="ModelType.applied("+rawType+",java.util.Objects.requireNonNull("+arg+").type)"}
         callArgs:=append(append([]string{},arguments...),"raw")
-        fmt.Fprintf(&out,"    public static %sModelType<%s> for%s(%s) { return ModelType.of(%s,(value,where) -> ModelSupport.nonNull(value,where).rawData(),raw -> %s.fromDataWithoutValidation(%s)); }\n",prefix,full,decl.Name,strings.Join(parameters,","),rawType,m.qualified(decl.Name),strings.Join(callArgs,","))
+        decoder:=m.qualified(decl.Name)+".fromDataWithoutValidation("+strings.Join(callArgs,",")+")"
+        if m.genericFamilies[m.modelRoot(decl.Name)]&&m.parents[decl.Name]!=""{decoder=m.factoryInstance(decl,arguments)+".fromDataWithoutValidation(raw)"}
+        extra:="";if len(arguments)>0{extra=","+strings.Join(arguments,",")}
+        parent:="";if m.parents[decl.Name]!=""{parent=".withParent(() -> "+m.witness(unrefined(decl.Body))+")"}
+        fmt.Fprintf(&out,"    public static %sModelType<%s> for%s(%s) { return ModelType.<%s>of(%s,(value,where) -> ModelSupport.nonNull(value,where).rawData(),raw -> %s%s)%s; }\n",prefix,full,decl.Name,strings.Join(parameters,","),full,rawType,decoder,extra,parent)
     }
     out.WriteString("}\n");return out.String()
 }
@@ -64,14 +69,35 @@ const modelTypeJava = `
 /** A closed payload type paired with its exact Java representation. */
 public final class ModelType<T> {
     final ContractRuntime.Type type;
+    private record Key(String kind,String name,java.util.List<Key> arguments) { Key { arguments=java.util.List.copyOf(arguments); } }
+    private record KeyPair(Key left,Key right) {}
+    private final Key key;
+    private final java.util.function.Supplier<ModelType<?>> parent;
     private final java.util.function.BiFunction<T,String,Data> encoder;
     private final java.util.function.Function<Data,T> decoder;
-    private ModelType(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder) {
+    private ModelType(ContractRuntime.Type type, Key key, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder,java.util.function.Supplier<ModelType<?>> parent) {
         this.type = java.util.Objects.requireNonNull(type);
         this.encoder = java.util.Objects.requireNonNull(encoder); this.decoder = java.util.Objects.requireNonNull(decoder);
+        this.key=key;this.parent=parent;
     }
-    static <T> ModelType<T> of(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder) { return new ModelType<>(type,encoder,decoder); }
-    static <T> ModelType<T> refined(ModelType<T> base, ContractRuntime.Type type) { return of(type,base.encoder,base.decoder); }
+    static <T> ModelType<T> of(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder,ModelType<?>... arguments) {
+        var keys=new java.util.ArrayList<Key>();for(var argument:arguments)keys.add(argument.key);
+        var head=type;while(head.kind().equals("applied"))head=head.arguments().getFirst();
+        return new ModelType<>(type,new Key(type.kind(),head.name(),keys),encoder,decoder,null);
+    }
+    static <T> ModelType<T> refined(ModelType<T> base, ContractRuntime.Type type,String origin,ModelType<?>... bindings) {
+        var keys=new java.util.ArrayList<Key>();keys.add(base.key);for(var binding:bindings)keys.add(binding.key);
+        return new ModelType<>(type,new Key("refined",origin,keys),base.encoder,base.decoder,null);
+    }
+    ModelType<T> withParent(java.util.function.Supplier<ModelType<?>> parent) { return new ModelType<>(type,key,encoder,decoder,parent); }
+    ModelType<?> parent() { return parent==null?null:parent.get(); }
+    boolean sameType(ModelType<?> other) {
+        var work=new java.util.ArrayDeque<KeyPair>();work.push(new KeyPair(key,other.key));
+        while(!work.isEmpty()) { var pair=work.pop();var a=pair.left();var b=pair.right();if(a==b)continue;
+            if(!a.kind().equals(b.kind())||!a.name().equals(b.name())||a.arguments().size()!=b.arguments().size())return false;
+            for(int i=0;i<a.arguments().size();i++)work.push(new KeyPair(a.arguments().get(i),b.arguments().get(i)));
+        }return true;
+    }
     static ContractRuntime.Type named(String name) { return new ContractRuntime.Type("named",name,java.util.List.of(),java.util.List.of(),java.util.List.of()); }
     static ContractRuntime.Type applied(ContractRuntime.Type fn, ContractRuntime.Type arg) { return new ContractRuntime.Type("applied","",java.util.List.of(fn,arg),java.util.List.of(),java.util.List.of()); }
     static ContractRuntime.Type list(ContractRuntime.Type arg) { return new ContractRuntime.Type("list","",java.util.List.of(arg),java.util.List.of(),java.util.List.of()); }
@@ -97,18 +123,18 @@ public final class ModelTypes {
     public static ModelType<Timestamp> timestamp() { return ModelType.of(ModelType.named("Timestamp"),ModelSupport::timestamp,raw -> Timestamp.parse(((Data.Text)raw).value())); }
     public static <T> ModelType<java.util.List<T>> list(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);
-        return ModelType.of(ModelType.list(element.type),(value,where) -> ModelSupport.list(value,element::encode,where),raw -> ModelSupport.list(raw,element::decode));
+        return ModelType.of(ModelType.list(element.type),(value,where) -> ModelSupport.list(value,element::encode,where),raw -> ModelSupport.list(raw,element::decode),element);
     }
     public static <T> ModelType<ModelMaybe<T>> maybe(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);
-        return ModelType.of(ModelType.applied(ModelType.named("Maybe"),element.type),(value,where) -> ModelSupport.maybe(value,element::encode,where),raw -> ModelSupport.maybe(raw,element::decode));
+        return ModelType.of(ModelType.applied(ModelType.named("Maybe"),element.type),(value,where) -> ModelSupport.maybe(value,element::encode,where),raw -> ModelSupport.maybe(raw,element::decode),element);
     }
     public static <T> ModelType<ModelNullable<T>> nullable(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);
-        return ModelType.of(ModelType.applied(ModelType.named("Nullable"),element.type),(value,where) -> ModelSupport.nullable(value,element::encode,where),raw -> ModelSupport.nullable(raw,element::decode));
+        return ModelType.of(ModelType.applied(ModelType.named("Nullable"),element.type),(value,where) -> ModelSupport.nullable(value,element::encode,where),raw -> ModelSupport.nullable(raw,element::decode),element);
     }
     public static <L,R> ModelType<ModelResult<L,R>> result(ModelType<L> left, ModelType<R> right) {
         java.util.Objects.requireNonNull(left); java.util.Objects.requireNonNull(right);
-        return ModelType.of(ModelType.applied(ModelType.applied(ModelType.named("Result"),left.type),right.type),(value,where) -> ModelSupport.result(value,left::encode,right::encode,where),raw -> ModelSupport.result(raw,left::decode,right::decode));
+        return ModelType.of(ModelType.applied(ModelType.applied(ModelType.named("Result"),left.type),right.type),(value,where) -> ModelSupport.result(value,left::encode,right::encode,where),raw -> ModelSupport.result(raw,left::decode,right::decode),left,right);
     }
 `

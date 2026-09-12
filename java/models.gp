@@ -27,6 +27,7 @@ type modelEmitter struct {
     parameters map[string]string
     witnesses map[string]string
     typeLocations map[*language.Type]modelTypeLocation
+    genericFamilies map[string]bool
 }
 func unrefined(t *language.Type)*language.Type{for{match t.Form{case language.RefinedType(base,_):t=base;case _:return t}}}
 func integerType(name string)bool{
@@ -37,6 +38,7 @@ func integerType(name string)bool{
 func (m *modelEmitter) fresh()string{for{m.next++;name:=fmt.Sprintf("_refine%d",m.next);if !m.locals[name]{m.locals[name]=true;return name}}}
 func (m *modelEmitter) qualified(name string)string{if m.namespace==""{return name};return m.namespace+"."+name}
 func (m *modelEmitter) shape(name string)*language.Type{
+    name=m.modelRoot(name)
     seen:=map[string]bool{}
     for{
         if seen[name]{unsupported(m.declarations[name].At,"cyclic model alias has no structural representation")};seen[name]=true
@@ -95,7 +97,7 @@ func (m *modelEmitter) decode(t *language.Type,input string)string{
         if witness:=m.witnesses[name];witness!=""{return witness+".decode("+input+")"}
         if integerType(name){return "((Data.Number)"+input+").value().numerator()"}
         switch name{case "Real":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())"}
-        m.javaType(t);return m.qualified(name)+".fromDataWithoutValidation("+input+")"
+        m.javaType(t);if m.genericFamilies[m.modelRoot(name)]&&m.parents[name]!=""{return m.witness(t)+".decode("+input+")"};return m.qualified(name)+".fromDataWithoutValidation("+input+")"
     case language.ListType(element):item:=m.fresh();return "ModelSupport.list("+input+","+item+" -> "+m.decode(element,item)+")"
     case language.AppliedType(_,_):
         name,args:=applied(t);m.javaType(t);pieces:=[]string{input};for _,arg:=range args{item:=m.fresh();pieces=append(pieces,item+" -> "+m.decode(arg,item))}
@@ -212,7 +214,7 @@ func (m *modelEmitter) model(decl language.TypeDecl)string{
 func GenerateModels(program *language.Program,namespace,contractName string)(files []File,failure error){
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     files,failure=GenerateValidator(program,namespace,contractName);if failure!=nil{return nil,failure}
-    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{}}
+    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{},genericFamilies:map[string]bool{}}
     sourceNames:=map[string]bool{}
     for _,file:=range files{sourceNames[sourceNameKey(path.Base(file.Path))]=true}
     for _,name:=range []string{"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes"}{sourceNames[sourceNameKey(name+".java")]=true}
@@ -229,26 +231,27 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         if decl.Body==nil{continue}
         m.genericContext(decl)
         base:=unrefined(decl.Body)
-        match base.Form{case language.AppliedType(_,_):parent,_:=applied(base);if _,found:=m.declarations[parent];found{unsupported(decl.At,"instantiated nominal parent model emission remains required")};case _:}
+        match base.Form{case language.AppliedType(_,_):parent,_:=applied(base);if _,found:=m.declarations[parent];found{m.parents[decl.Name]=parent;m.children[parent]=append(m.children[parent],decl.Name)};case _:}
         match unrefined(decl.Body).Form{case language.NamedType(parent):if _,found:=m.declarations[parent];found{m.parents[decl.Name]=parent;m.children[parent]=append(m.children[parent],decl.Name)};case _:}
-        if len(decl.Parameters)>0&&m.parents[decl.Name]!=""{unsupported(decl.At,"generic nominal parent model emission remains required")}
-        m.shape(decl.Name)
     }
+    for _,decl:=range m.module.Types{root:=m.modelRoot(decl.Name);if len(decl.Parameters)>0{m.genericFamilies[root]=true};m.shape(decl.Name)}
+    for root:=range m.genericFamilies{if m.declarations[root].Body==nil{unsupported(m.declarations[root].At,"generic tagged-union model emission remains required")}}
     // Populate every field spelling before allocating lambda-local names.
     for _,decl:=range m.module.Types{
-        m.genericContext(decl)
         root:=decl.Name;for m.parents[root]!=""{root=m.parents[root]};shape:=m.shape(root)
+        m.genericContext(m.declarations[root])
         if shape==nil{m.unionNames(root);continue}
         match shape.Form{case language.RecordType(_):m.recordFields(root,shape);case _:}
     }
     header:="// Generated by Refine: development Java 25 models. MIT licensed.\n";if namespace!=""{header+="package "+namespace+";\n"}
     prefix:=strings.ReplaceAll(namespace,".","/");parents:=[]string{}
     for _,decl:=range m.module.Types{if parent:=m.parents[decl.Name];parent!=""{parents=append(parents,"java.util.Map.entry("+javaQuote(decl.Name)+","+javaQuote(parent)+")")}}
-    support:=[]struct{name string;body string}{{"ModelSupport",fmt.Sprintf(modelSupportJava,strings.Join(parents,","),contractName,contractName,contractName)},{"ModelMaybe",modelMaybeJava},{"ModelNullable",modelNullableJava},{"ModelResult",modelResultJava},{"ModelType",strings.ReplaceAll(modelTypeJava,"@CONTRACT@",contractName)},{"ModelTypes",m.modelTypes()}}
+    supportSource:=strings.Replace(fmt.Sprintf(modelSupportJava,strings.Join(parents,","),contractName,contractName,contractName),"    private ModelSupport() {}","    private ModelSupport() {}\n"+strings.ReplaceAll(genericEvidenceJava,"@CONTRACT@",contractName),1)
+    support:=[]struct{name string;body string}{{"ModelSupport",supportSource},{"ModelMaybe",modelMaybeJava},{"ModelNullable",modelNullableJava},{"ModelResult",modelResultJava},{"ModelType",strings.ReplaceAll(modelTypeJava,"@CONTRACT@",contractName)},{"ModelTypes",m.modelTypes()}}
     for _,item:=range support{files=append(files,File{Path:path.Join(prefix,item.name+".java"),Source:header+item.body})}
     for _,decl:=range m.module.Types{
         m.genericContext(decl)
-        source:="";if len(decl.Parameters)>0{source=m.genericModel(decl)}else if m.shape(decl.Name)==nil{source=m.unionModel(decl)}else{source=m.model(decl)}
+        source:="";if m.genericFamilies[m.modelRoot(decl.Name)]{source=m.genericModel(decl)}else if m.shape(decl.Name)==nil{source=m.unionModel(decl)}else{source=m.model(decl)}
         files=append(files,File{Path:path.Join(prefix,decl.Name+".java"),Source:header+source})
     }
     return files,nil

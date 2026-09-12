@@ -283,11 +283,55 @@ safe for concurrent validation. There is no runtime schema parser or user-suppli
 predicate factory. Inline constraints on a nominal value itself still belong to
 its containing model; they do not change the methods of that value's Java class.
 
-Generic tagged unions and instantiated nominal parents (including closed aliases
-such as `type AgeBox = Box Age`) still reject generation atomically. They remain
-implementation gates, not a change to the language specification. Existing
-frontend limitations, including local annotations that name an enclosing type
-parameter and unconstrained generic equality, are not removed by model emission.
+## Generic inheritance and factories
+
+Record and wrapper hierarchies support closed aliases, renamed/reordered/repeated
+parameters, transformed arguments and phantom parameters. For example:
+
+```haskell
+type Nonempty a = Box [a] where length it.value > 0
+type AgeBox = Nonempty Age
+```
+
+```java
+AgeBox ages = new AgeBox(List.of(new Age(BigInteger.ONE)),
+    new ModelMaybe.Nothing<>());
+Box<List<Age>> parent = ages; // Same object and raw payload.
+AgeBox parsed = new AgeBox.Factory().read("{value = [21]}");
+Nonempty<Age> built = new Nonempty.Factory<Age>(ModelTypes.forAge())
+    .create(draft -> draft.setValue(List.of(new Age(BigInteger.TWO))));
+// Throws even through the parent reference: dynamic child predicates survive.
+parent.update(draft -> draft.setValue(List.of()));
+```
+
+Generic-family classes have their own immutable nested `Factory`, taking that
+declaration's witnesses in order. It provides `fromData`, `read`, `validateData`,
+draft `create`, and explicit bypass methods, with default/caller budgets. Closed
+aliases need no witnesses. Positional constructors remain on the domain class.
+Root static shorthands such as `Box.read(witness, text)` remain available.
+For a derived target, use its own factory: inherited Java static methods still
+target their declaring root and do **not** become child factories. This avoids
+Java static-method erasure clashes when a child transforms its parent's arguments.
+
+Factories are independent nested types, not covariant static methods. If a domain
+or contract is named `Factory`, the helper is deterministically suffixed, just
+like `Draft`. Derived records share the root's fully instantiated draft type,
+for example `Box.Draft<List<Age>>`, and updates return the dynamic nominal child.
+Getters and raw access are inherited without copying or rerunning predicates.
+Validation, reads, bypasses and atomic updates still use the complete child target.
+
+Internal evidence checks the instantiated declaration, argument identities and
+inline-refinement provenance/captured scope. It rejects parent-to-child evidence,
+unrelated types and wrong arguments even when their Java representations match.
+Evidence comparison uses immutable structural keys and an iterative traversal;
+it does not compare recursive inferred-signature suppliers or claim to prove
+predicate equivalence. Ancestor witnesses are built lazily without recursive
+factory calls. Evidence checks do not add another payload-validation pass.
+
+Generic tagged unions (including generic descendants of monomorphic unions)
+remain an implementation gate. Existing frontend limitations, including local
+annotations that name an enclosing type parameter and unconstrained generic
+equality, are not removed by model emission.
 
 ## Coverage and remaining scope
 
@@ -355,6 +399,16 @@ isolation, unknown results, separate clauses, custom messages, nominal arguments
 optional/result/list composition, inherited record/union fields and concurrent
 use. Scale tests compile and execute 1,100 inline-refined fields and a 200-level
 predicate with Java 25 warnings-as-errors at `-Xss256k`.
+
+Generic-inheritance tests add 18,000 complete Go/Java reports across validation,
+construction, bypass and read budget boundaries, plus 6,000 JetCheck cases.
+They cover transformed/reordered/repeated arguments, closed aliases, phantom
+parameters, scalar wrappers, inline predicates, parent-typed updates, escaped
+drafts and nested model views. Negative compilation and direct evidence checks
+reject invalid substitutions. A 1,100-field transformed hierarchy with twenty
+additional alias levels compiles and runs at `-Xss256k`, including `Factory`
+name collisions. Structural key comparison also handles 2,000 nested list types
+without recursive Java equality.
 
 The complete release still requires all model shapes and language execution,
 validated Jackson and Avro serde, native schema formats,

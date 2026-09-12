@@ -1057,3 +1057,45 @@ native formats and project workflows. The full checklist remains the release gat
   [CI run](https://github.com/brain-fuel/refine/actions/runs/34695271103), including
   generation, race, vet, CLI and all fifteen fuzz gates. Authored GoPlus and
   generated Go were pushed together. No product tag or Maven deployment occurred.
+
+## Instantiated Java record and wrapper inheritance
+
+- Generic record/wrapper families now support closed aliases, renamed/reordered/
+  repeated parameters, transformed parent arguments, inline-refined arguments,
+  phantom parameters and mixed generic/monomorphic ancestor chains. Type/witness
+  frames compose parent substitutions while retaining original field metadata
+  and inline scope. Descendants extend their instantiated parent, inherit typed
+  getters and share the immutable raw payload.
+- Updates use the root's fully instantiated draft and preserve the dynamic
+  nominal child and its predicates through parent references. Constructor,
+  factory, read and bypass validation targets the complete child once. Explicit
+  bypasses retain structural checks and subsequent validation finds violations.
+- Each generic-family declaration has an independent immutable nested `Factory`
+  for reads, raw-data validation, draft creation and bypasses. Root static
+  shorthands remain available. Derived targets use their own factory because
+  Java static generic methods cannot safely hide parent factories when type
+  arguments are transformed; inherited static methods still target the root.
+  Factory helper names are disambiguated against domain/contract names.
+- Instantiated evidence retains a checked witness and raw value. Lazy ancestor
+  witnesses and iterative structural keys compare declaration identities,
+  arguments, inline origins and captured scopes without recursive supplier
+  equality or unproved predicate equivalence. Wrong arguments, sibling/parent
+  evidence and mismatched inline origins are rejected. Checking metadata does
+  not repeat payload validation.
+- Tests pass 18,000 complete Go/Java validation/construction/bypass/read reports
+  at total-budget boundaries and 6,000 JetCheck cases. They cover parent-typed
+  updates, immutable/escaped drafts, reordered arguments, closed aliases,
+  phantom parameters, scalar wrappers, nested model getters, inline predicates,
+  negative compilation and direct evidence isolation. A 1,100-field transformed
+  hierarchy with twenty additional alias levels compiles and runs at `-Xss256k`,
+  including factory-name collisions. Key comparison handles 2,000 nested lists;
+  package tests include transformed parents in unnamed and Unicode packages.
+- Full local race tests, vet and deterministic GoPlus generation checks pass.
+  A ten-second model-generation fuzz run passed 3,353,044 executions. Baseline
+  generation measured 897,722 ns/op, 3,184,963 B/op and 16,829 allocations/op on
+  Darwin/arm64 (Apple M5 Max), not payload throughput. Latest GoPlus remains
+  v0.158.0.
+- Generic tagged unions (including generic descendants of monomorphic unions),
+  anonymous nested model records, the outstanding language/native/serde/English/
+  analysis/versioning/generated-test/Maven/CLI work and the full release audit
+  remain required. No product tag or Maven deployment is made.
