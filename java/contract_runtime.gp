@@ -18,6 +18,21 @@ import java.util.function.Function;
 /** Execution support for statically generated contracts. No schema loading or I/O. */
 public final class ContractRuntime {
     private ContractRuntime() {}
+    // @CODEC_UNICODE@
+    ` + codecNamesJava + `
+    /** Canonical text only: never asserts a payload's refinements. */
+    public static String showWithoutValidation(Data input, Budget.Limits caller) {
+        if (input == null) throw new ValidationException(new Validation.Invalid(List.of(new Validation.Diagnostic(
+            "validation.structure", List.of(""), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false));
+        Eval evaluator = new Eval(new Budget(Budget.Limits.defaults(), caller).beginStructure(), Map.of(), Map.of());
+        try {
+            Val value = evaluator.transfer(input); Work work = new Work(); String[] result = new String[1];
+            evaluator.new Engine(work).show(value, 0, shown -> { evaluator.step(utf8Size(shown)); result[0] = shown; });
+            work.run(); return result[0];
+        } catch (Failure failure) {
+            throw new ValidationException(new Validation.Indeterminate(List.of(new Validation.Diagnostic(failure.code, List.of(""), "", failure.getMessage()))));
+        }
+    }
     public record Type(String kind, String name, List<Type> arguments, List<Member> fields, List<Rule> rules) {
         public Type { arguments = List.copyOf(arguments); fields = List.copyOf(fields); rules = List.copyOf(rules); }
     }
@@ -241,6 +256,7 @@ public final class ContractRuntime {
                 }
                 ` + functionExecutionJava + `
                 ` + inlineAssertionJava + `
+                ` + codecExecutionJava + `
         }
         ` + functionTypesJava + `
         NumberValue checkedNumber(Rational number, String type) {

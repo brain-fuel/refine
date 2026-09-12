@@ -45,7 +45,7 @@ const functionTypesJava = `
                             if (template == null || actual == null) return;
                             step(1);
                             if (template.kind().equals("named")) {
-                                if (!Character.isUpperCase(template.name().codePointAt(0))) result.put(template.name(), new Binding(originalActual, Map.of()));
+                                if (!CodecUnicode.upper(template.name().codePointAt(0))) result.put(template.name(), new Binding(originalActual, Map.of()));
                                 return;
                             }
                             if (!template.kind().equals(actual.kind())) return;

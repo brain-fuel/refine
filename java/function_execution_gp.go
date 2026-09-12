@@ -21,7 +21,7 @@ const functionExecutionJava = `
                         work.complete(done, arity == 0 ? new VariantValue(name, List.of()) : new FunctionValue(name, arity, List.of(), signature)); return;
                     }
                     arity = switch (name) {
-                        case "not", "length", "reverse", "unique", "isInteger" -> 1;
+                        case "not", "length", "reverse", "unique", "isInteger", "show" -> 1;
                         case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf" -> 2;
                         case "foldl" -> 3;
                         default -> null;
@@ -107,6 +107,7 @@ const functionExecutionJava = `
                 }
                 void builtin(String name, List<Val> args, int level, Consumer<Val> done) {
                     switch (name) {
+                        case "show" -> show(args.getFirst(), level, shown -> { step(utf8Size(shown)); work.complete(done, new TextValue(shown)); });
                         case "not" -> work.complete(done, new BoolValue(!((BoolValue)args.getFirst()).value()));
                         case "isInteger" -> { Rational number = ((NumberValue)args.getFirst()).value(); step(number.show().length()); work.complete(done, new BoolValue(number.isInteger())); }
                         case "length" -> {

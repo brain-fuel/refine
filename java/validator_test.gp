@@ -214,7 +214,6 @@ public final class ContractConformance {
 func TestValidatorGenerationRejectsUnsupported(t *testing.T){
     for _,source:=range []string{
         "type T = String where matches \"a\" it",
-        "type T = Int where show it == \"1\"",
         "type T = Int where (read \"1\" == Ok it)",
         "type T = Timestamp",
     }{
@@ -232,7 +231,7 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
 }
 
 func FuzzValidatorGeneration(f *testing.F){
-    for _,source:=range []string{baseFunctionContract,
+    for _,source:=range []string{baseFunctionContract,showContract,
         "f :: (Int where f it) -> Bool\nf _ = True\ntype T = Int where f it",
         "id :: a -> a\nid x = x\ntype T = Int where (let f :: (Int where it > 0) -> Int = id in f it == it)",
         "type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}

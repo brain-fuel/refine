@@ -508,3 +508,36 @@ native formats and project workflows. The full checklist remains the release gat
   [CI run](https://github.com/brain-fuel/refine/actions/runs/34664106288), including
   generation, race, vet, CLI and all fuzz gates. No product tag or Maven
   deployment was made; the full release checklist remains open.
+
+## Java canonical display
+
+- Java's `show` builtin now handles exact numbers, UTF-16 text, Booleans,
+  records, lists and tagged constructors. First-class use works through named
+  higher-order functions, local aliases and inline guards. Display preserves
+  mathematical values, quotes signed/fractional constructor arguments, and sorts
+  record identifiers by Unicode scalar order rather than UTF-16 order.
+- Generated `Contract.showWithoutValidation` accepts raw payloads and optional
+  caller limits without asserting refinements, matching Go's explicit raw-display
+  API. Invalid bypass-created models remain displayable via `rawData()`. Failure
+  throws a normal validation exception with diagnostics, never partial output.
+  Traversal uses continuations and preserves Go's logical depth/step accounting.
+- Generated contract support embeds Go's Unicode 15.0.0 letter/digit/uppercase
+  tables instead of relying on the JDK's independently versioned classifiers.
+  Go's full BSD-style notice accompanies the tables; the final binary artifact
+  attribution audit remains a release obligation.
+- The display suite passes 71,400 full-report/raw-boundary Go/Java comparisons,
+  including every small total/clause budget for representative values, invalid
+  grammar names, deep values at the logical depth boundary, and explicit bypasses.
+  It exhaustively compares Unicode classifications for all 1,114,112 code points.
+  Another 4,000 fresh-seeded jetCheck cases exercise arbitrary UTF-16 text,
+  rational display, record ordering, higher-order equivalence and unchanged raw
+  payloads. Semantic model tests also show a bypass-created invalid value.
+- Full local race tests, vet and deterministic GoPlus generation pass. A
+  10-second validator-emitter fuzz run passed 4,646,098 executions. The regular
+  validator generation benchmark measured 528,692 ns/op, 1,469,316 B/op and
+  11,386 allocations/op on Darwin/arm64 (Apple M5 Max), including Unicode table
+  emission. These are generation measurements, not payload throughput claims.
+- Java typed `read` remains explicitly rejected until its data-only parser and
+  nested validating path are complete. Regex/timestamps, complete model shapes,
+  native formats, validated serde, English output, analysis, versioning,
+  schema-derived tests, Maven wiring and full CLI workflows remain required.

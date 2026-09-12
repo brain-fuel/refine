@@ -46,7 +46,7 @@ generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
 not the final shared resource policy. Java regex/timestamps, schema-derived
-complete model shapes, typed compound read/show, Jackson/Avro codecs,
+complete model shapes, typed compound read, Jackson/Avro codecs,
 schema-derived test generators, Maven wiring and the full CLI generation path
 remain required. Nothing here establishes full product conformance.
 
@@ -105,6 +105,7 @@ After writing those sources to a Java 25 project:
 Data age = new Data.Number(Rational.of(21));
 Validation.Outcome result = Contract.validate("Age", age);
 Data unchanged = Contract.requireValid("Age", age); // Same object, or exception.
+String canonical = Contract.showWithoutValidation(age); // "21", without checking Age.
 ```
 
 `validate` also accepts caller `Budget.Limits`. Each invocation owns its meters,
@@ -127,7 +128,7 @@ instantiation, recursion, partial application, higher-order arguments/results,
 zero-argument definitions and ordered equations. Case/function patterns support
 bindings, wildcards, literals, constructors, lists and cons patterns.
 
-Implemented builtins are `not`, `isInteger`, `length`, `reverse`, `map`, `filter`,
+Implemented builtins are `not`, `isInteger`, `show`, `length`, `reverse`, `map`, `filter`,
 `foldl`, `oneOf`, `elem`, `unique`, `all`, `any`, `satisfiesAll`,
 `satisfiesOnlyOneOf`, `satisfiesOneOf`, and `satisfiesAtLeastOneOf`. Quantifiers
 preserve three-outcome behavior: a later decisive result can survive an earlier
@@ -146,11 +147,43 @@ reports indeterminate, rather than mistaking a failed computation for `False`.
 Nested clauses share their enclosing budgets and the continuation queue, so
 recursive contract predicates obey logical depth limits without JVM recursion.
 
-Java builtin `show`/`read`, regex `matches`/`search`, and timestamps still reject
+Java builtin `read`, regex `matches`/`search`, and timestamps still reject
 generation with `java.unsupported` and a source position.
 Function-valued payload fields are not serializable payload types.
 Unsupported rules are never dropped. The missing execution forms remain release
 obligations, not optional extensions.
+
+### Canonical display
+
+`show` executes directly and through higher-order functions, local aliases and
+guarded functions. Exact numbers use reduced fractions; text quotes and escapes
+every non-ASCII UTF-16 code unit, including lone surrogates. Lists and constructor
+arguments retain order. Record fields sort by Unicode scalar order, not Java's
+UTF-16 lexicographic order. Negative and fractional constructor arguments receive
+parentheses so the eventual reader cannot mistake them for arithmetic.
+
+`Contract.showWithoutValidation(data[, limits])` also displays raw `Data` without
+checking a named schema or reasserting refinements. It can therefore show an
+invalid bypass-created model through `model.rawData()`. It does not mutate or
+coerce that value. Resource or representation failures throw `ValidationException`
+with a diagnostic outcome and no partial text; names that cannot be represented
+in the language's canonical grammar are rejected. This API is not JSON/Avro
+serialization and is not evidence of a successful validating read.
+
+Display and structural transfer use the same logical-step/depth policy as Go,
+without host recursion. The generated contract embeds Go's Unicode classification
+tables and their upstream license notice so identifiers do not change meaning
+when the target JDK upgrades its Unicode tables.
+
+Verification includes 71,400 Go/Java report and raw-display comparisons over
+exact fractions, structured values, optional/null/result variants, higher-order
+display, escaped surrogates, scalar ordering, invalid names, deep values and
+budget boundaries. The Java classifier is checked against Go for all 1,114,112
+code points. Another 4,000 jetCheck cases exercise arbitrary UTF-16 strings,
+rational display, higher-order equivalence and raw-value preservation. Typed
+`read` and timestamps remain required before the complete canonical codec is ready.
+
+### Initialization and execution evidence
 
 Contract initialization is emitted as dependency-ordered
 chunks: bounded static initializers, bounded list construction, sequential class

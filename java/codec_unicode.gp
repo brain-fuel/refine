@@ -1,0 +1,73 @@
+package java
+
+import (
+    "fmt"
+    "strings"
+    "unicode"
+)
+
+// Export the frontend's Unicode classifications instead of inheriting the
+// target JDK's potentially different Unicode version. Encoded range strings
+// keep JVM initialization bounded; the lookup works on Unicode scalar values.
+func codecUnicodeJava()string{
+    var out strings.Builder
+    out.WriteString(goUnicodeNotice)
+    out.WriteString("    // Unicode "+unicode.Version+" tables from Go's unicode package.\n")
+    out.WriteString("    private static final class CodecUnicode {\n")
+    for _,entry:=range []struct{name string;table *unicode.RangeTable}{{"LETTER",unicode.Letter},{"DIGIT",unicode.Digit},{"UPPER",unicode.Upper}}{
+        var ranges strings.Builder
+        for _,r:=range entry.table.R16{fmt.Fprintf(&ranges,"%d,%d,%d,",r.Lo,r.Hi,r.Stride)}
+        for _,r:=range entry.table.R32{fmt.Fprintf(&ranges,"%d,%d,%d,",r.Lo,r.Hi,r.Stride)}
+        fmt.Fprintf(&out,"        static final int[] %s = java.util.Arrays.stream(%s.split(\",\")).mapToInt(Integer::parseInt).toArray();\n",entry.name,javaQuote(strings.TrimSuffix(ranges.String(),",")))
+    }
+    out.WriteString(`
+        static boolean contains(int[] ranges, int scalar) {
+            int low = 0, high = ranges.length / 3;
+            while (low < high) {
+                int middle = (low + high) >>> 1, start = middle * 3;
+                if (scalar < ranges[start]) high = middle;
+                else if (scalar > ranges[start + 1]) low = middle + 1;
+                else return (scalar - ranges[start]) % ranges[start + 2] == 0;
+            }
+            return false;
+        }
+        static boolean letter(int scalar) { return contains(LETTER, scalar); }
+        static boolean digit(int scalar) { return contains(DIGIT, scalar); }
+        static boolean upper(int scalar) { return contains(UPPER, scalar); }
+    }
+`)
+    return out.String()
+}
+
+// Retain the upstream notice alongside tables embedded in generated artifacts.
+const goUnicodeNotice = `
+    /* Unicode classification tables derived from Go's unicode package.
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+    */
+`

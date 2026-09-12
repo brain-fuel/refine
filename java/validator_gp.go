@@ -94,7 +94,7 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 
 		kind, text = "variable", name
 		if !scope[name] {
-			if name == "read" || name == "show" || name == "matches" || name == "search" {
+			if name == "read" || name == "matches" || name == "search" {
 				declared := false
 				for _, fn := range e.checked.Syntax.Functions {
 					if fn.Name == name {
@@ -327,13 +327,16 @@ public final class %s {
     public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
+    public static String showWithoutValidation(Data input) { return showWithoutValidation(input, Budget.Limits.defaults()); }
+    public static String showWithoutValidation(Data input, Budget.Limits caller) { return ContractRuntime.showWithoutValidation(input, caller); }
 `, className, className, functions) + e.source(definitions, signatures)
 	files, failure = GenerateRuntime(namespace)
 	if failure != nil {
 		return nil, failure
 	}
 	prefix := strings.ReplaceAll(namespace, ".", "/")
-	files = append(files, File{Path: path.Join(prefix, "Data.java"), Source: header + dataJava}, File{Path: path.Join(prefix, "ContractRuntime.java"), Source: header + contractRuntimeJava}, File{Path: path.Join(prefix, className+".java"), Source: header + source})
+	runtime := strings.ReplaceAll(contractRuntimeJava, "// @CODEC_UNICODE@", codecUnicodeJava())
+	files = append(files, File{Path: path.Join(prefix, "Data.java"), Source: header + dataJava}, File{Path: path.Join(prefix, "ContractRuntime.java"), Source: header + runtime}, File{Path: path.Join(prefix, className+".java"), Source: header + source})
 	return files, nil
 }
 

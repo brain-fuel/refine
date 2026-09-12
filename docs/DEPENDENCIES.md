@@ -6,6 +6,12 @@ release gate.
 
 - `goforge.dev/goplus v0.158.0`: pinned source-generation tool. Ordinary users
   compile the checked-in generated Go without running that tool.
+- Go's `unicode` classification tables are embedded in generated Java contract
+  support so canonical identifiers do not change with the target JDK's Unicode
+  version. Generated sources include the table version and Go's full BSD-style
+  copyright/license notice. The current toolchain supplies Unicode 15.0.0.
+  Packaging must preserve this notice in binary artifact attribution as well;
+  the final Maven artifact audit remains required.
 - `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3`: independent JSON Schema
   Draft 2020-12 **test oracle** for native-constraint translation. It is imported
   by the provenance tests, not by production provenance code. Upstream license:

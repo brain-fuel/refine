@@ -148,6 +148,7 @@ public final class Models {
         require(new GuardedAge(n(1)).value().equals(n(1)));
         rejects(() -> new GuardedAge(n(0)));
         require(GuardedAge.createWithoutValidation(n(-1)).validate().state() == Validation.State.INDETERMINATE);
+        require(Contract.showWithoutValidation(GuardedAge.createWithoutValidation(n(-1)).rawData()).equals("-1"));
         ProofChecks.run();
         String spelling = new String(new char[]{'x', (char)0xd800}); AccountId id = new AccountId(spelling);
         require(id.value() == spelling);
