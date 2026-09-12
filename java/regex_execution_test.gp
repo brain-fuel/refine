@@ -1,0 +1,133 @@
+package java
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "math/rand"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+    "time"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+const regexContract = `
+type Query = { pattern :: String, subject :: String }
+type Full = Query where matches it.pattern it.subject @code "regex.full"
+type Search = Query where search it.pattern it.subject @code "regex.search"
+fullRegex :: String -> String -> Bool
+fullRegex pattern subject = matches pattern subject
+type Named = Query where fullRegex it.pattern it.subject
+type Every = Query where all (matches it.pattern) [it.subject, it.subject]
+type AnyValue = Query where any (search it.pattern) [it.subject, "a"]
+type Recover = Query where satisfiesOneOf [matches it.pattern, matches "a"] it.subject
+type AllRecover = Query where satisfiesAll [matches it.pattern, matches "a"] it.subject
+type OnlyOne = Query where satisfiesOnlyOneOf [matches it.pattern, matches "a", matches "a"] it.subject
+type ShortCircuit = Query where False && matches it.pattern it.subject
+type TrueShortCircuit = Query where True || matches it.pattern it.subject
+type Reported = Query
+  where matches it.pattern it.subject @message ("Subject " ++ show it.subject ++ " did not match")
+  where False @code "always.no"
+type MessageFailure = Query where False @message (if matches it.pattern it.subject then "Matched" else "No match")
+type Limited = Query where matches it.pattern it.subject @steps 30 where True
+accept :: (String where matches "a" it) -> Bool
+accept _ = True
+type Inline = Query where accept it.subject
+type Identifier = String where matches "[A-Z][A-Za-z0-9]*" it @code "identifier.syntax"
+readIdentifier :: String -> Result String Identifier
+readIdentifier text = read text
+type Recheck = Query where (case readIdentifier (show it.subject) of { Ok _ -> True; Err _ -> False })
+`
+
+func TestGeneratedRegexExecution(t *testing.T){
+    compiler,vm:=javaTools(t);dependencies:=jetCheckClasspath(t);program,err:=language.Compile(regexContract);if err!=nil{t.Fatal(err)}
+    files,err:=GenerateModels(program,"example.regexexec","Contract");if err!=nil{t.Fatal(err)}
+    root:=t.TempDir();sources:=[]string{}
+    for _,file:=range files{target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harness:=filepath.Join(root,"RegexExecutionConformance.java");if err:=os.WriteFile(harness,[]byte(regexExecutionHarnessJava),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(root,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",dependencies,"-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("javac: %v\n%s",err,output)}
+    vectors:=[]vector{};text:=func(raw string)value.Text{v,err:=value.TextFromUTF8(raw);if err!=nil{t.Fatal(err)};return v}
+    add:=func(mode,name string,pattern,subject value.Text,total,clause uint64){
+        data:=testRecord(value.DataField{Name:"pattern",Value:value.OfText(pattern)},value.DataField{Name:"subject",Value:value.OfText(subject)})
+        limits:=validation.Limits{Total:total,Clause:clause};var report validation.Report;source:=""
+        if mode=="read"{shown,err:=language.ShowDataWithoutValidation(data,validation.Limits{});if err!=nil{t.Fatal(err)};source=readUnits(shown);_,report=program.ReadData(name,shown,limits)}else if mode=="bypass"{report=program.ValidateDataWithoutRefinements(name,data,limits)}else{report=program.ValidateData(name,data,limits)}
+        vectors=append(vectors,vector{fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%d\t%s",mode,name,readUnits(pattern),readUnits(subject),total,clause,source),reportLine(report)})
+    }
+    names:=[]string{"Full","Search","Named","Every","AnyValue","Recover","AllRecover","OnlyOne","ShortCircuit","TrueShortCircuit","Reported","MessageFailure","Limited","Inline","Recheck"}
+    patterns:=[]string{"","a","a+","[A-Z][A-Za-z0-9]*","(?i)k","(?i)σ","(?s).","\\p{Cs}","\\bcat\\b","(a|aa)*b","a{0,1000}","(","[","(?=private)","\\q","\\x{d800}",strings.Repeat("(",512)+"a"+strings.Repeat(")",512)}
+    subjects:=[]value.Text{text(""),text("a"),text("aaa"),text("A1"),text("cat"),text("a cat!"),text("K"),text("ς"),text("😀"),text("private"),value.TextFromUnits([]uint16{0xd800})}
+    for _,raw:=range patterns{for _,subject:=range subjects{for _,name:=range names{for _,mode:=range []string{"validate","bypass","read"}{add(mode,name,text(raw),subject,0,0)}}}}
+    for _,raw:=range []string{"a","(?i)k","[","a{0,1000}"}{for n:=uint64(1);n<400;n++{for _,name:=range []string{"Full","Recover","Reported","MessageFailure","Recheck"}{add("validate",name,text(raw),text("a"),n,0);add("validate",name,text(raw),text("b"),0,n)}}}
+    rng:=rand.New(rand.NewSource(889311))
+    for i:=0;i<3000;i++{
+        pattern:=patterns[rng.Intn(len(patterns))];subject:=subjects[rng.Intn(len(subjects))];name:=names[rng.Intn(len(names))]
+        add("validate",name,text(pattern),subject,uint64(rng.Intn(2000)+1),uint64(rng.Intn(500)+1));add("read",name,text(pattern),subject,uint64(rng.Intn(2000)+1),uint64(rng.Intn(500)+1))
+    }
+    for _,name:=range names{add("validate",name,value.TextFromUnits([]uint16{0xd800}),text("a"),0,0)}
+    var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input);input.WriteByte('\n')}
+    ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute);defer cancel();command:=exec.CommandContext(ctx,vm,"-Xss256k","-cp",classes+string(os.PathListSeparator)+dependencies,"RegexExecutionConformance");command.Stdin=strings.NewReader(input.String());var stderr bytes.Buffer;command.Stderr=&stderr
+    output,err:=command.Output();if err!=nil{t.Fatalf("Java regex execution: %v\n%s",err,stderr.String())}
+    lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n");if len(lines)!=len(vectors){t.Fatalf("expected %d outputs, got %d",len(vectors),len(lines))}
+    for i,v:=range vectors{if lines[i]!=v.expected{t.Fatalf("case %s\nJava %s\nGo   %s",v.input,lines[i],v.expected)}}
+    t.Logf("%d complete report/read comparisons, model checks and 6000 jetCheck cases passed",len(vectors))
+}
+
+const regexExecutionHarnessJava = `
+import example.regexexec.*;
+import java.util.List;
+import java.util.Locale;
+import java.util.HexFormat;
+import java.nio.charset.StandardCharsets;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import org.jetbrains.jetCheck.Generator;
+import org.jetbrains.jetCheck.PropertyChecker;
+public final class RegexExecutionConformance {
+    static void require(boolean value){if(!value)throw new AssertionError();}
+    static String hex(String text){return HexFormat.of().formatHex(text.getBytes(StandardCharsets.UTF_8));}
+    static String units(String text){var out=new StringBuilder();for(int i=0;i<text.length();i+=4)out.append((char)Integer.parseInt(text.substring(i,i+4),16));return out.toString();}
+    static void rejects(Runnable action){try{action.run();throw new AssertionError("unvalidated model accepted");}catch(ValidationException expected){}}
+    public static void main(String[] args)throws Exception{
+        var input=new BufferedReader(new InputStreamReader(System.in,StandardCharsets.UTF_8));String line;
+        while((line=input.readLine())!=null){
+            String[] f=line.split("\t",-1);var data=new Data.Struct(List.of(new Data.Field("pattern",new Data.Text(units(f[2]))),new Data.Field("subject",new Data.Text(units(f[3])))));
+            var limits=new Budget.Limits(Long.parseLong(f[4]),Long.parseLong(f[5]));Validation.Outcome outcome;
+            if(f[0].equals("read")){var read=Contract.read(f[1],units(f[6]),limits);outcome=read.outcome();if(outcome.state()!=Validation.State.VALID)require(read.data()==null);}
+            else outcome=f[0].equals("bypass")?Contract.validateStructure(f[1],data,limits):Contract.validate(f[1],data,limits);
+            var report=new StringBuilder(outcome.state().name().toLowerCase(Locale.ROOT)).append('|').append(outcome.incomplete());
+            for(var d:outcome.diagnostics())report.append('|').append(hex(d.code())).append(',').append(hex(String.join(";",d.paths()))).append(',').append(hex(d.predicate())).append(',').append(hex(d.message()));System.out.println(report);
+        }
+        var before=new Full("a","a");var after=before.update(draft->{draft.setPattern("b");draft.setSubject("b");});
+        require(before.pattern().equals("a")&&after.pattern().equals("b")&&after.subject().equals("b"));
+        rejects(()->before.update(draft->draft.setPattern("b")));
+        rejects(()->new Full("[","a"));rejects(()->new Full("a","b"));
+        require(Full.createWithoutValidation("[","a").validate().state()==Validation.State.INDETERMINATE);
+        require(Full.createWithoutValidation("a","b").validate().state()==Validation.State.INVALID);
+        require(new Identifier("A123").value().equals("A123"));
+        rejects(()->Identifier.read(Identifier.createWithoutValidation("123").showWithoutValidation()));
+        require(Full.read(after.showWithoutValidation()).subject().equals("b"));
+        rejects(()->new Full("a","a",new Budget.Limits(1,1)));
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            String value="A"+Integer.toUnsignedString(seed);var id=new Identifier(value);require(id.value().equals(value)&&Identifier.read(id.showWithoutValidation()).value().equals(value));rejects(()->new Identifier("!"+value));return true;
+        });
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            int n=Math.floorMod(seed,25);String pattern="a{"+n+"}",subject="a".repeat(n);var model=new Full(pattern,subject);
+            var changed=model.update(draft->{draft.setPattern("b{"+n+"}");draft.setSubject("b".repeat(n));});require(changed.validate().state()==Validation.State.VALID&&model.subject().equals(subject));return true;
+        });
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            String bad="(?=private"+Integer.toUnsignedString(seed)+")";var model=Full.createWithoutValidation(bad,"a");var outcome=model.validate();require(outcome.state()==Validation.State.INDETERMINATE);
+            for(var d:outcome.diagnostics())require(!d.message().contains("private"));require(new Recover(bad,"a").validate().state()==Validation.State.VALID);return true;
+        });
+        try(var executor=java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()){
+            var futures=new java.util.ArrayList<java.util.concurrent.Future<?>>();for(int i=0;i<100;i++)futures.add(executor.submit(()->require(new Full("(?i)k","K").validate().state()==Validation.State.VALID)));for(var future:futures)future.get();
+        }
+    }
+}
+`

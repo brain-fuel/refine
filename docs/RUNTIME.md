@@ -93,8 +93,11 @@ surrogates retain their own identity instead of becoming U+FFFD. A pattern
 targeting a lone surrogate uses an explicit escape such as `\\x{d800}` in a
 language string. Literal unpaired surrogates in pattern source are rejected.
 The current program representation and Unicode tables come from the pinned CI
-Go toolchain; a versioned cross-runtime regex profile remains required before
-claiming Java parity or release-stable cross-toolchain cost identity.
+Go toolchain. Generated Java now implements matching source parsing,
+normalization, compilation and execution with differential budget tests; see
+[Java regex support](JAVA-RUNTIME.md#regex-parsing-compilation-and-execution).
+Release-stable profile auditing remains required before promising unchanged
+cost identity across future Go toolchain or Unicode-table changes.
 
 `Timestamp` accepts [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) text at
 payload/read boundaries. It validates the Gregorian date, timezone, and leap
@@ -251,7 +254,8 @@ predicates can use the full logical budget without this temporary host-stack cap
 The following are explicitly unfinished, not silently interpreted as success:
 
 - Explicit conversion/rounding and timestamp duration vocabulary; release-stable
-  cross-runtime regex/Unicode profile and matching cost conformance.
+  regex/Unicode profile auditing across toolchain changes (current Go/Java
+  parsing, compilation and matching cost conformance is tested).
 - Full constraint-qualified polymorphism and inference of all necessary codec
   capabilities through generic function signatures. Unresolved runtime target
   variables currently fail indeterminate; they must never silently pick a type.

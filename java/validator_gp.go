@@ -94,18 +94,6 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 
 		kind, text = "variable", name
 		if !scope[name] {
-			if name == "matches" || name == "search" {
-				declared := false
-				for _, fn := range e.checked.Syntax.Functions {
-					if fn.Name == name {
-						declared = true
-						break
-					}
-				}
-				if !declared {
-					unsupported(expr.At, "Java execution for "+name+" remains required")
-				}
-			}
 			kind = "global"
 			signature = e.signature(e.checked.Inferred[expr])
 		}

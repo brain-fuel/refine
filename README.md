@@ -31,9 +31,12 @@ UTF-16 text; three-outcome validation results and deterministic budget meters;
 lossless ordered JSON ingestion/editing; a Haskell-like parser, formatter, and
 static type/pattern checker; and metered in-memory predicate execution and
 typed payload validation. See [docs/RUNTIME.md](docs/RUNTIME.md) for the library
-API, step accounting, and explicit limitations. Native schema/wire validation,
-the remaining execution features, Java generation, and release orchestration
-remain in progress.
+API, step accounting, and explicit limitations. Generated Java now includes
+standalone validators, initial immutable domain models, exact timestamps,
+canonical show/read, and deterministic dynamic regex predicates; see the
+[Java runtime guide](docs/JAVA-RUNTIME.md). Native schema/wire validation,
+complete model shapes and serde, remaining language features, and release
+orchestration remain in progress.
 
 The development CLI exposes only the phases currently implemented:
 

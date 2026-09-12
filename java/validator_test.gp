@@ -211,13 +211,15 @@ public final class ContractConformance {
 }
 `
 
-func TestValidatorGenerationRejectsUnsupported(t *testing.T){
+func TestValidatorGenerationGuards(t *testing.T){
     for _,source:=range []string{
         "type T = String where matches \"a\" it",
+        "type T = String where search \"a\" it",
+        "type T = String where matches \"[\" it",
     }{
-        program,err:=language.Compile(source);if err!=nil{t.Fatalf("invalid rejection fixture: %s: %v",source,err)}
+        program,err:=language.Compile(source);if err!=nil{t.Fatalf("invalid regex fixture: %s: %v",source,err)}
         files,err:=GenerateValidator(program,"example","Contract")
-        if _,ok:=err.(*GenerationError);!ok||files!=nil{t.Fatalf("unsupported contract silently emitted: %s: %v",source,err)}
+        if err!=nil||len(files)==0{t.Fatalf("regex contract generation failed: %s: %v",source,err)}
     }
     program,err:=language.Compile("type T = Int where it > 0");if err!=nil{t.Fatal(err)}
     for _,name:=range []string{"", "Data", "String", "record", "a.b", "../Bad", "a;"}{if files,err:=GenerateValidator(program,"",name);err==nil||files!=nil{t.Fatalf("invalid class accepted: %q",name)}}
@@ -229,7 +231,7 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
 }
 
 func FuzzValidatorGeneration(f *testing.F){
-    for _,source:=range []string{baseFunctionContract,showContract,readContract,timestampContract,
+    for _,source:=range []string{baseFunctionContract,showContract,readContract,timestampContract,regexContract,
         "f :: (Int where f it) -> Bool\nf _ = True\ntype T = Int where f it",
         "id :: a -> a\nid x = x\ntype T = Int where (let f :: (Int where it > 0) -> Int = id in f it == it)",
         "type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}

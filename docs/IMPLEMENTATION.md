@@ -737,3 +737,52 @@ native formats and project workflows. The full checklist remains the release gat
   serde, English output, analysis, versioning, schema-derived tests, Maven wiring
   and CLI workflows remain release obligations; no product tag or Maven deploy
   is implied by this compiler checkpoint.
+
+## Dynamic Java regex parsing and predicate execution
+
+- Generated `RegexProgram.parseTree` and `compile` accept dynamic Go/RE2-dialect
+  pattern text. The parser preserves Go's normalization and instruction choices:
+  common-prefix factoring, safe repeated-class factoring, class merging, capture
+  numbering/names, local/global flags, quoting, escapes and counted repetition.
+  Explicit queues/stacks handle factoring, parser size/height checks and frozen
+  tree construction without JVM recursion dependence.
+- Source parsing charges the same UTF-16 quadratic prefix cost as Go, before
+  scalar-text checking or parsing. Parser allocation/rune/size/height accounting,
+  repeat limits, tree expansion charges, instruction order and matcher charges
+  agree in the conformance suite. Invalid patterns yield sanitized `regex.syntax`
+  diagnostics; deterministic resource failures use `regex.limit`/`regex.budget`.
+  Each call charges its full cost; no result cache changes budget behavior.
+- Generated Unicode category/script/alias lookup tables use the Go parser's
+  actual accepted vocabulary and normalized ranges, including negation/folding
+  and singleton categories. Names present in Go's Unicode tables but rejected by
+  its regex parser remain rejected in Java. No JDK regex or Unicode version is
+  substituted. Generated source retains Go's full BSD-style notice, including
+  the 2013 ASCII-class attribution; binary attribution remains a release gate.
+- Java `matches` and `search` now execute, including dynamic payload patterns,
+  named/higher-order calls, inline assertions, typed reads, custom messages and
+  three-outcome combinators. Invalid/unknown patterns are not false matches.
+  Validated model construction/updates/read enforce predicates; explicit bypasses
+  preserve raw values but subsequent validation/read still enforces the rules.
+- Tests pass 104,422 exact normalized-tree/instruction/error/budget comparisons
+  across 26,301 patterns and 30,390 complete validation/read report comparisons.
+  They cover every available Unicode category/script/alias lookup, malformed
+  sources, arbitrary syntax fragments, recursive generated expressions, deep
+  alternative factoring, parser/compiler limits, privacy, clause budgets,
+  recovery and model APIs. Two additional sets of jetCheck suites add 12,000
+  fresh-seeded cases for scalar escapes, repetition languages, budgets, depth,
+  model reads/updates and private-error recovery. Java 25 warnings are errors;
+  execution uses `-Xss256k`, with additional concurrent-use checks.
+- Full local race tests, vet and deterministic GoPlus generation pass.
+  Ten-second fuzz runs passed 6,439,767 Go regex differential executions and
+  2,909,320 validator-generation executions. Runtime generation measured
+  66,961 ns/op, 852,429 B/op and 34 allocations/op; validator generation measured
+  765,163 ns/op, 2,388,154 B/op and 11,398 allocations/op on Darwin/arm64
+  (Apple M5 Max). These measure source generation, not predicate throughput.
+  Unicode vocabulary increases emitted runtime size; GoPlus latest is v0.158.0.
+- Current Go/Java refinement regex conformance does not establish automatic
+  compatibility with future Go parser/Unicode changes. Release-stable profile
+  auditing and native-schema regex dialects remain required. Full model shapes,
+  language/conversions/imports, native ingestion/exports, validated serde,
+  English output, analysis, versioning, schema-derived tests, Maven wiring and
+  CLI workflows remain release obligations. No product tag or Maven deploy has
+  been made.

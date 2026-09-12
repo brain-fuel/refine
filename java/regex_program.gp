@@ -21,9 +21,9 @@ func buildRegexFoldJava()string {
 var regexFoldSource = buildRegexFoldJava()
 
 func regexProgramJava()string {
-    notice:=strings.ReplaceAll(goUnicodeNotice,"Unicode classification tables derived from Go's unicode package.","Simple-fold tables, rune/empty-width matching, tree simplification and instruction compilation derived from Go's unicode and regexp/syntax packages.")
-    notice=strings.ReplaceAll(notice,"Copyright 2009 The Go Authors.","Copyright 2009, 2011 The Go Authors.")
-    return regexProgramImports+notice+regexProgramPrefix+regexFoldSource+regexCompileJava+regexProgramBody
+    notice:=strings.ReplaceAll(goUnicodeNotice,"Unicode classification tables derived from Go's unicode package.","Unicode and ASCII classes, simple-fold tables, parsing, normalization, rune/empty-width matching, tree simplification and instruction compilation derived from Go's unicode and regexp/syntax packages.")
+    notice=strings.ReplaceAll(notice,"Copyright 2009 The Go Authors.","Copyright 2009, 2011, 2013 The Go Authors.")
+    return regexProgramImports+notice+regexProgramPrefix+regexFoldSource+regexClassesSource+regexCompileJava+regexParseJava+regexProgramBody
 }
 
 const regexProgramImports = `
@@ -33,9 +33,8 @@ import java.util.List;
 import java.util.Objects;
 `
 const regexProgramPrefix = `
-/** Immutable, metered regex tree compilation and instruction execution.
- * This is not a pattern-text parser. Go-generated plans and Java-compiled trees
- * share this execution boundary.
+/** Immutable, metered Go/RE2-dialect parsing, compilation and execution.
+ * Go-generated plans and Java-compiled patterns share the execution boundary.
  * Programs carry an explicit instruction profile and Unicode table version.
  */
 public final class RegexProgram {

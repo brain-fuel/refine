@@ -32,10 +32,9 @@ contextual-keyword packages with Java 25.
   and offset metadata, instant equality/order, and pinned leap-second knowledge.
   Explicit civil-coordinate and elapsed-SI duration methods do not silently
   substitute for one another.
-- `RegexProgram`: immutable parsed-tree compilation and instruction execution
-  with metered full matching/search and pinned Unicode simple folding. This is a
-  compiler/matcher building
-  block, not yet a Java pattern-text parser or working DSL regex builtin.
+- `RegexProgram`: Go/RE2-dialect source parsing, normalization, compilation and
+  metered full matching/search, with pinned Unicode classes and simple folding.
+  The same engine executes dynamic Java DSL `matches` and `search` predicates.
 - `Validation`: sealed outcomes and checks, immutable diagnostics, ordered
   collection and the three predicate combiners. Invalid dominates unknown while
   retaining an incomplete flag and all collected diagnostics.
@@ -53,7 +52,7 @@ separate generation API. The initial
 generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
-not the final shared resource policy. Java regex, schema-derived
+not the final shared resource policy. Native schema regex dialects, schema-derived
 complete model shapes, Jackson/Avro codecs,
 schema-derived test generators, Maven wiring and the full CLI generation path
 remain required. Nothing here establishes full product conformance.
@@ -155,8 +154,11 @@ reports indeterminate, rather than mistaking a failed computation for `False`.
 Nested clauses share their enclosing budgets and the continuation queue, so
 recursive contract predicates obey logical depth limits without JVM recursion.
 
-Java regex `matches`/`search` still reject
-generation with `java.unsupported` and a source position.
+Java regex `matches`/`search` execute both literal and payload-supplied patterns,
+including named/higher-order use, inline assertions and typed reads. Malformed
+patterns and resource exhaustion produce indeterminate evaluation diagnostics,
+not false matches; conclusive predicate-combination results retain Go's recovery
+behavior. Pattern text is omitted from parser errors.
 Function-valued payload fields are not serializable payload types.
 Unsupported rules are never dropped. The missing execution forms remain release
 obligations, not optional extensions.
@@ -284,7 +286,7 @@ around a known leap are covered. Three 2,000-case jetCheck suites exercise offse
 equivalence, typed model round trips, exact durations, atomic multi-field updates,
 bypass revalidation and arbitrary UTF-16 inputs, with a 256 KiB JVM stack.
 
-### Regex instruction execution
+### Regex parsing, compilation and execution
 
 `pattern.Regex.Program()` exports a detached Go instruction snapshot with
 `Profile`, `UnicodeVersion`, `Start`, and typed `Instructions`. Mutating any
@@ -339,11 +341,38 @@ nested scope recovery and depth/overflow boundaries. Another 6,000 jetCheck case
 check repetition languages, exact compilation budgets and depth guards at
 `-Xss256k`. Digest comparisons include all instructions, even unreachable ones.
 
-Dynamic Java pattern-text parsing/normalization, source-compilation conformance, and
-connecting `matches`/`search` to the evaluator are still required. Java contract
-generation continues to reject those builtins rather than treating this matcher
-foundation as complete regex support. Native schema regex dialects remain a
-separate requirement.
+`RegexProgram.compile(String, Budget.Meter)` accepts dynamic pattern text.
+`parseTree(String, Budget.Meter)` exposes the immutable normalized tree; it
+charges `1 + sourceUTF16Length²` and checks scalar pattern text before parsing.
+Calling `compileTree` on that result charges the remaining expansion/compiler
+work. Each compilation charges its full logical cost; no cache makes budget
+outcomes depend on previous calls.
+
+The source parser follows Go's Perl-mode regex dialect and normalization:
+literal-prefix factoring, safe simple-prefix factoring, class merging, captures,
+flags, Unicode categories/aliases, POSIX/Perl classes, quoted literals and
+greedy/lazy repetition. Parser allocation/repetition/height limits are checked
+before compilation. Work queues handle recursive factoring and explicit stacks
+handle size/depth checks, tree freezing and instruction execution. Unicode
+vocabulary and ranges come from the Go parser, not JDK Unicode or Java regex.
+Some Unicode table names are not accepted by that parser; Java retains those
+rejections instead of introducing a different vocabulary.
+
+The source suite passes 104,422 exact normalized-tree/instruction/error/budget
+comparisons across 26,301 patterns, including malformed text, every available
+Unicode category/script/alias lookup, nested syntax, deep alternative factoring
+and compiler resource boundaries. A further 30,390 complete report/read
+comparisons cover dynamic evaluation, higher-order calls, inline contracts,
+short-circuiting, three-outcome recovery, private/custom messages, clause limits
+and typed reads. Each suite adds 6,000 jetCheck cases. Model tests cover validated
+construction, atomic updates, raw values, bypass revalidation and concurrent use.
+All generated Java compilation uses warnings-as-errors and `-Xss256k` execution.
+
+These establish current Go/Java refinement-dialect conformance, not automatic
+compatibility with future changes to Go's regex compiler or Unicode tables.
+Release-stable cross-toolchain profile auditing remains required. Native schema
+regex dialects are separate requirements and are not silently replaced by this
+refinement engine.
 
 Canonical reading is not JSON/Avro serde or native schema ingestion; those remain
 separate release obligations.

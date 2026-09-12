@@ -12,10 +12,11 @@ release gate.
   copyright/license notice. The current toolchain supplies Unicode 15.0.0.
   Packaging must preserve this notice in binary artifact attribution as well;
   the final Maven artifact audit remains required.
-- Go's Unicode simple-fold tables and `regexp/syntax` rune/empty-width matching,
+- Go's Unicode categories/scripts/aliases, simple-fold tables and
+  `regexp/syntax` parsing/normalization, ASCII classes, rune/empty-width matching,
   tree simplification and instruction compilation also underpin generated
   `RegexProgram`. Its sources retain the
-  complete Go BSD-style notice (2009/2011 copyrights). Programs carry an explicit
+  complete Go BSD-style notice (2009/2011/2013 copyrights). Programs carry an explicit
   execution profile and Unicode version; the Java matcher does not inherit
   JDK case-folding behavior. Binary artifact attribution remains a release gate.
 - `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3`: independent JSON Schema

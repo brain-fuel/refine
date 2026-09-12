@@ -22,7 +22,7 @@ const functionExecutionJava = `
                     }
                     arity = switch (name) {
                         case "not", "length", "reverse", "unique", "isInteger", "show", "read" -> 1;
-                        case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf" -> 2;
+                        case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search" -> 2;
                         case "foldl" -> 3;
                         default -> null;
                     };
@@ -108,6 +108,13 @@ const functionExecutionJava = `
                 }
                 void builtin(String name, List<Val> args, Map<String, Binding> types, int level, Consumer<Val> done) {
                     switch (name) {
+                        case "matches", "search" -> {
+                            try {
+                                var program = RegexProgram.compile(((TextValue)args.getFirst()).value(), meter);
+                                boolean matched = program.match(((TextValue)args.get(1)).value(), name.equals("search") ? RegexProgram.Mode.SEARCH : RegexProgram.Mode.FULL, meter);
+                                work.complete(done, new BoolValue(matched));
+                            } catch (RegexProgram.Error error) { throw fail(error.code(), error.getMessage()); }
+                        }
                         case "show" -> show(args.getFirst(), level, shown -> { step(utf8Size(shown)); work.complete(done, new TextValue(shown)); });
                         case "not" -> work.complete(done, new BoolValue(!((BoolValue)args.getFirst()).value()));
                         case "isInteger" -> { Rational number = ((NumberValue)args.getFirst()).value(); step(number.show().length()); work.complete(done, new BoolValue(number.isInteger())); }
