@@ -1,0 +1,174 @@
+package java
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+    "time"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestRecordModelJVMScale(t *testing.T){
+    compiler,vm:=javaTools(t);dependencies:=jetCheckClasspath(t)
+    widths:=[]int{0,1,64,65,253,254,260,1100}
+    var schema strings.Builder
+    for _,width:=range widths{
+        fmt.Fprintf(&schema,"type Size%d = {",width)
+        for i:=0;i<width;i++{if i>0{schema.WriteString(",")};fmt.Fprintf(&schema," f%d :: Int",i)}
+        schema.WriteString(" }\n")
+    }
+    schema.WriteString(`
+type Ordered = Size1100 where it.f0 < it.f1099 @code "record.order"
+type Future = Ordered where it.f0 >= 0 @code "record.future"
+type Optional = { value :: Int, note :: Maybe String, other :: Nullable String }
+type Helpers = { create :: Int, newDraft :: Int, fields0 :: Int, initialize :: Int }
+type Booking = { start :: Int, end :: Int } where it.start < it.end
+type FutureBooking = Booking where it.start >= 0
+`)
+    program,err:=language.Compile(schema.String());if err!=nil{t.Fatal(err)}
+    files,err:=GenerateModels(program,"example.records","Contract");if err!=nil{t.Fatal(err)}
+    root:=t.TempDir();sources:=[]string{}
+    for _,file:=range files{
+        target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)}
+        if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)
+    }
+    var harness strings.Builder
+    harness.WriteString(`import example.records.*;
+import java.math.BigInteger;
+import java.util.List;
+import org.jetbrains.jetCheck.Generator;
+import org.jetbrains.jetCheck.PropertyChecker;
+public final class RecordScale {
+    static void require(boolean test){if(!test)throw new AssertionError();}
+    static void rejects(Runnable action){try{action.run();throw new AssertionError("invalid record accepted");}catch(ValidationException expected){}}
+    static BigInteger n(long n){return BigInteger.valueOf(n);}
+`)
+    budget:=func(name string,data value.Data)uint64{
+        low,high:=uint64(1),uint64(1_000_000)
+        valid:=func(limit uint64)bool{return validation.StateName(program.ValidateData(name,data,validation.Limits{Total:limit}).State())=="valid"}
+        if !valid(high){t.Fatalf("Go validation failed: %s",name)}
+        for low<high{middle:=low+(high-low)/2;if valid(middle){high=middle}else{low=middle+1}};return low
+    }
+    for _,width:=range widths{
+        fmt.Fprintf(&harness,"static void fill%d(Size%d.Draft draft){\n",width,width)
+        fields:=[]value.DataField{}
+        for i:=0;i<width;i++{fmt.Fprintf(&harness,"draft.setF%d(n(%d));\n",i,i);fields=append(fields,value.DataField{Name:fmt.Sprintf("f%d",i),Value:value.OfNumber(value.Integer(int64(i)))})}
+        harness.WriteString("}\n")
+        minimum:=budget(fmt.Sprintf("Size%d",width),testRecord(fields...))
+        fmt.Fprintf(&harness,`static void test%d(){
+    var limit=new Budget.Limits(%d,0);
+    var shortLimit=new Budget.Limits(%d,0);
+    var created=Size%d.create(RecordScale::fill%d,limit);
+    require(created.update(RecordScale::fill%d,limit).validate().state()==Validation.State.VALID);
+    require(created.update(draft->{},limit).rawData()==created.rawData());
+    rejects(()->Size%d.create(RecordScale::fill%d,shortLimit));
+    rejects(()->created.update(RecordScale::fill%d,shortLimit));
+    require(Size%d.read(created.showWithoutValidation()).validate().state()==Validation.State.VALID);
+`,width,minimum,minimum-1,width,width,width,width,width,width,width)
+        for i:=0;i<width;i++{fmt.Fprintf(&harness,"require(created.f%d().intValueExact()==%d);\n",i,i)}
+        if width>0{fmt.Fprintf(&harness,"rejects(()->Size%d.create(draft->{}));\nrejects(()->Size%d.createWithoutValidation(draft->{}));\n",width,width)}
+        if width<=253{
+            args:=[]string{};for i:=0;i<width;i++{args=append(args,fmt.Sprintf("n(%d)",i))};args=append(args,"limit")
+            fmt.Fprintf(&harness,"require(new Size%d(%s).validate().state()==Validation.State.VALID);\n",width,strings.Join(args,","))
+        }else{fmt.Fprintf(&harness,"require(Size%d.class.getConstructors().length==0);\n",width)}
+        harness.WriteString("}\n")
+    }
+    fields:=[]value.DataField{};for i:=0;i<1100;i++{fields=append(fields,value.DataField{Name:fmt.Sprintf("f%d",i),Value:value.OfNumber(value.Integer(int64(i)))})}
+    minimum:=budget("Future",testRecord(fields...))
+    fmt.Fprintf(&harness,`static void nominal(){
+    var limit=new Budget.Limits(%d,0);
+    var before=Future.create(RecordScale::fill1100,limit);
+    Ordered parent=before;
+    Size1100.Draft[] escaped=new Size1100.Draft[1];
+    var after=parent.update(draft->{escaped[0]=draft;draft.setF0(n(1200));draft.setF1099(n(1201));});
+    require(after instanceof Future && after.f0().intValueExact()==1200 && before.f0().equals(n(0)));
+    escaped[0].setF0(n(9000));require(after.f0().intValueExact()==1200);
+    require(before.update(RecordScale::fill1100,limit).f1099().intValueExact()==1099);
+    rejects(()->Future.create(RecordScale::fill1100,new Budget.Limits(%d,0)));
+    rejects(()->parent.update(draft->draft.setF0(n(-1))));
+    var bypass=parent.updateWithoutValidation(draft->draft.setF0(n(-1)));
+    require(bypass instanceof Future && bypass.validate().state()==Validation.State.INVALID);
+    rejects(()->Future.read(bypass.showWithoutValidation()));
+    var unchecked=Future.createWithoutValidation(draft->{fill1100(draft);draft.setF0(n(-1));});
+    require(unchecked.validate().state()==Validation.State.INVALID);
+    try{parent.update(draft->{draft.setF0(n(42));throw new IllegalStateException("callback");});throw new AssertionError();}
+    catch(IllegalStateException expected){require(expected.getMessage().equals("callback"));}
+    require(before.f0().equals(n(0)));
+}
+`,minimum,minimum-1)
+    harness.WriteString(recordBuilderHarnessJava)
+    harness.WriteString("public static void main(String[] args){\n")
+    for _,width:=range widths{fmt.Fprintf(&harness,"test%d();\n",width)}
+    harness.WriteString("nominal();builders();System.out.println(\"record widths 0..1100, exact budgets and 6000 jetCheck builder cases passed\");}\n}\n")
+    target:=filepath.Join(root,"RecordScale.java");if err:=os.WriteFile(target,[]byte(harness.String()),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)
+    ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute);defer cancel();classes:=filepath.Join(root,"classes")
+    args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",dependencies,"-d",classes},sources...)
+    if output,err:=exec.CommandContext(ctx,compiler,args...).CombinedOutput();err!=nil{t.Fatalf("javac record scale: %v\n%s",err,output)}
+    if output,err:=exec.CommandContext(ctx,vm,"-Xss256k","-cp",classes+string(os.PathListSeparator)+dependencies,"RecordScale").CombinedOutput();err!=nil{t.Fatalf("Java record scale: %v\n%s",err,output)}else{t.Log(string(output))}
+}
+
+const recordBuilderHarnessJava = `
+static void builders(){
+    var calls=new java.util.concurrent.atomic.AtomicInteger();
+    var once=Booking.create(draft->{calls.incrementAndGet();draft.setEnd(n(2));draft.setStart(n(1));});
+    require(calls.get()==1 && ((Data.Struct)once.rawData()).fields().getFirst().name().equals("start"));
+    var callback=new IllegalStateException("creation callback");
+    try{Booking.create(draft->{throw callback;});throw new AssertionError();}catch(IllegalStateException expected){require(expected==callback);}
+    var optional=Optional.create(draft->{draft.setValue(n(1));draft.setOther(new ModelNullable.Null<>());});
+    require(optional.note() instanceof ModelMaybe.Nothing<?>);
+    require(((Data.Struct)optional.rawData()).fields().size()==2);
+    rejects(()->Optional.create(draft->draft.setValue(n(1))));
+    rejects(()->Optional.createWithoutValidation(draft->draft.setValue(n(1))));
+    rejects(()->Optional.create(draft->{draft.setValue(null);draft.setOther(new ModelNullable.Null<>());}));
+    var helpers=Helpers.create(draft->{draft.setCreate_(n(1));draft.setNewDraft_(n(2));draft.setFields0(n(3));draft.setInitialize(n(4));});
+    require(helpers.create_().intValueExact()==1&&helpers.newDraft_().intValueExact()==2&&helpers.fields0().intValueExact()==3&&helpers.initialize().intValueExact()==4);
+    require(Helpers.read(helpers.showWithoutValidation()).create_().intValueExact()==1);
+    PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+        long n=Integer.toUnsignedLong(seed);Booking.Draft[] escaped=new Booking.Draft[1];
+        var before=FutureBooking.create(draft->{escaped[0]=draft;draft.setStart(null);draft.setStart(n(n));draft.setEnd(n(n+1));});
+        escaped[0].setStart(n(n+10));require(before.start().longValueExact()==n);
+        var after=before.update(draft->{draft.setStart(n(n+10));draft.setEnd(n(n+11));});
+        require(after.start().longValueExact()==n+10&&before.start().longValueExact()==n);
+        rejects(()->FutureBooking.create(draft->{draft.setStart(n(n+1));draft.setEnd(n(n));}));return true;
+    });
+    PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+        long n=Integer.toUnsignedLong(seed);var unchecked=FutureBooking.createWithoutValidation(draft->{draft.setStart(n(n+1));draft.setEnd(n(n));});
+        require(unchecked.validate().state()==Validation.State.INVALID);
+        rejects(()->FutureBooking.read(unchecked.showWithoutValidation()));
+        var corrected=unchecked.update(draft->draft.setEnd(n(n+2)));
+        require(FutureBooking.read(corrected.showWithoutValidation()).end().longValueExact()==n+2);return true;
+    });
+    PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+        long n=seed;var raw=new Data.Struct(List.of(new Data.Field("value",new Data.Number(Rational.of(n))),new Data.Field("other",new Data.Variant("Null",List.of())),new Data.Field("future",new Data.Text("retained"))));
+        var before=Optional.fromData(raw);require(before.update(draft->{}).rawData()==raw);
+        var after=before.update(draft->draft.setValue(n(n+1)));
+        require(((Data.Struct)after.rawData()).fields().getLast().value().equals(new Data.Text("retained")));
+        require(after.note() instanceof ModelMaybe.Nothing<?> && before.value().longValueExact()==n);return true;
+    });
+}
+`
+
+func TestDraftModelNames(t *testing.T){
+    compiler,vm:=javaTools(t)
+    for _,tc:=range []struct{contract,source,body string}{
+        {"Draft","type Item = { value :: Int }",`var item=Item.create(d->d.setValue(java.math.BigInteger.ONE));if(!item.value().equals(java.math.BigInteger.ONE))throw new AssertionError();`},
+        {"Contract","data Draft = A | B Int\ntype Item = { value :: Draft }",`var value=Draft.B.create(d->d.setValue(java.math.BigInteger.ONE));var item=Item.create(d->d.setValue(value));if(!(item.value() instanceof Draft.B))throw new AssertionError();`},
+    }{t.Run(tc.contract,func(t *testing.T){
+        program,err:=language.Compile(tc.source);if err!=nil{t.Fatal(err)}
+        files,err:=GenerateModels(program,"",tc.contract);if err!=nil{t.Fatal(err)}
+        root:=t.TempDir();sources:=[]string{}
+        for _,file:=range files{target:=filepath.Join(root,file.Path);if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+        target:=filepath.Join(root,"Use.java");source:="public final class Use { public static void main(String[] args) { "+tc.body+" } }"
+        if err:=os.WriteFile(target,[]byte(source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)
+        classes:=filepath.Join(root,"classes");args:=append([]string{"--release","25","-Xlint:all","-Werror","-d",classes},sources...)
+        if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("Draft name compile: %v\n%s",err,output)}
+        if output,err:=exec.Command(vm,"-Xss256k","-cp",classes,"Use").CombinedOutput();err!=nil{t.Fatalf("Draft name run: %v\n%s",err,output)}
+    })}
+}

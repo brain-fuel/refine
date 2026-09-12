@@ -13,6 +13,7 @@ func (m *modelEmitter) unionNames(root string)map[string]string{
     for name:=range m.declarations{used[sourceNameKey(name)]=true}
     used[sourceNameKey(m.contract)]=true
     for _,name:=range []string{"Draft","ModelSupport","ModelMaybe","ModelNullable","ModelResult","Evidence"}{used[sourceNameKey(name)]=true}
+    used[sourceNameKey(m.modelDraftName())]=true
     view:="Variant";for used[sourceNameKey(view)]{view+="_"};used[sourceNameKey(view)]=true;m.unionViews[root]=view
     for _,variant:=range m.declarations[root].Variants{
         name:=fieldIdentifier(variant.Name)
@@ -98,7 +99,7 @@ func (m *modelEmitter) unionAlternative(owner,parent,root string,variant languag
         fmt.Fprintf(&out,"        public final %s.%s variant() { return this; }\n",m.qualified(root),m.unionViews[root])
         for i,arg:=range variant.Arguments{fmt.Fprintf(&out,"        public final %s %s() { return %s; }\n",m.javaType(arg),arguments[i],m.decode(arg,fmt.Sprintf("ModelSupport.argument(rawData(),%d)",i)))}
     }
-    draftType:=root+"."+name+".Draft"
+    draftName:=m.modelDraftName();draftType:=root+"."+name+"."+draftName
     for _,bypass:=range []bool{false,true}{
         suffix:="";if bypass{suffix="WithoutValidation"}
         fmt.Fprintf(&out,"        public static %s create%s(java.util.function.Consumer<%s> initialize) { return create%s(initialize,Budget.Limits.defaults()); }\n",full,suffix,draftType,suffix)
@@ -107,7 +108,7 @@ func (m *modelEmitter) unionAlternative(owner,parent,root string,variant languag
         fmt.Fprintf(&out,"        public %s update%s(java.util.function.Consumer<%s> change, Budget.Limits caller) { %s draft = draft(); change.accept(draft); return fromData%s(draft.freeze(),caller); }\n",full,suffix,draftType,draftType,suffix)
     }
     if parent==""{
-        fmt.Fprintf(&out,"        protected final Draft draft() { return new Draft(this); }\n        protected static Draft newDraft() { return new Draft(); }\n        public static final class Draft {\n            private final Data raw;\n            private Draft() { this.raw = null; }\n            private Draft(%s source) { this.raw = source.rawData(); }\n",full)
+        fmt.Fprintf(&out,"        protected final %s draft() { return new %s(this); }\n        protected static %s newDraft() { return new %s(); }\n        public static final class %s {\n            private final Data raw;\n            private %s() { this.raw = null; }\n            private %s(%s source) { this.raw = source.rawData(); }\n",draftName,draftName,draftName,draftName,draftName,draftName,draftName,full)
         for i,arg:=range variant.Arguments{fmt.Fprintf(&out,"            private %s %s;\n            private boolean changed%d;\n",m.javaType(arg),arguments[i],i)}
         for i,arg:=range variant.Arguments{fmt.Fprintf(&out,"            public void set%s(%s value) { this.%s = value; changed%d = true; }\n",upperFirst(arguments[i]),m.javaType(arg),arguments[i],i)}
         out.WriteString("            Data freeze() {\n                var changes = new java.util.LinkedHashMap<Integer, Data>();\n")

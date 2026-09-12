@@ -109,7 +109,7 @@ func sourceNameKey(name string)string{
 }
 func (m *modelEmitter) recordFields(root string,t *language.Type)[]modelField{
     if fields,found:=m.fields[root];found{return fields}
-    reserved:=" rawData validate fromData fromDataWithoutValidation createWithoutValidation update updateWithoutValidation validateData read showWithoutValidation equals hashCode toString getClass wait notify notifyAll draft freeze caller raw change evidence source "
+    reserved:=" rawData validate fromData fromDataWithoutValidation create createWithoutValidation update updateWithoutValidation validateData read showWithoutValidation equals hashCode toString getClass wait notify notifyAll draft newDraft freeze caller raw change evidence source "
     used,setters:=map[string]bool{},map[string]bool{};result:=[]modelField{}
     match t.Form{case language.RecordType(fields):for _,field:=range fields{
         member:=fieldIdentifier(field.Name);for used[member]||strings.Contains(reserved," "+member+" "){member+="_"};used[member]=true;m.locals[member]=true
@@ -121,6 +121,11 @@ func (m *modelEmitter) recordFields(root string,t *language.Type)[]modelField{
 func (m *modelEmitter) rawRecord(fields []modelField)string{
     values:=[]string{};for _,field:=range fields{location:="/"+strings.ReplaceAll(strings.ReplaceAll(field.name,"~","~0"),"/","~1");values=append(values,"new Data.Field("+javaQuote(field.name)+","+m.encode(field.typ,field.member,javaQuote(location))+")")}
     return "new Data.Struct("+javaList(values)+")"
+}
+func (m *modelEmitter) modelDraftName()string{
+    used:=map[string]bool{sourceNameKey(m.contract):true}
+    for name:=range m.declarations{used[sourceNameKey(name)]=true}
+    name:="Draft";for used[sourceNameKey(name)]{name+="_"};return name
 }
 func (m *modelEmitter) model(decl language.TypeDecl)string{
     name:=decl.Name;parent:=m.parents[name];root:=name;for m.parents[root]!=""{root=m.parents[root]}
@@ -136,10 +141,14 @@ func (m *modelEmitter) model(decl language.TypeDecl)string{
     if record{for _,field:=range fields{parameters=append(parameters,m.javaType(field.typ)+" "+field.member);arguments=append(arguments,field.member)};raw=m.rawRecord(fields)}else{parameters=append(parameters,m.javaType(shape)+" value");arguments=append(arguments,"value");raw=m.encode(shape,"value",`""`)}
     withCaller:=append(append([]string(nil),parameters...),"Budget.Limits caller")
     withDefault:=append(append([]string(nil),arguments...),"Budget.Limits.defaults()")
-    fmt.Fprintf(&out,"    public %s(%s) { this(%s); }\n",name,strings.Join(parameters,", "),strings.Join(withDefault,", "))
-    fmt.Fprintf(&out,"    public %s(%s) { this(ModelSupport.validate(%s,%s,caller)); }\n",name,strings.Join(withCaller,", "),javaQuote(name),raw)
-    fmt.Fprintf(&out,"    public static %s createWithoutValidation(%s) { return createWithoutValidation(%s); }\n",name,strings.Join(parameters,", "),strings.Join(withDefault,", "))
-    fmt.Fprintf(&out,"    public static %s createWithoutValidation(%s) { return new %s(ModelSupport.withoutValidation(%s,%s,caller)); }\n",name,strings.Join(withCaller,", "),name,javaQuote(name),raw)
+    // Every host representation occupies one reference slot. Reserve slots
+    // for this and the caller budget; wider records use typed draft factories.
+    if len(parameters)<=253{
+        fmt.Fprintf(&out,"    public %s(%s) { this(%s); }\n",name,strings.Join(parameters,", "),strings.Join(withDefault,", "))
+        fmt.Fprintf(&out,"    public %s(%s) { this(ModelSupport.validate(%s,%s,caller)); }\n",name,strings.Join(withCaller,", "),javaQuote(name),raw)
+        fmt.Fprintf(&out,"    public static %s createWithoutValidation(%s) { return createWithoutValidation(%s); }\n",name,strings.Join(parameters,", "),strings.Join(withDefault,", "))
+        fmt.Fprintf(&out,"    public static %s createWithoutValidation(%s) { return new %s(ModelSupport.withoutValidation(%s,%s,caller)); }\n",name,strings.Join(withCaller,", "),name,javaQuote(name),raw)
+    }
     for _,bypass:=range []bool{false,true}{
         suffix,method:="","validate";if bypass{suffix,method="WithoutValidation","withoutValidation"}
         fmt.Fprintf(&out,"    public static %s fromData%s(Data raw) { return fromData%s(raw,Budget.Limits.defaults()); }\n",name,suffix,suffix)
@@ -156,26 +165,35 @@ func (m *modelEmitter) model(decl language.TypeDecl)string{
         if record{for _,field:=range fields{fmt.Fprintf(&out,"    public final %s %s() { return %s; }\n",m.javaType(field.typ),field.member,m.decode(field.typ,"ModelSupport.field(rawData(),"+javaQuote(field.name)+")"))}}else{fmt.Fprintf(&out,"    public final %s value() { return %s; }\n",m.javaType(shape),m.decode(shape,"rawData()"))}
     }
     if record{
-        draftType:=root+".Draft"
+        draftName:=m.modelDraftName();draftType:=root+"."+draftName
         for _,bypass:=range []bool{false,true}{
             suffix:="";if bypass{suffix="WithoutValidation"}
+            fmt.Fprintf(&out,"    public static %s create%s(java.util.function.Consumer<%s> initialize) { return create%s(initialize,Budget.Limits.defaults()); }\n",name,suffix,draftType,suffix)
+            fmt.Fprintf(&out,"    public static %s create%s(java.util.function.Consumer<%s> initialize, Budget.Limits caller) { %s draft = newDraft(); initialize.accept(draft); return fromData%s(draft.freeze(),caller); }\n",name,suffix,draftType,draftType,suffix)
             fmt.Fprintf(&out,"    public %s update%s(java.util.function.Consumer<%s> change) { return update%s(change,Budget.Limits.defaults()); }\n",name,suffix,draftType,suffix)
             fmt.Fprintf(&out,"    public %s update%s(java.util.function.Consumer<%s> change, Budget.Limits caller) { %s draft = draft(); change.accept(draft); return fromData%s(draft.freeze(),caller); }\n",name,suffix,draftType,draftType,suffix)
         }
         if parent==""{
-            out.WriteString("    protected final Draft draft() { return new Draft(this); }\n    public static final class Draft {\n")
+            fmt.Fprintf(&out,"    protected final %s draft() { return new %s(this); }\n    protected static %s newDraft() { return new %s(); }\n    public static final class %s {\n",draftName,draftName,draftName,draftName,draftName)
             baseline:=m.fresh();changed:=[]string{}
             fmt.Fprintf(&out,"        private final Data %s;\n",baseline)
             for _,field:=range fields{fmt.Fprintf(&out,"        private %s %s;\n",m.javaType(field.typ),field.member)}
             for range fields{flag:=m.fresh();changed=append(changed,flag);fmt.Fprintf(&out,"        private boolean %s;\n",flag)}
-            fmt.Fprintf(&out,"        private Draft(%s source) { this.%s = source.rawData(); }\n",name,baseline)
+            fmt.Fprintf(&out,"        private %s() { this.%s = new Data.Struct(java.util.List.of()); }\n",draftName,baseline)
+            fmt.Fprintf(&out,"        private %s(%s source) { this.%s = source.rawData(); }\n",draftName,name,baseline)
             for i,field:=range fields{fmt.Fprintf(&out,"        public void %s(%s value) { this.%s = value; this.%s = true; }\n",field.setter,m.javaType(field.typ),field.member,changed[i])}
             out.WriteString("        Data freeze() {\n            var changes = new java.util.LinkedHashMap<String, Data>();\n")
-            for i,field:=range fields{location:="/"+strings.ReplaceAll(strings.ReplaceAll(field.name,"~","~0"),"/","~1");fmt.Fprintf(&out,"            if (this.%s) changes.put(%s,%s);\n",changed[i],javaQuote(field.name),m.encode(field.typ,"this."+field.member,javaQuote(location)))}
-            fmt.Fprintf(&out,"            return ModelSupport.applyChanges(this.%s,changes);\n        }\n    }\n",baseline)
+            for i:=0;i<len(fields);i+=64{fmt.Fprintf(&out,"            fields%d(changes);\n",i/64)}
+            fmt.Fprintf(&out,"            return ModelSupport.applyChanges(this.%s,changes);\n        }\n",baseline)
+            for start:=0;start<len(fields);start+=64{
+                fmt.Fprintf(&out,"        private void fields%d(java.util.Map<String,Data> changes) {\n",start/64)
+                for i:=start;i<min(start+64,len(fields));i++{field:=fields[i];location:="/"+strings.ReplaceAll(strings.ReplaceAll(field.name,"~","~0"),"/","~1");fmt.Fprintf(&out,"            if (this.%s) changes.put(%s,%s);\n",changed[i],javaQuote(field.name),m.encode(field.typ,"this."+field.member,javaQuote(location)))}
+                out.WriteString("        }\n")
+            }
+            out.WriteString("    }\n")
         }
     }
-    out.WriteString("}\n");if out.Len()>48000{unsupported(decl.At,"model source exceeds the current 48000-byte emission limit")};return out.String()
+    out.WriteString("}\n");return out.String()
 }
 
 // GenerateModels emits semantic Java models and the checked validator they use.

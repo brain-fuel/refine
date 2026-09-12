@@ -23,6 +23,7 @@ func (m *modelEmitter) unionNames(root string) map[string]string {
 	for _, name := range []string{"Draft", "ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult", "Evidence"} {
 		used[sourceNameKey(name)] = true
 	}
+	used[sourceNameKey(m.modelDraftName())] = true
 	view := "Variant"
 	for used[sourceNameKey(view)] {
 		view += "_"
@@ -180,7 +181,8 @@ func (m *modelEmitter) unionAlternative(owner, parent, root string, variant lang
 			fmt.Fprintf(&out, "        public final %s %s() { return %s; }\n", m.javaType(arg), arguments[i], m.decode(arg, fmt.Sprintf("ModelSupport.argument(rawData(),%d)", i)))
 		}
 	}
-	draftType := root + "." + name + ".Draft"
+	draftName := m.modelDraftName()
+	draftType := root + "." + name + "." + draftName
 	for _, bypass := range []bool{false, true} {
 		suffix := ""
 		if bypass {
@@ -192,7 +194,7 @@ func (m *modelEmitter) unionAlternative(owner, parent, root string, variant lang
 		fmt.Fprintf(&out, "        public %s update%s(java.util.function.Consumer<%s> change, Budget.Limits caller) { %s draft = draft(); change.accept(draft); return fromData%s(draft.freeze(),caller); }\n", full, suffix, draftType, draftType, suffix)
 	}
 	if parent == "" {
-		fmt.Fprintf(&out, "        protected final Draft draft() { return new Draft(this); }\n        protected static Draft newDraft() { return new Draft(); }\n        public static final class Draft {\n            private final Data raw;\n            private Draft() { this.raw = null; }\n            private Draft(%s source) { this.raw = source.rawData(); }\n", full)
+		fmt.Fprintf(&out, "        protected final %s draft() { return new %s(this); }\n        protected static %s newDraft() { return new %s(); }\n        public static final class %s {\n            private final Data raw;\n            private %s() { this.raw = null; }\n            private %s(%s source) { this.raw = source.rawData(); }\n", draftName, draftName, draftName, draftName, draftName, draftName, draftName, full)
 		for i, arg := range variant.Arguments {
 			fmt.Fprintf(&out, "            private %s %s;\n            private boolean changed%d;\n", m.javaType(arg), arguments[i], i)
 		}

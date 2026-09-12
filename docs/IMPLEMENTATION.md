@@ -852,3 +852,39 @@ native formats and project workflows. The full checklist remains the release gat
   English output, analysis, schema-derived tests, versioning, Maven integration,
   CLI workflows and the full release audit are not completed by this checkpoint.
   No product tag or Maven deployment is made.
+
+## Bounded Java record construction
+
+- Regular record models now expose typed `create` and `createWithoutValidation`
+  draft factories, with default/caller budget overloads. Creation starts from
+  an empty record, stages final assigned fields in declaration order and validates
+  once. Missing required fields remain ordinary structural failures; omitted
+  optional fields stay absent in raw data, with getters exposing `Nothing`.
+  Nullable fields are not silently optional. Callback exceptions propagate.
+- Draft field encoders use bounded helpers, and records wider than 253 fields
+  use builders/raw factories instead of exceeding JVM parameter slots. Smaller
+  records retain positional constructors and bypass factories. The former
+  48,000-byte model-source rejection is removed without erasing typed getters,
+  setters, nominal inheritance or immutable snapshots.
+- Draft helper names avoid domain/contract-name collisions. A domain type or
+  contract class named `Draft` is no longer rejected wholesale; affected helpers
+  are deterministically suffixed. Union alternative names also avoid the chosen
+  helper name. Compile/run fixtures cover record and union types named `Draft`,
+  suffixed-name collisions, unnamed/Unicode/restricted-identifier packages and
+  fields colliding with new factory/helper methods.
+- Java 25 warnings-as-errors tests compile and execute record widths 0, 1, 64,
+  65, 253, 254, 260 and 1,100. Go-derived minimum budgets establish one complete
+  validation pass for construction/update at every tested width, including
+  multi-level nominal refinements. Wide getters, canonical reads, invalid
+  bypasses, escaped drafts, caller failures and dynamic parent-reference updates
+  are checked. Another 6,000 jetCheck cases exercise creation/update, bypass
+  correction, reads, extra-field retention and absent optional-field preservation
+  in language data; these do not define unimplemented native wire policies.
+- Full local race tests, vet and deterministic generated-source checks pass.
+  The final ten-second model-generation fuzz run passed 3,725,020 executions.
+  Model source generation measured 924,444 ns/op, 3,073,549 B/op and 16,118
+  allocations/op on Darwin/arm64 (Apple M5 Max), not validation throughput.
+  Latest GoPlus remains v0.158.0. Generic domain models, anonymous nested record
+  classes, remaining language/native/serde work, analysis, English output,
+  schema-derived tests, versioning, Maven and CLI integration remain required.
+  No product tag or Maven deployment is made.

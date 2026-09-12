@@ -302,7 +302,7 @@ func TestModelGenerationBoundaries(t *testing.T) {
 
 func TestModelPackageLayouts(t *testing.T) {
 	compiler, _ := javaTools(t)
-	program, err := language.Compile("type Id = String\ntype Item = { id :: Id, tags :: [String] }\ntype Child = Item\ntype Empty = {}\ntype Variant = Int\ndata Choice = A | B Id | C Variant\ntype SubChoice = Choice")
+	program, err := language.Compile("type Id = String\ntype Draft = { label :: String }\ntype Draft_ = Int\ntype Item = { id :: Id, tags :: [String], draftValue :: Draft, other :: Draft_ }\ntype Child = Item\ntype Empty = {}\ntype Variant = Int\ndata Choice = A | B Id | C Variant | Draft__ Draft\ntype SubChoice = Choice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestModelPackageLayouts(t *testing.T) {
 }
 
 func FuzzModelGeneration(f *testing.F) {
-	for _, source := range []string{unionModelContract, "data Choice = A | B Int\ntype SubChoice = Choice", "data Node = Nil | Cons Int Node", "type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"} {
+	for _, source := range []string{unionModelContract, "data Draft = A | B Int\ntype Item = { create :: Draft, newDraft :: Int }", "data Choice = A | B Int\ntype SubChoice = Choice", "data Node = Nil | Cons Int Node", "type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"} {
 		f.Add(source)
 	}
 	f.Fuzz(func(t *testing.T, source string) {

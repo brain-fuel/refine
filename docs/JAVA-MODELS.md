@@ -91,6 +91,31 @@ explicitly set fields are encoded and replaced when the callback finishes; the
 completed candidate is then validated once. A null or invalid intermediate value
 can be replaced with a valid final value in the same callback.
 
+The same typed draft supports construction:
+
+```java
+Booking booking = Booking.create(draft -> {
+    draft.setCheckIn(BigInteger.ONE);
+    draft.setCheckOut(BigInteger.TWO);
+});
+```
+
+`create(initialize[, limits])` begins with an empty record, encodes the final
+assigned fields in declaration order, and validates the complete candidate once.
+Omitted required fields fail with the ordinary structural diagnostics; optional
+fields may remain absent, with getters exposing `Nothing` without inserting a
+field into the raw payload. Nullable fields are not implicitly optional.
+`createWithoutValidation` also accepts a draft callback but still enforces
+structure and representability. Both APIs retain nominal refinement result
+types, and callback exceptions propagate unchanged.
+
+Records with up to 253 fields also retain positional constructors and bypass
+factories. Wider records use typed drafts or raw-data factories because a
+constructor plus caller budget would exceed the JVM's 255 parameter slots.
+Draft encoders are split into bounded helpers, eliminating the previous
+48,000-byte model source rejection without replacing domain fields with an
+untyped map. All widths expose the same typed getters and draft setters.
+
 The old object is unchanged if the callback or validation fails. The completed
 new object shares no mutable draft/collection state. Retaining a draft and changing
 it later cannot alter either object. No-op updates preserve the original raw
@@ -108,7 +133,10 @@ return the refined subtype and share the root record's draft shape.
 Field names that conflict with Java keywords or generated/Object APIs are given
 deterministic escaped/suffixed member names; original payload keys are preserved.
 Setter case collisions receive distinct suffixes. Case-insensitive source-name
-collisions are rejected. The generation CLI still needs complete output ownership,
+collisions are rejected. A generated record helper is normally named `Draft`;
+if that name would shadow a domain declaration or the contract class, it is
+deterministically suffixed (`Draft_`, then `Draft__`, and so on), including in
+the unnamed package. The generation CLI still needs complete output ownership,
 host-filesystem planning, project-layout detection and naming override support.
 
 ## Tagged unions and nominal refinements
@@ -180,9 +208,9 @@ Current models cover monomorphic named scalars, records, lists and aliases,
 nominal refinement chains, recursive records through named references/optional
 fields, tagged unions and their recursive/refined alternatives, and composed
 optional/nullable/result values. Generic domain declarations and anonymous nested
-record classes still reject model generation explicitly. Regular record/scalar
-model emission also retains a 48,000-byte source guard; wide regular records
-still need the bounded construction/draft emission now used for unions.
+record classes still reject model generation explicitly. Wide regular records
+and union alternatives now use bounded draft emission rather than a model
+source-length guard.
 The validator can already handle more structural
 forms than the model emitter. Unsupported predicate execution and source-size
 limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
@@ -210,6 +238,14 @@ Separate scale tests compile and execute a 1,100-alternative union, a
 260-argument constructor and its nominal refinement, and the exact 253-argument
 positional-constructor boundary. Go-derived minimum budgets prove wide draft
 creation and update each perform one complete validation pass.
+
+Regular-record scale tests compile and execute widths 0, 1, 64, 65, 253, 254,
+260 and 1,100, with exact Go-derived construction/update budgets at every width.
+They cover multi-level nominal refinements, typed getters, canonical reads,
+missing-field/bypass behavior, escaped drafts and helper-name collisions.
+Another 6,000 jetCheck cases exercise draft construction, immutable updates,
+invalid bypass correction, canonical reads and preservation of undeclared fields
+and absent optional fields in the language payload.
 
 The complete release still requires all model shapes and language execution,
 validated Jackson and Avro serde, native schema formats,

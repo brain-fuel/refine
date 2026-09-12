@@ -227,7 +227,7 @@ func TestModelGenerationBoundaries(t *testing.T){
 }
 
 func TestModelPackageLayouts(t *testing.T){
-    compiler,_:=javaTools(t);program,err:=language.Compile("type Id = String\ntype Item = { id :: Id, tags :: [String] }\ntype Child = Item\ntype Empty = {}\ntype Variant = Int\ndata Choice = A | B Id | C Variant\ntype SubChoice = Choice");if err!=nil{t.Fatal(err)}
+    compiler,_:=javaTools(t);program,err:=language.Compile("type Id = String\ntype Draft = { label :: String }\ntype Draft_ = Int\ntype Item = { id :: Id, tags :: [String], draftValue :: Draft, other :: Draft_ }\ntype Child = Item\ntype Empty = {}\ntype Variant = Int\ndata Choice = A | B Id | C Variant | Draft__ Draft\ntype SubChoice = Choice");if err!=nil{t.Fatal(err)}
     for _,namespace:=range []string{"", "δοκιμή.映像", "record.var"}{t.Run(namespace,func(t *testing.T){
         files,err:=GenerateModels(program,namespace,"Contract");if err!=nil{t.Fatal(err)}
         dir:=t.TempDir();sources:=[]string{}
@@ -238,7 +238,7 @@ func TestModelPackageLayouts(t *testing.T){
 }
 
 func FuzzModelGeneration(f *testing.F){
-    for _,source:=range []string{unionModelContract,"data Choice = A | B Int\ntype SubChoice = Choice","data Node = Nil | Cons Int Node","type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"}{f.Add(source)}
+    for _,source:=range []string{unionModelContract,"data Draft = A | B Int\ntype Item = { create :: Draft, newDraft :: Int }","data Choice = A | B Int\ntype SubChoice = Choice","data Node = Nil | Cons Int Node","type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"}{f.Add(source)}
     f.Fuzz(func(t *testing.T,source string){
         if len(source)>8192{return};program,err:=language.Compile(source);if err!=nil{return}
         first,err:=GenerateModels(program,"example","Contract");second,again:=GenerateModels(program,"example","Contract")
