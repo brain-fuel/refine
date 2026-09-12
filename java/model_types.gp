@@ -1,0 +1,98 @@
+package java
+
+import (
+    "fmt"
+    "strings"
+
+    "goforge.dev/refine/language"
+)
+
+func (m *modelEmitter) genericContext(decl language.TypeDecl){
+    m.parameters=map[string]string{};m.witnesses=map[string]string{}
+    for i,name:=range decl.Parameters{m.parameters[name]=fmt.Sprintf("T$%d",i);m.witnesses[name]=fmt.Sprintf("$type%d",i)}
+}
+func (m *modelEmitter) genericParts(decl language.TypeDecl)(types,parameters,arguments []string){
+    for _,name:=range decl.Parameters{types=append(types,m.parameters[name]);parameters=append(parameters,"ModelType<"+m.parameters[name]+"> "+m.witnesses[name]);arguments=append(arguments,m.witnesses[name])};return
+}
+func genericSuffix(types []string)string{if len(types)==0{return ""};return "<"+strings.Join(types,", ")+">"}
+func (m *modelEmitter) witness(t *language.Type)string{
+    match t.Form{
+    case language.RefinedType(_,_):unsupported(t.At,"inline-refined generic model argument witnesses remain required")
+    case language.NamedType(name):
+        if found:=m.witnesses[name];found!=""{return found}
+        if name=="Int"{return "ModelTypes.integer()"}
+        if integerType(name){method:="integer";digits:=strings.TrimPrefix(name,"Int");if strings.HasPrefix(name,"UInt"){method="unsignedInteger";digits=strings.TrimPrefix(name,"UInt")};return "ModelTypes."+method+"("+digits+"L)"}
+        switch name{case "String":return "ModelTypes.text()";case "Bool":return "ModelTypes.bool()";case "Real":return "ModelTypes.real()";case "Timestamp":return "ModelTypes.timestamp()"}
+        if _,found:=m.declarations[name];found{return "ModelTypes.for"+name+"()"}
+    case language.ListType(element):return "ModelTypes.list("+m.witness(element)+")"
+    case language.AppliedType(_,_):
+        name,args:=applied(t);parts:=[]string{};for _,arg:=range args{parts=append(parts,m.witness(arg))}
+        method:=strings.ToLower(name);if _,found:=m.declarations[name];found{method="for"+name}
+        return "ModelTypes."+method+"("+strings.Join(parts,",")+")"
+    case _:
+    };unsupported(t.At,"unsupported model type witness");return ""
+}
+func (m *modelEmitter) modelTypes()string{
+    var out strings.Builder;out.WriteString(modelTypesJava)
+    for _,decl:=range m.module.Types{
+        m.genericContext(decl);types,parameters,arguments:=m.genericParts(decl);suffix:=genericSuffix(types);full:=m.qualified(decl.Name)+suffix
+        prefix:="";if suffix!=""{prefix=suffix+" "}
+        rawType:="ModelType.named("+javaQuote(decl.Name)+")"
+        for _,arg:=range arguments{rawType="ModelType.applied("+rawType+",java.util.Objects.requireNonNull("+arg+").type)"}
+        callArgs:=append(append([]string{},arguments...),"raw")
+        fmt.Fprintf(&out,"    public static %sModelType<%s> for%s(%s) { return ModelType.of(%s,(value,where) -> ModelSupport.nonNull(value,where).rawData(),raw -> %s.fromDataWithoutValidation(%s)); }\n",prefix,full,decl.Name,strings.Join(parameters,","),rawType,m.qualified(decl.Name),strings.Join(callArgs,","))
+    }
+    out.WriteString("}\n");return out.String()
+}
+
+const modelTypeJava = `
+/** A closed payload type paired with its exact Java representation. */
+public final class ModelType<T> {
+    final ContractRuntime.Type type;
+    private final java.util.function.BiFunction<T,String,Data> encoder;
+    private final java.util.function.Function<Data,T> decoder;
+    private ModelType(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder) {
+        this.type = java.util.Objects.requireNonNull(type);
+        this.encoder = java.util.Objects.requireNonNull(encoder); this.decoder = java.util.Objects.requireNonNull(decoder);
+    }
+    static <T> ModelType<T> of(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder) { return new ModelType<>(type,encoder,decoder); }
+    static ContractRuntime.Type named(String name) { return new ContractRuntime.Type("named",name,java.util.List.of(),java.util.List.of(),java.util.List.of()); }
+    static ContractRuntime.Type applied(ContractRuntime.Type fn, ContractRuntime.Type arg) { return new ContractRuntime.Type("applied","",java.util.List.of(fn,arg),java.util.List.of(),java.util.List.of()); }
+    static ContractRuntime.Type list(ContractRuntime.Type arg) { return new ContractRuntime.Type("list","",java.util.List.of(arg),java.util.List.of(),java.util.List.of()); }
+    Data encode(T input, String path) { return encoder.apply(input,path); }
+    T decode(Data input) { return decoder.apply(input); }
+    public Validation.Outcome validateData(Data input) { return validateData(input,Budget.Limits.defaults()); }
+    public Validation.Outcome validateData(Data input,Budget.Limits caller) { return @CONTRACT@.modelValidate(type,input,caller,true); }
+}
+`
+
+const modelTypesJava = `
+/** Witnesses are generated from checked declarations, never parsed schema strings. */
+public final class ModelTypes {
+    private ModelTypes() {}
+    public static ModelType<java.math.BigInteger> integer() { return number("Int"); }
+    public static ModelType<java.math.BigInteger> integer(long bits) { checkWidth(bits); return number("Int"+bits); }
+    public static ModelType<java.math.BigInteger> unsignedInteger(long bits) { checkWidth(bits); return number("UInt"+bits); }
+    private static void checkWidth(long bits) { if (bits <= 0 || bits > 0xffffffffL) throw new IllegalArgumentException("integer width must be between 1 and 4294967295"); }
+    private static ModelType<java.math.BigInteger> number(String name) { return ModelType.of(ModelType.named(name),ModelSupport::integer,raw -> ((Data.Number)raw).value().numerator()); }
+    public static ModelType<String> text() { return ModelType.of(ModelType.named("String"),ModelSupport::text,raw -> ((Data.Text)raw).value()); }
+    public static ModelType<Boolean> bool() { return ModelType.of(ModelType.named("Bool"),ModelSupport::bool,raw -> ((Data.Bool)raw).value()); }
+    public static ModelType<Rational> real() { return ModelType.of(ModelType.named("Real"),ModelSupport::real,raw -> ((Data.Number)raw).value()); }
+    public static ModelType<Timestamp> timestamp() { return ModelType.of(ModelType.named("Timestamp"),ModelSupport::timestamp,raw -> Timestamp.parse(((Data.Text)raw).value())); }
+    public static <T> ModelType<java.util.List<T>> list(ModelType<T> element) {
+        java.util.Objects.requireNonNull(element);
+        return ModelType.of(ModelType.list(element.type),(value,where) -> ModelSupport.list(value,element::encode,where),raw -> ModelSupport.list(raw,element::decode));
+    }
+    public static <T> ModelType<ModelMaybe<T>> maybe(ModelType<T> element) {
+        java.util.Objects.requireNonNull(element);
+        return ModelType.of(ModelType.applied(ModelType.named("Maybe"),element.type),(value,where) -> ModelSupport.maybe(value,element::encode,where),raw -> ModelSupport.maybe(raw,element::decode));
+    }
+    public static <T> ModelType<ModelNullable<T>> nullable(ModelType<T> element) {
+        java.util.Objects.requireNonNull(element);
+        return ModelType.of(ModelType.applied(ModelType.named("Nullable"),element.type),(value,where) -> ModelSupport.nullable(value,element::encode,where),raw -> ModelSupport.nullable(raw,element::decode));
+    }
+    public static <L,R> ModelType<ModelResult<L,R>> result(ModelType<L> left, ModelType<R> right) {
+        java.util.Objects.requireNonNull(left); java.util.Objects.requireNonNull(right);
+        return ModelType.of(ModelType.applied(ModelType.applied(ModelType.named("Result"),left.type),right.type),(value,where) -> ModelSupport.result(value,left::encode,right::encode,where),raw -> ModelSupport.result(raw,left::decode,right::decode));
+    }
+`

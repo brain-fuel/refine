@@ -202,13 +202,70 @@ shadow runtime helpers, top-level domain types or each other. For example,
 `Token`. If a domain declaration is named `Variant`, the closed view is named
 `Variant_` (with further suffixes as needed); its method remains `variant()`.
 
+## Generic records and wrappers
+
+Generic roots retain typed fields and explicit immutable witnesses for their
+type arguments. Witnesses distinguish constraints that Java erases: `Int` and
+`UInt8` both use `BigInteger`, for example. Empty collections and phantom
+parameters do not require guessing a type from a runtime value.
+
+```haskell
+type Box a = { value :: a, note :: Maybe String }
+type Items a = [a]
+type Node a = { value :: a, next :: Maybe (Node a) }
+```
+
+```java
+ModelType<Age> ageType = ModelTypes.forAge();
+Box<Age> box = new Box<>(ageType, new Age(BigInteger.ONE),
+    new ModelMaybe.Nothing<>());
+Box<Age> changed = box.update(draft -> draft.setValue(new Age(BigInteger.TWO)));
+Box<Age> parsed = Box.read(ageType, "{value = 21}");
+Items<Age> empty = new Items<>(ageType, List.of());
+ModelType<Box<Age>> boxType = ModelTypes.forBox(ageType);
+Validation.Outcome outcome = boxType.validateData(candidate);
+```
+
+`ModelTypes.forName(...)` is generated for every emitted domain declaration.
+Builtin witnesses include `integer()`, signed `integer(bits)`,
+`unsignedInteger(bits)`, `text()`, `bool()`, `real()` and `timestamp()`;
+`list`, `maybe`, `nullable` and `result` compose witnesses. Integer-width
+factories accept the language's positive unsigned-32-bit width range; payload
+validation still enforces resource/backend limits rather than promising support
+for enormous integer allocations. Witnesses have private constructors and no
+public arbitrary-name, schema-parser, predicate or encoder/decoder factory.
+They belong to the generated package's checked contract.
+
+Generic constructors, static factories and reads take one witness per declared
+parameter, in declaration order, before ordinary arguments. Caller budgets remain
+the final optional argument. Instances retain witnesses for validation, typed
+getters and atomic updates. Normal construction, raw-data factories and reads
+validate the instantiated target without a synthetic alias; bypasses skip only
+predicates. Recursive record getters reconstruct structurally checked typed views
+without executing predicates, just like monomorphic getters.
+
+Generic record drafts retain their field types (`Box.Draft<Age>`). Positional
+construction is available when fields plus witnesses total at most 253; wider
+records use typed draft factories. The current backend explicitly rejects more
+than 250 type parameters. Generic scalar, list, optional/result wrappers,
+phantom parameters, named refined arguments and nested generic record fields are
+supported. No public field is erased to `Object` or `Data`.
+
+Generic tagged unions, instantiated nominal parents (including closed aliases
+such as `type AgeBox = Box Age`), and inline-refined generic argument witnesses
+still reject generation atomically. Named argument refinements are supported:
+`Box Age` retains `Age` and its predicate. Direct anonymous field refinements
+also remain enforced; the unsupported witness case is an argument such as
+`Box (Int where it > 0)`. These are remaining implementation gates, not a change
+to the language specification.
+
 ## Coverage and remaining scope
 
 Current models cover monomorphic named scalars, records, lists and aliases,
 nominal refinement chains, recursive records through named references/optional
 fields, tagged unions and their recursive/refined alternatives, and composed
-optional/nullable/result values. Generic domain declarations and anonymous nested
-record classes still reject model generation explicitly. Wide regular records
+optional/nullable/result values, plus the generic roots described above.
+Anonymous nested record classes still reject model generation explicitly. Wide regular records
 and union alternatives now use bounded draft emission rather than a model
 source-length guard.
 The validator can already handle more structural
@@ -218,7 +275,8 @@ limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
 Closed generic validation/read targets are now available through Go's
 `Program.PayloadType` and Java's `GenerateValidatorWithTypes` registration API.
 This supplies checked target metadata without an extra named-alias validation
-layer; it is not yet generic Java model emission or a typed model witness API.
+layer. `GenerateModels` additionally emits the typed generic-root models and
+witnesses described above; validator-only generation does not emit them.
 
 Model predicates may call the generated named/recursive/higher-order function
 engine. Those calls run under the same construction/update validation budget;
@@ -251,6 +309,15 @@ missing-field/bypass behavior, escaped drafts and helper-name collisions.
 Another 6,000 jetCheck cases exercise draft construction, immutable updates,
 invalid bypass correction, canonical reads and preservation of undeclared fields
 and absent optional fields in the language payload.
+
+The generic suite adds 3,600 complete Go/Java reports across validation,
+construction, bypass and read budget boundaries, plus 6,000 JetCheck cases for
+immutable updates, invalid bypasses and recursive typed records. Negative Java
+compilation checks distinguish unrelated nominal arguments and prevent public
+witness/private-raw construction. Generic scale tests cover 0, 1, 64, 65, 252,
+253 and 1,100 fields, including the positional boundary after reserving a witness.
+Package tests compile generic fields in unnamed, Unicode and contextual-keyword
+packages with all Java warnings treated as errors.
 
 The complete release still requires all model shapes and language execution,
 validated Jackson and Avro serde, native schema formats,

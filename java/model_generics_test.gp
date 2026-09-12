@@ -1,0 +1,210 @@
+package java
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+    "time"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+const genericModelContract = `
+type Age = Int where it >= 0 @code "age.nonnegative"
+type OtherAge = Int where it >= 0
+type AdultAge = Age where it >= 18
+type Box a = { value :: a, note :: Maybe String }
+type Node a = { value :: a, next :: Maybe (Node a) }
+type Items a = [a]
+type Identity a = a
+type Optional a = Maybe a
+type Answer a b = Result a b
+type Phantom a = { label :: String }
+type Range a = { payload :: a, start :: Int, end :: Int }
+  where it.start < it.end @code "range.order" @message "Start must precede end"
+type Combined = { box :: Box Age, items :: Items (Box UInt8) }
+type Fixed a = { value :: Int where it > 0, payload :: a }
+type Matrix a = { rows :: [Box [a]] }
+type Strange a b = { class :: a, class_ :: b, rawData :: a, value :: b }
+data Choice = None | Some Age
+type ChoiceBox a = { choice :: Choice, payload :: a }
+type Huge = { boxes :: [Box UInt4294967295] }
+type Rendered a = { value :: a, text :: String } where show it.value == it.text
+`
+
+func TestGeneratedGenericModels(t *testing.T){
+    compiler,vm:=javaTools(t);dependencies:=jetCheckClasspath(t)
+    program,err:=language.Compile(genericModelContract);if err!=nil{t.Fatal(err)}
+    files,err:=GenerateModels(program,"example.generics","Contract");if err!=nil{t.Fatal(err)}
+    dir:=t.TempDir();sources:=[]string{}
+    for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harness:=filepath.Join(dir,"GenericModels.java");if err:=os.WriteFile(harness,[]byte(genericModelHarnessJava),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",dependencies,"-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("generic javac: %v\n%s",err,output)}
+    target,err:=program.PayloadType("Box Age");if err!=nil{t.Fatal(err)}
+    vectors:=[]vector{}
+    for _,n:=range []int64{-1,0,1}{for limit:=uint64(0);limit<300;limit++{for _,mode:=range []string{"validate","construct","bypass","read"}{
+        data:=testRecord(value.DataField{Name:"value",Value:testNumber(fmt.Sprint(n))},value.DataField{Name:"future",Value:testText("kept")})
+        limits:=validation.Limits{Total:limit};var report validation.Report
+        if mode=="read"{shown,err:=language.ShowDataWithoutValidation(data,validation.Limits{});if err!=nil{t.Fatal(err)};_,report=target.ReadData(shown,limits)}else if mode=="bypass"{report=target.ValidateDataWithoutRefinements(data,limits)}else{report=target.ValidateData(data,limits)}
+        vectors=append(vectors,vector{fmt.Sprintf("%s\t%d\t%d",mode,n,limit),reportLine(report)})
+    }}}
+    var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input);input.WriteByte('\n')}
+    ctx,cancel:=context.WithTimeout(context.Background(),3*time.Minute);defer cancel();command:=exec.CommandContext(ctx,vm,"-Xss256k","-cp",classes+string(os.PathListSeparator)+dependencies,"GenericModels");command.Stdin=strings.NewReader(input.String());var stderr bytes.Buffer;command.Stderr=&stderr
+    output,err:=command.Output();if err!=nil{t.Fatalf("generic Java: %v\n%s",err,stderr.String())}
+    lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n");if len(lines)!=len(vectors){t.Fatalf("expected %d reports, got %d: %s",len(vectors),len(lines),output)}
+    for i,v:=range vectors{if lines[i]!=v.expected{t.Fatalf("%s\nJava %s\nGo   %s",v.input,lines[i],v.expected)}}
+    for i,source:=range []string{
+        `class Wrong { Box<Age> value = new Box<>(ModelTypes.forOtherAge(),new OtherAge(java.math.BigInteger.ONE),new ModelMaybe.Nothing<>()); }`,
+        `class Wrong { ModelType<Age> value = ModelTypes.forOtherAge(); }`,
+        `class Wrong { ModelType<Age> value = new ModelType<>(null,null,null); }`,
+        `class Wrong { Box<Age> value = new Box<>(ModelTypes.forAge(),null,true); }`,
+    }{
+        negative:=filepath.Join(dir,"Wrong.java");if err:=os.WriteFile(negative,[]byte("import example.generics.*; "+source),0644);err!=nil{t.Fatal(err)}
+        if output,err:=exec.Command(compiler,"--release","25","-cp",classes,negative).CombinedOutput();err==nil{t.Fatalf("unsafe generic API %d compiled: %s",i,output)}
+    }
+    t.Logf("%d complete Go/Java reports and 6000 generic jetCheck cases passed",len(vectors))
+}
+
+const genericModelHarnessJava = `
+import example.generics.*;
+import java.math.BigInteger;
+import java.util.List;
+import java.util.Locale;
+import java.util.HexFormat;
+import java.nio.charset.StandardCharsets;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import org.jetbrains.jetCheck.Generator;
+import org.jetbrains.jetCheck.PropertyChecker;
+public final class GenericModels {
+    static BigInteger n(long value) { return BigInteger.valueOf(value); }
+    static Data number(long value) { return new Data.Number(Rational.of(value)); }
+    static Data box(long value) { return new Data.Struct(List.of(new Data.Field("value",number(value)),new Data.Field("future",new Data.Text("kept")))); }
+    static String hex(String text) { return HexFormat.of().formatHex(text.getBytes(StandardCharsets.UTF_8)); }
+    static void require(boolean condition) { if(!condition)throw new AssertionError(); }
+    static void rejects(Runnable action) { try { action.run(); throw new AssertionError("accepted invalid value"); } catch(ValidationException expected) {} }
+    public static void main(String[] args) throws Exception {
+        var age = ModelTypes.forAge(); var integer = ModelTypes.integer();
+        var input=new BufferedReader(new InputStreamReader(System.in,StandardCharsets.UTF_8));String line;
+        while((line=input.readLine())!=null){
+            String[] f=line.split("\t");long value=Long.parseLong(f[1]);var limits=new Budget.Limits(Long.parseLong(f[2]),0);Validation.Outcome outcome;
+            try {
+                if(f[0].equals("read")) { var result=Box.read(age,"{value = "+value+", future = \"kept\"}",limits); require(result.value().value().equals(n(value))); }
+                else if(f[0].equals("bypass")) { var result=Box.fromDataWithoutValidation(age,box(value),limits);require(result.value().value().equals(n(value))); }
+                else if(f[0].equals("construct")) { var result=Box.fromData(age,box(value),limits);require(result.value().value().equals(n(value))); }
+                else { outcome=Box.validateData(age,box(value),limits); print(outcome); continue; }
+                outcome=new Validation.Valid();
+            } catch(ValidationException failure) { outcome=failure.outcome(); }
+            print(outcome);
+        }
+        var valid=new Box<>(age,new Age(n(21)),new ModelMaybe.Nothing<>());
+        require(valid.value().value().equals(n(21)));require(valid.note() instanceof ModelMaybe.Nothing<?>);
+        rejects(()->new Box<>(age,Age.createWithoutValidation(n(-1)),new ModelMaybe.Nothing<>()));
+        var unsafe=Box.createWithoutValidation(age,Age.createWithoutValidation(n(-1)),new ModelMaybe.Nothing<>());
+        require(unsafe.value().value().equals(n(-1)));require(unsafe.validate().state()==Validation.State.INVALID);
+        rejects(()->new Box<>(age,null,new ModelMaybe.Nothing<>()));
+        rejects(()->Box.fromDataWithoutValidation(age,new Data.Text("wrong")));
+        require(Box.validateData(age,null).state()==Validation.State.INVALID);
+        rejects(()->Box.read(age,"{value = -1}"));rejects(()->Box.read(age,null));
+        Data raw=box(5);var imported=Box.fromData(age,raw);require(imported.rawData()==raw);require(imported.update(d->{}).rawData()==raw);
+        var changed=imported.update(d->d.setValue(new Age(n(6))));require(imported.value().value().equals(n(5)));require(changed.value().value().equals(n(6)));
+        require(((Data.Struct)changed.rawData()).fields().getLast().name().equals("future"));
+        require(((Data.Struct)changed.rawData()).fields().size()==2);
+        rejects(()->Box.create(age,d->{}));
+        require(Box.create(age,d->d.setValue(new Age(n(1)))).note() instanceof ModelMaybe.Nothing<?>);
+        var range=new Range<>(age,new Age(n(21)),n(1),n(2));
+        var updated=range.update(d->{ d.setStart(n(3));d.setEnd(n(4));d.setPayload(new Age(n(22))); });
+        require(updated.start().equals(n(3)));require(range.start().equals(n(1)));
+        rejects(()->range.update(d->d.setStart(n(3))));
+        require(range.updateWithoutValidation(d->d.setStart(n(3))).validate().state()==Validation.State.INVALID);
+        var escaped=new java.util.concurrent.atomic.AtomicReference<Range.Draft<Age>>();
+        var frozen=range.update(d->{escaped.set(d);d.setEnd(n(4));});escaped.get().setEnd(n(-1));require(frozen.end().equals(n(4)));
+        try { range.update(d->{throw new IllegalStateException("caller");});throw new AssertionError(); }catch(IllegalStateException expected){require(expected.getMessage().equals("caller"));}
+        var list=new java.util.ArrayList<Age>();list.add(new Age(n(1)));var items=new Items<>(age,list);list.clear();require(items.value().size()==1);
+        try {items.value().clear();throw new AssertionError();}catch(UnsupportedOperationException expected){}
+        var empty=new Items<>(age,List.of());require(empty.validate().state()==Validation.State.VALID);
+        require(new Phantom<>(age,"phantom").label().equals("phantom"));
+        require(new Identity<>(age,new Age(n(2))).value().value().equals(n(2)));
+        require(new Optional<>(age,new ModelMaybe.Nothing<>()).value() instanceof ModelMaybe.Nothing<?>);
+        var answer=new Answer<>(ModelTypes.text(),age,new ModelResult.Ok<String,Age>(new Age(n(2))));
+        require(answer.value() instanceof ModelResult.Ok<String,Age>);
+        var width=ModelTypes.unsignedInteger(8);rejects(()->new Box<>(width,n(256),new ModelMaybe.Nothing<>()));
+        rejects(()->Box.createWithoutValidation(width,n(256),new ModelMaybe.Nothing<>()));
+        require(new Box<>(integer,n(256),new ModelMaybe.Nothing<>()).value().equals(n(256)));
+        var combined=new Combined(valid,new Items<>(ModelTypes.forBox(width),List.of(new Box<>(width,n(255),new ModelMaybe.Nothing<>()))));
+        require(combined.items().value().getFirst().value().equals(n(255)));
+        var matrix=new Matrix<>(age,List.of(new Box<>(ModelTypes.list(age),List.of(new Age(n(1))),new ModelMaybe.Nothing<>())));
+        require(matrix.rows().getFirst().value().getFirst().value().equals(n(1)));
+        rejects(()->new Fixed<>(age,n(0),new Age(n(1))));
+        require(new ChoiceBox<>(integer,new Choice.Some(new Age(n(1))),n(2)).choice() instanceof Choice.Some);
+        require(ModelTypes.forBox(age).validateData(box(-1)).state()==Validation.State.INVALID);
+        require(ModelTypes.forBox(integer).validateData(box(-1)).state()==Validation.State.VALID);
+        require(ModelTypes.forAdultAge().validateData(number(17)).state()==Validation.State.INVALID);
+        for(int bits:new int[]{0,-1}){try{ModelTypes.integer(bits);throw new AssertionError();}catch(IllegalArgumentException expected){}}
+        require(new Huge(List.of()).boxes().isEmpty());
+        require(new Rendered<>(age,new Age(n(21)),"21").validate().state()==Validation.State.VALID);
+        rejects(()->new Rendered<>(age,new Age(n(21)),"22"));
+        require(new Rendered<>(ModelTypes.list(age),List.of(new Age(n(21))),"[21]").validate().state()==Validation.State.VALID);
+        require(ModelTypes.unsignedInteger(0xffffffffL).validateData(number(1)).state()==Validation.State.INDETERMINATE);
+        try{ModelTypes.integer(0x100000000L);throw new AssertionError();}catch(IllegalArgumentException expected){}
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            long value=seed;var bypass=Box.fromDataWithoutValidation(age,box(value));
+            require(bypass.value().value().equals(n(value)));require((bypass.validate().state()==Validation.State.VALID)==(value>=0));
+            if(value>=0){var checked=Box.read(age,bypass.showWithoutValidation());require(checked.value().value().equals(n(value)));require(checked.note() instanceof ModelMaybe.Nothing<?>);require(((Data.Struct)checked.rawData()).fields().stream().noneMatch(f->f.name().equals("future")));}
+            else rejects(()->Box.read(age,bypass.showWithoutValidation()));return true;
+        });
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            long start=seed;var original=new Range<>(integer,n(seed),n(start),n(start+1));
+            var result=original.update(d->{d.setStart(n(start+2));d.setEnd(n(start+3));});
+            require(original.start().equals(n(start)));require(result.end().equals(n(start+3)));return true;
+        });
+        PropertyChecker.customized().withIterationCount(2000).forAll(Generator.integers(),seed->{
+            int depth=Math.floorMod(seed,20);Node<Age> node=new Node<>(age,new Age(n(0)),new ModelMaybe.Nothing<>());
+            for(int i=0;i<depth;i++)node=new Node<>(age,new Age(n(i+1)),new ModelMaybe.Just<>(node));
+            var decoded=Node.read(age,node.showWithoutValidation());require(decoded.showWithoutValidation().equals(node.showWithoutValidation()));
+            for(int i=depth;i>=0;i--){require(decoded.value().value().equals(n(i)));if(i>0)decoded=((ModelMaybe.Just<Node<Age>>)decoded.next()).value();}
+            return true;
+        });
+    }
+    static void print(Validation.Outcome outcome) {
+        var report=new StringBuilder(outcome.state().name().toLowerCase(Locale.ROOT)).append('|').append(outcome.incomplete());
+        for(var d:outcome.diagnostics())report.append('|').append(hex(d.code())).append(',').append(hex(String.join(";",d.paths()))).append(',').append(hex(d.predicate())).append(',').append(hex(d.message()));
+        System.out.println(report);
+    }
+}
+`
+
+func TestGenericModelJVMScale(t *testing.T){
+    compiler,vm:=javaTools(t);widths:=[]int{0,1,64,65,252,253,1100}
+    var schema,harness strings.Builder
+    schema.WriteString("type Age = Int where it >= 0\n")
+    harness.WriteString("import example.scale.*; import java.math.BigInteger; public final class GenericScale { static void require(boolean test){if(!test)throw new AssertionError();} public static void main(String[] args){\n")
+    for _,width:=range widths{
+        fmt.Fprintf(&schema,"type Size%d a = {",width);for i:=0;i<width;i++{if i>0{schema.WriteString(",")};fmt.Fprintf(&schema," f%d :: a",i)};schema.WriteString(" }\n")
+        fmt.Fprintf(&harness,"var value%d = Size%d.create(ModelTypes.forAge(), draft -> {\n",width,width)
+        for i:=0;i<width;i++{fmt.Fprintf(&harness,"draft.setF%d(new Age(BigInteger.valueOf(%d)));\n",i,i)};harness.WriteString("});\n")
+        fmt.Fprintf(&harness,"require(value%d.validate().state()==Validation.State.VALID); require(value%d.update(d -> {}).rawData()==value%d.rawData());\n",width,width,width)
+        if width>0{fmt.Fprintf(&harness,"require(value%d.f%d().value().equals(BigInteger.valueOf(%d)));\n",width,width-1,width-1)}
+        fmt.Fprintf(&harness,"require(Size%d.read(ModelTypes.forAge(),value%d.showWithoutValidation()).validate().state()==Validation.State.VALID);\n",width,width)
+        if width<=252{
+            args:=[]string{"ModelTypes.forAge()"};for i:=0;i<width;i++{args=append(args,"new Age(BigInteger.ZERO)")}
+            fmt.Fprintf(&harness,"require(new Size%d<>(%s).validate().state()==Validation.State.VALID);\n",width,strings.Join(args,","))
+        }else{fmt.Fprintf(&harness,"require(Size%d.class.getConstructors().length==0);\n",width)}
+    }
+    harness.WriteString("} }\n")
+    program,err:=language.Compile(schema.String());if err!=nil{t.Fatal(err)};files,err:=GenerateModels(program,"example.scale","Contract");if err!=nil{t.Fatal(err)}
+    dir:=t.TempDir();sources:=[]string{}
+    for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    target:=filepath.Join(dir,"GenericScale.java");if err:=os.WriteFile(target,[]byte(harness.String()),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)
+    classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("generic scale javac: %v\n%s",err,output)}
+    if output,err:=exec.Command(vm,"-Xss256k","-cp",classes,"GenericScale").CombinedOutput();err!=nil{t.Fatalf("generic scale Java: %v\n%s",err,output)}
+}

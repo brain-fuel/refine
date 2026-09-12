@@ -956,3 +956,43 @@ native formats and project workflows. The full checklist remains the release gat
   `-Xss256k`. The initial consumer compile failure was its own incorrect plain-Go
   construction syntax for an exported GoPlus enum variant; correcting the
   harness required no production changes. No product tag or Maven deploy occurred.
+
+## Typed generic Java roots
+
+- `GenerateModels` now emits generic record/scalar/list/optional/result roots,
+  including phantom parameters, recursive typed records and nested applications
+  in monomorphic models. `ModelType<T>` and generated `ModelTypes.forName(...)`
+  factories retain checked argument metadata alongside Java representations.
+  Named refined arguments remain nominal; builtins and collection/optional/result
+  witnesses compose without parsing schemas or accepting user callbacks.
+- Generic constructors, raw-data factories, reads and draft creation take
+  witnesses before ordinary arguments; instances retain them for validation,
+  getters and immutable atomic updates. Validation/read target the application
+  directly, with no synthetic alias. Bypasses retain structural checks; getters
+  reconstruct structural-only views as in existing monomorphic models.
+- Generic records reserve JVM parameter slots for witnesses. Positional APIs
+  remain available when witnesses plus fields total at most 253; larger records
+  retain typed drafts/getters and bounded encoder helpers. More than 250 type
+  parameters reject explicitly. Named-source collision checks include the two
+  witness helpers. Public witness and unchecked raw constructors are inaccessible.
+- Tests pass 3,600 complete Go/Java reports across normal validation,
+  construction, bypass and read with exact total-budget boundaries, plus 6,000
+  JetCheck cases for invalid bypasses, atomic changes and recursive record views.
+  They cover generic predicate scope (`show`), fixed-width witnesses sharing a
+  Java representation, phantom/empty arguments, nested generic fields, mutable
+  input isolation, escaped drafts, callbacks, missing/extra fields and negative
+  nominal-argument compilation. An initial test assumed raw equality after
+  canonical read; it was corrected to assert the existing checked-view policy
+  that removes extras and fills optional fields, without changing production read.
+- Java 25 warnings-as-errors compile/run checks pass for generic record widths
+  0, 1, 64, 65, 252, 253 and 1,100, and unnamed/Unicode/contextual-keyword package
+  layouts. Full local race tests, vet and deterministic GoPlus regeneration pass.
+  A ten-second model-generation fuzz run passed 3,534,173 executions. Baseline
+  model generation measured 1,033,835 ns/op, 3,132,456 B/op and 16,638 allocations
+  per operation on Darwin/arm64 (Apple M5 Max), not payload throughput.
+- Generic tagged unions, instantiated nominal inheritance (including closed
+  generic aliases), inline-refined argument witnesses and anonymous nested model
+  records still reject generation atomically. These remain release requirements,
+  alongside the outstanding native/serde/language/English/analysis/versioning/
+  generated-test/Maven/CLI work. No release gate is checked off, no product tag
+  or Maven deployment is made, and GoPlus remains at latest v0.158.0.

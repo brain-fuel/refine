@@ -40,7 +40,7 @@ func javaQuote(text string) string {
 func javaList(items []string)string{return "java.util.List.of("+strings.Join(items,",")+")"}
 
 func javaClassName(className string)error {
-    reserved:=" Data ContractRuntime Rational TextCodec Timestamp RegexProgram Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
+    reserved:=" Data ContractRuntime Rational TextCodec Timestamp RegexProgram Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult ModelType ModelTypes record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
     if className==""||strings.Contains(className,".")||strings.Contains(reserved," "+className+" "){return fmt.Errorf("invalid or reserved Java class name: %s",className)}
     return packageName(className)
 }
@@ -157,6 +157,8 @@ public final class %s {
     private %s() {}
     private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = definitions();
     private static final java.util.Map<String, ContractRuntime.FunctionDef> FUNCTIONS = %s;
+    static Validation.Outcome modelValidate(ContractRuntime.Type type, Data input, Budget.Limits caller, boolean refinements) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,caller,refinements); }
+    static ContractRuntime.ReadResult modelRead(ContractRuntime.Type type, String text, Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,caller); }
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
     public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }

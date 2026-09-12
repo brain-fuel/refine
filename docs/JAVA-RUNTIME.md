@@ -148,10 +148,11 @@ alias layer. Failed reads expose no candidate; successful reads return the check
 view, including ordinary extra-field removal and optional-field filling in
 language data. Structural bypasses still enforce representability.
 
-Java receives static metadata, not a schema/type-expression parser. This API
-enables instantiated validation targets but does **not** yet implement generic
-Java domain classes or the runtime type witnesses they need. Those remain required
-in [the model backend](JAVA-MODELS.md). No serde or Maven publication is implied.
+Java receives static metadata, not a schema/type-expression parser. This
+validator-only API emits no domain classes. `GenerateModels` additionally emits
+[generic record/wrapper models and typed witnesses](JAVA-MODELS.md), with generic
+inheritance, generic unions and inline-refined argument witnesses still required.
+No serde or Maven publication is implied.
 
 Supported structural forms include records, aliases, lists, generic/recursive
 tagged unions, `Maybe`, `Nullable`, `Result`, Bool/String, arbitrary integers and

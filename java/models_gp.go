@@ -31,6 +31,8 @@ type modelEmitter struct {
 	unionViews   map[string]string
 	locals       map[string]bool
 	next         int
+	parameters   map[string]string
+	witnesses    map[string]string
 }
 
 func unrefined(t *language.Type) *language.Type {
@@ -127,6 +129,9 @@ func (m *modelEmitter) javaType(t *language.Type) string {
 	case language.NamedType:
 		name := __gp_m4.Name
 
+		if parameter := m.parameters[name]; parameter != "" {
+			return parameter
+		}
 		if integerType(name) {
 			return "java.math.BigInteger"
 		}
@@ -159,7 +164,10 @@ func (m *modelEmitter) javaType(t *language.Type) string {
 		case "Result":
 			javaName = "ModelResult"
 		default:
-			unsupported(t.At, "parameterized domain models remain required")
+			if _, found := m.declarations[name]; !found {
+				unsupported(t.At, "unknown parameterized domain model")
+			}
+			javaName = m.qualified(name)
 		}
 		types := []string{}
 		for _, arg := range args {
@@ -179,6 +187,9 @@ func (m *modelEmitter) encode(t *language.Type, input, location string) string {
 	case language.NamedType:
 		name := __gp_m5.Name
 
+		if witness := m.witnesses[name]; witness != "" {
+			return witness + ".encode(" + input + "," + location + ")"
+		}
 		method := ""
 		if integerType(name) {
 			method = "integer"
@@ -209,6 +220,9 @@ func (m *modelEmitter) encode(t *language.Type, input, location string) string {
 		name, args := applied(t)
 		m.javaType(t)
 		method := strings.ToLower(name)
+		if _, found := m.declarations[name]; found {
+			return "ModelSupport.nonNull(" + input + "," + location + ").rawData()"
+		}
 		pieces := []string{input}
 		for _, arg := range args {
 			item, where := m.fresh(), m.fresh()
@@ -227,6 +241,9 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 	case language.NamedType:
 		name := __gp_m6.Name
 
+		if witness := m.witnesses[name]; witness != "" {
+			return witness + ".decode(" + input + ")"
+		}
 		if integerType(name) {
 			return "((Data.Number)" + input + ").value().numerator()"
 		}
@@ -254,6 +271,9 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 		for _, arg := range args {
 			item := m.fresh()
 			pieces = append(pieces, item+" -> "+m.decode(arg, item))
+		}
+		if _, found := m.declarations[name]; found {
+			return m.witness(t) + ".decode(" + input + ")"
 		}
 		return "ModelSupport." + strings.ToLower(name) + "(" + strings.Join(pieces, ",") + ")"
 	default:
@@ -520,7 +540,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	for _, file := range files {
 		sourceNames[sourceNameKey(path.Base(file.Path))] = true
 	}
-	for _, name := range []string{"ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult"} {
+	for _, name := range []string{"ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult", "ModelType", "ModelTypes"} {
 		sourceNames[sourceNameKey(name+".java")] = true
 	}
 	for _, decl := range m.module.Types {
@@ -535,28 +555,42 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 			unsupported(decl.At, "model source names collide on a case-insensitive filesystem")
 		}
 		sourceNames[folded] = true
-		if len(decl.Parameters) > 0 {
-			unsupported(decl.At, "parameterized domain model emission remains required")
-		}
 		m.declarations[decl.Name] = decl
 	}
 	for _, decl := range m.module.Types {
+		if len(decl.Parameters) > 0 && decl.Body == nil {
+			unsupported(decl.At, "generic tagged-union model emission remains required")
+		}
 		if decl.Body == nil {
 			continue
 		}
-		switch __gp_m9 := any(unrefined(decl.Body).Form).(type) {
+		m.genericContext(decl)
+		base := unrefined(decl.Body)
+		switch any(base.Form).(type) {
+		case language.AppliedType:
+			parent, _ := applied(base)
+			if _, found := m.declarations[parent]; found {
+				unsupported(decl.At, "instantiated nominal parent model emission remains required")
+			}
+		default:
+		}
+		switch __gp_m10 := any(unrefined(decl.Body).Form).(type) {
 		case language.NamedType:
-			parent := __gp_m9.Name
+			parent := __gp_m10.Name
 			if _, found := m.declarations[parent]; found {
 				m.parents[decl.Name] = parent
 				m.children[parent] = append(m.children[parent], decl.Name)
 			}
 		default:
 		}
+		if len(decl.Parameters) > 0 && m.parents[decl.Name] != "" {
+			unsupported(decl.At, "generic nominal parent model emission remains required")
+		}
 		m.shape(decl.Name)
 	}
 	// Populate every field spelling before allocating lambda-local names.
 	for _, decl := range m.module.Types {
+		m.genericContext(decl)
 		root := decl.Name
 		for m.parents[root] != "" {
 			root = m.parents[root]
@@ -586,13 +620,16 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	support := []struct {
 		name string
 		body string
-	}{{"ModelSupport", fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName, contractName)}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}}
+	}{{"ModelSupport", fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName, contractName)}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}, {"ModelType", strings.ReplaceAll(modelTypeJava, "@CONTRACT@", contractName)}, {"ModelTypes", m.modelTypes()}}
 	for _, item := range support {
 		files = append(files, File{Path: path.Join(prefix, item.name+".java"), Source: header + item.body})
 	}
 	for _, decl := range m.module.Types {
+		m.genericContext(decl)
 		source := ""
-		if m.shape(decl.Name) == nil {
+		if len(decl.Parameters) > 0 {
+			source = m.genericModel(decl)
+		} else if m.shape(decl.Name) == nil {
 			source = m.unionModel(decl)
 		} else {
 			source = m.model(decl)
