@@ -1,0 +1,76 @@
+package java
+
+// Closing model metadata is not predicate evaluation. Bindings are substituted
+// simultaneously, including inferred expression signatures and local annotations.
+// Incoming argument types are already closed: never capture their variables.
+const modelRefinementJava = `
+    static Type modelRefinement(Definition definition, int[] path, List<Type> arguments) {
+        if (definition == null || definition.parameters().size() != arguments.size()) throw new IllegalArgumentException("invalid generated refinement owner");
+        Type type = path[0] < 0 ? definition.body() : definition.alternatives().get(path[0]).arguments().get(path[1]);
+        for (int i=path[0] < 0 ? 1 : 2;i<path.length;i++) { int step=path[i]; type = step < 0 ? type.fields().get(-step-1).type() : type.arguments().get(step); }
+        if (!type.kind().equals("refined")) throw new IllegalArgumentException("invalid generated refinement path");
+        if (arguments.isEmpty()) return type;
+        var bindings = new HashMap<String,Type>();
+        for (int i=0;i<arguments.size();i++) bindings.put(definition.parameters().get(i),arguments.get(i));
+        for (Scope scope : definition.scopes()) if(bindings.containsKey(scope.parameter())) bindings.put(scope.symbol(),bindings.get(scope.parameter()));
+        return new ModelTypeCloser(bindings).close(type);
+    }
+    private static final class ModelTypeCloser {
+        private final Map<String,Type> bindings;
+        ModelTypeCloser(Map<String,Type> bindings) { this.bindings = Map.copyOf(bindings); }
+        Type close(Type type) {
+            if (type == null) return null;
+            Work work = new Work(); Type[] result = new Type[1];
+            type(work,type,closed -> result[0]=closed); work.run(); return result[0];
+        }
+        // Suppliers preserve the finite recursive signature graph. Each close
+        // has local traversal state, so a shared witness is safe across threads.
+        void type(Work work, Type type, Consumer<Type> done) {
+            work.later(() -> {
+                if (type.kind().equals("named")) { work.complete(done,bindings.getOrDefault(type.name(),type)); return; }
+                work.later(new Runnable() {
+                    int index; final List<Type> arguments = new ArrayList<>(); final List<Member> fields = new ArrayList<>(); final List<Rule> rules = new ArrayList<>();
+                    @Override public void run() {
+                        if (index < type.arguments().size()) {
+                            type(work,type.arguments().get(index++),value -> { arguments.add(value); work.later(this); }); return;
+                        }
+                        int field = index - type.arguments().size();
+                        if (field < type.fields().size()) {
+                            Member member = type.fields().get(field); index++;
+                            type(work,member.type(),value -> { fields.add(new Member(member.name(),value)); work.later(this); }); return;
+                        }
+                        int rule = field - type.fields().size();
+                        if (rule < type.rules().size()) {
+                            Rule original = type.rules().get(rule); index++;
+                            expression(work,original.expression(),predicate -> expression(work,original.message(),message -> {
+                                rules.add(new Rule(original.code(),original.offset(),original.predicate(),predicate,message,original.steps())); work.later(this);
+                            })); return;
+                        }
+                        work.complete(done,new Type(type.kind(),type.name(),arguments,fields,rules));
+                    }
+                });
+            });
+        }
+        void expression(Work work, Expr source, Consumer<Expr> done) {
+            work.later(() -> {
+                if (source == null) { work.complete(done,null); return; }
+                work.later(new Runnable() {
+                    int index; final List<Expr> arguments = new ArrayList<>(); final List<Arm> arms = new ArrayList<>();
+                    @Override public void run() {
+                        if (index < source.arguments().size()) {
+                            expression(work,source.arguments().get(index++),value -> { arguments.add(value); work.later(this); }); return;
+                        }
+                        int arm = index - source.arguments().size();
+                        if (arm < source.arms().size()) {
+                            Arm original = source.arms().get(arm); index++;
+                            expression(work,original.body(),value -> { arms.add(new Arm(original.pattern(),value)); work.later(this); }); return;
+                        }
+                        Consumer<Type> finish = annotation -> work.complete(done,new Expr(source.kind(),source.text(),source.flag(),arguments,source.names(),
+                            source.inferred() == null ? null : () -> close(source.signature()),arms,annotation));
+                        if (source.annotation() == null) work.complete(finish,null); else type(work,source.annotation(),finish);
+                    }
+                });
+            });
+        }
+    }
+`

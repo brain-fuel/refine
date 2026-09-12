@@ -261,7 +261,7 @@ public final class Models {
 `
 
 func TestModelGenerationBoundaries(t *testing.T) {
-	for _, source := range []string{"data Box a = Box a", "type Box a = { value :: a }\ntype Child a = Box a", "type Box a = { value :: a }\ntype Child = Box Int", "type Box a = { value :: a }\ntype Outer = { box :: Box (Int where it > 0) }", "type Nested = { value :: { inner :: Int } }", "type Contract = Int", "type ModelSupport = Int", "type ModelType = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"} {
+	for _, source := range []string{"data Box a = Box a", "type Box a = { value :: a }\ntype Child a = Box a", "type Box a = { value :: a }\ntype Child = Box Int", "type Nested = { value :: { inner :: Int } }", "type Contract = Int", "type ModelSupport = Int", "type ModelType = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"} {
 		program, err := language.Compile(source)
 		if err != nil {
 			t.Fatal(err)
@@ -333,6 +333,7 @@ func TestModelPackageLayouts(t *testing.T) {
 }
 
 func FuzzModelGeneration(f *testing.F) {
+	f.Add(inlineModelContract)
 	f.Add(genericModelContract)
 	f.Add("type Identity a = a\ntype Box a = { value :: a, next :: Maybe (Box a) }")
 	for _, source := range []string{unionModelContract, "data Draft = A | B Int\ntype Item = { create :: Draft, newDraft :: Int }", "data Choice = A | B Int\ntype SubChoice = Choice", "data Node = Nil | Cons Int Node", "type Id = String", "type Parent = { start :: Int, end :: Int } where it.start < it.end\ntype Child = Parent", "type Node = { value :: Int, next :: Maybe Node }", "type T = [[Int]]", "type T = { class :: Int, class_ :: Int }"} {

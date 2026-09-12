@@ -251,13 +251,43 @@ than 250 type parameters. Generic scalar, list, optional/result wrappers,
 phantom parameters, named refined arguments and nested generic record fields are
 supported. No public field is erased to `Object` or `Data`.
 
-Generic tagged unions, instantiated nominal parents (including closed aliases
-such as `type AgeBox = Box Age`), and inline-refined generic argument witnesses
-still reject generation atomically. Named argument refinements are supported:
-`Box Age` retains `Age` and its predicate. Direct anonymous field refinements
-also remain enforced; the unsupported witness case is an argument such as
-`Box (Int where it > 0)`. These are remaining implementation gates, not a change
-to the language specification.
+Inline-refined arguments are also supported. For example:
+
+```haskell
+type Positive = { box :: Box (Int where it > 0) }
+```
+
+```java
+Positive positive = new Positive(new Box<>(ModelTypes.integer(), BigInteger.ONE,
+    new ModelMaybe.Nothing<>()));
+Box<BigInteger> nested = positive.box();
+// Throws: the nested model retains the inline argument's predicate.
+nested.update(draft -> draft.setValue(BigInteger.ZERO));
+```
+
+The containing model enforces the inline constraint even when supplied a box
+constructed with a weaker witness. Its getter reconstructs the declared witness
+from checked metadata; subsequent nested validation and updates retain that
+constraint. Explicit bypasses skip predicates without forgetting them. No new
+nominal class is created for the anonymous refinement. Named arguments remain
+nominal: `Box Age` retains `Age`, while `Box (Age where it < 18)` retains the
+same Java argument type with an additional predicate on the containing box.
+
+Inline witnesses inside generic declarations bind the enclosing type parameters
+in both payload metadata and inferred predicate signatures. This includes generic
+`show`, typed `read`, custom messages, local refinements and recursive calls.
+Binding is simultaneous and immutable; existing argument metadata is not rebound.
+Original predicate text, codes, messages and budgets are preserved. Traversal is
+iterative, recursive inferred signatures stay lazy, and shared witnesses are
+safe for concurrent validation. There is no runtime schema parser or user-supplied
+predicate factory. Inline constraints on a nominal value itself still belong to
+its containing model; they do not change the methods of that value's Java class.
+
+Generic tagged unions and instantiated nominal parents (including closed aliases
+such as `type AgeBox = Box Age`) still reject generation atomically. They remain
+implementation gates, not a change to the language specification. Existing
+frontend limitations, including local annotations that name an enclosing type
+parameter and unconstrained generic equality, are not removed by model emission.
 
 ## Coverage and remaining scope
 
@@ -318,6 +348,13 @@ witness/private-raw construction. Generic scale tests cover 0, 1, 64, 65, 252,
 253 and 1,100 fields, including the positional boundary after reserving a witness.
 Package tests compile generic fields in unnamed, Unicode and contextual-keyword
 packages with all Java warnings treated as errors.
+
+Inline-witness tests add 7,200 complete Go/Java reports at exact budget boundaries
+and 6,000 JetCheck cases. They cover nested validation/updates, typed-read scope
+isolation, unknown results, separate clauses, custom messages, nominal arguments,
+optional/result/list composition, inherited record/union fields and concurrent
+use. Scale tests compile and execute 1,100 inline-refined fields and a 200-level
+predicate with Java 25 warnings-as-errors at `-Xss256k`.
 
 The complete release still requires all model shapes and language execution,
 validated Jackson and Avro serde, native schema formats,

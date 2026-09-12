@@ -151,7 +151,8 @@ language data. Structural bypasses still enforce representability.
 Java receives static metadata, not a schema/type-expression parser. This
 validator-only API emits no domain classes. `GenerateModels` additionally emits
 [generic record/wrapper models and typed witnesses](JAVA-MODELS.md), with generic
-inheritance, generic unions and inline-refined argument witnesses still required.
+inheritance and generic unions still required. Inline-refined argument witnesses
+retain statically checked predicate scope in nested model views.
 No serde or Maven publication is implied.
 
 Supported structural forms include records, aliases, lists, generic/recursive

@@ -1009,3 +1009,41 @@ native formats and project workflows. The full checklist remains the release gat
   generation checks, race tests, vet, CLI checks and all fifteen fuzz gates.
   Authored GoPlus and generated Go were pushed together. No product tag or
   Maven deployment occurred.
+
+## Inline-refined Java argument witnesses
+
+- Generic argument witnesses now retain anonymous refinements such as
+  `Box (Int where it > 0)`. Containing constructors and reads enforce them;
+  nested getters reconstruct the declared witness, so independent nested
+  validation and atomic updates keep the predicate. Bypasses retain metadata
+  while skipping predicate execution. Anonymous constraints do not manufacture
+  nominal Java classes or change methods on the underlying argument class.
+- The model emitter records deterministic paths into the checked declaration
+  and union-argument metadata. Generated code binds enclosing parameters and
+  their inferred scope symbols simultaneously in payload types, predicate
+  signatures and local annotations. Incoming closed argument metadata is not
+  rebound. Original clauses, codes, messages and step budgets remain intact;
+  there is no schema parser, user predicate callback or synthetic alias layer.
+- Metadata traversal is iterative and inferred signature links remain lazy.
+  Each traversal has local state and immutable bindings, permitting concurrent
+  validation of a shared witness without mutable inference state. Monomorphic
+  inherited record and union arguments use their original declaration metadata.
+- Tests pass 7,200 complete Go/Java report comparisons at total-budget boundaries
+  and 6,000 JetCheck cases. These cover generic `show`, typed-read scope isolation,
+  local refinements, recursive functions, separate clauses, unknown outcomes,
+  custom messages, nominal arguments, optional/list/result composition,
+  inherited record/union arguments, nested update bypasses and concurrent use.
+  Java 25 warnings-as-errors scale checks pass for 1,100 inline-refined fields
+  and a 200-level predicate at `-Xss256k`. A larger initial test correctly hit
+  the existing parser nesting limit; no parser limit was weakened.
+- Full local race tests, vet and deterministic GoPlus checks pass. A ten-second
+  model-generation fuzz run passed 3,407,054 executions. Baseline model generation
+  measured 1,162,255 ns/op, 3,165,994 B/op and 16,816 allocations/op on
+  Darwin/arm64 (Apple M5 Max), not payload throughput. Latest GoPlus remains
+  v0.158.0.
+- Generic nominal inheritance, generic unions, anonymous nested model records
+  and the remaining full-specification release gates remain required. The tests
+  exposed existing frontend restrictions on local annotations naming enclosing
+  type parameters and unconstrained generic equality; those were kept as separate
+  language work rather than silently accepted by model generation. No product tag
+  or Maven deployment is made.

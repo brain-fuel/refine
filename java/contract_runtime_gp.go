@@ -25,6 +25,7 @@ public final class ContractRuntime {
     ` + codecNamesJava + `
     ` + codecParserJava + `
     ` + codecBoundaryJava + `
+    ` + modelRefinementJava + `
     /** Canonical text only: never asserts a payload's refinements. */
     public static String showWithoutValidation(Data input, Budget.Limits caller) {
         if (input == null) throw new ValidationException(new Validation.Invalid(List.of(new Validation.Diagnostic(

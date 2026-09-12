@@ -19,20 +19,25 @@ type modelField struct {
 	setter string
 	typ    *language.Type
 }
+type modelTypeLocation struct {
+	owner string
+	steps []int
+}
 type modelEmitter struct {
-	module       *language.Module
-	namespace    string
-	contract     string
-	declarations map[string]language.TypeDecl
-	parents      map[string]string
-	children     map[string][]string
-	fields       map[string][]modelField
-	alternatives map[string]map[string]string
-	unionViews   map[string]string
-	locals       map[string]bool
-	next         int
-	parameters   map[string]string
-	witnesses    map[string]string
+	module        *language.Module
+	namespace     string
+	contract      string
+	declarations  map[string]language.TypeDecl
+	parents       map[string]string
+	children      map[string][]string
+	fields        map[string][]modelField
+	alternatives  map[string]map[string]string
+	unionViews    map[string]string
+	locals        map[string]bool
+	next          int
+	parameters    map[string]string
+	witnesses     map[string]string
+	typeLocations map[*language.Type]modelTypeLocation
 }
 
 func unrefined(t *language.Type) *language.Type {
@@ -535,7 +540,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	if failure != nil {
 		return nil, failure
 	}
-	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}}
+	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}, typeLocations: map[*language.Type]modelTypeLocation{}}
 	sourceNames := map[string]bool{}
 	for _, file := range files {
 		sourceNames[sourceNameKey(path.Base(file.Path))] = true
@@ -556,6 +561,14 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		}
 		sourceNames[folded] = true
 		m.declarations[decl.Name] = decl
+		if decl.Body != nil {
+			m.locateModelTypes(decl.Name, decl.Body, []int{-1})
+		}
+		for i, variant := range decl.Variants {
+			for j, arg := range variant.Arguments {
+				m.locateModelTypes(decl.Name, arg, []int{i, j})
+			}
+		}
 	}
 	for _, decl := range m.module.Types {
 		if len(decl.Parameters) > 0 && decl.Body == nil {

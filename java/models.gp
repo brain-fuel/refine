@@ -11,6 +11,7 @@ import (
 )
 
 type modelField struct { name string; member string; setter string; typ *language.Type }
+type modelTypeLocation struct { owner string; steps []int }
 type modelEmitter struct {
     module *language.Module
     namespace string
@@ -25,6 +26,7 @@ type modelEmitter struct {
     next int
     parameters map[string]string
     witnesses map[string]string
+    typeLocations map[*language.Type]modelTypeLocation
 }
 func unrefined(t *language.Type)*language.Type{for{match t.Form{case language.RefinedType(base,_):t=base;case _:return t}}}
 func integerType(name string)bool{
@@ -210,7 +212,7 @@ func (m *modelEmitter) model(decl language.TypeDecl)string{
 func GenerateModels(program *language.Program,namespace,contractName string)(files []File,failure error){
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     files,failure=GenerateValidator(program,namespace,contractName);if failure!=nil{return nil,failure}
-    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true}}
+    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{}}
     sourceNames:=map[string]bool{}
     for _,file:=range files{sourceNames[sourceNameKey(path.Base(file.Path))]=true}
     for _,name:=range []string{"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes"}{sourceNames[sourceNameKey(name+".java")]=true}
@@ -219,6 +221,8 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         if decl.Name==contractName{unsupported(decl.At,"model name conflicts with the chosen contract class")}
         folded:=sourceNameKey(decl.Name+".java");if sourceNames[folded]{unsupported(decl.At,"model source names collide on a case-insensitive filesystem")};sourceNames[folded]=true
         m.declarations[decl.Name]=decl
+        if decl.Body!=nil{m.locateModelTypes(decl.Name,decl.Body,[]int{-1})}
+        for i,variant:=range decl.Variants{for j,arg:=range variant.Arguments{m.locateModelTypes(decl.Name,arg,[]int{i,j})}}
     }
     for _,decl:=range m.module.Types{
         if len(decl.Parameters)>0 && decl.Body==nil{unsupported(decl.At,"generic tagged-union model emission remains required")}

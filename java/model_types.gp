@@ -15,9 +15,24 @@ func (m *modelEmitter) genericParts(decl language.TypeDecl)(types,parameters,arg
     for _,name:=range decl.Parameters{types=append(types,m.parameters[name]);parameters=append(parameters,"ModelType<"+m.parameters[name]+"> "+m.witnesses[name]);arguments=append(arguments,m.witnesses[name])};return
 }
 func genericSuffix(types []string)string{if len(types)==0{return ""};return "<"+strings.Join(types,", ")+">"}
+func (m *modelEmitter) locateModelTypes(owner string,t *language.Type,steps []int){
+    m.typeLocations[t]=modelTypeLocation{owner,append([]int(nil),steps...)}
+    child:=func(t *language.Type,step int){m.locateModelTypes(owner,t,append(append([]int(nil),steps...),step))}
+    match t.Form{
+    case language.RefinedType(base,_):child(base,0)
+    case language.ListType(element):child(element,0)
+    case language.AppliedType(fn,arg):child(fn,0);child(arg,1)
+    case language.RecordType(fields):for i,field:=range fields{child(field.Type,-i-1)}
+    case _:
+    }
+}
 func (m *modelEmitter) witness(t *language.Type)string{
     match t.Form{
-    case language.RefinedType(_,_):unsupported(t.At,"inline-refined generic model argument witnesses remain required")
+    case language.RefinedType(base,_):
+        location,found:=m.typeLocations[t];if !found{panic("missing checked model type location")}
+        steps,arguments:=[]string{},[]string{};for _,step:=range location.steps{steps=append(steps,fmt.Sprint(step))}
+        for _,parameter:=range m.declarations[location.owner].Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"missing generic refinement scope")};arguments=append(arguments,witness+".type")}
+        return "ModelType.refined("+m.witness(base)+","+m.contract+".modelRefinement("+javaQuote(location.owner)+",new int[]{"+strings.Join(steps,",")+"},"+javaList(arguments)+"))"
     case language.NamedType(name):
         if found:=m.witnesses[name];found!=""{return found}
         if name=="Int"{return "ModelTypes.integer()"}
@@ -56,6 +71,7 @@ public final class ModelType<T> {
         this.encoder = java.util.Objects.requireNonNull(encoder); this.decoder = java.util.Objects.requireNonNull(decoder);
     }
     static <T> ModelType<T> of(ContractRuntime.Type type, java.util.function.BiFunction<T,String,Data> encoder, java.util.function.Function<Data,T> decoder) { return new ModelType<>(type,encoder,decoder); }
+    static <T> ModelType<T> refined(ModelType<T> base, ContractRuntime.Type type) { return of(type,base.encoder,base.decoder); }
     static ContractRuntime.Type named(String name) { return new ContractRuntime.Type("named",name,java.util.List.of(),java.util.List.of(),java.util.List.of()); }
     static ContractRuntime.Type applied(ContractRuntime.Type fn, ContractRuntime.Type arg) { return new ContractRuntime.Type("applied","",java.util.List.of(fn,arg),java.util.List.of(),java.util.List.of()); }
     static ContractRuntime.Type list(ContractRuntime.Type arg) { return new ContractRuntime.Type("list","",java.util.List.of(arg),java.util.List.of(),java.util.List.of()); }
