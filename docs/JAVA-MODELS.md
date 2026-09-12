@@ -40,6 +40,8 @@ Booking updated = old.update(draft -> {
 - Primitive integer representations use `BigInteger`, including explicitly
   bounded integer types; those bounds remain validated constraints. Real values
   use exact `Rational`, text uses `String`, and Boolean values use `Boolean`.
+  Timestamp values use the immutable runtime `Timestamp`, whose `raw()` exposes
+  the retained RFC 3339 text, including precision and offset spelling.
   This does not choose a JSON/Avro wire encoding or silently round anything.
 - Scalar/list wrappers expose `value()`. All models expose immutable `rawData()`
   for the underlying language payload. `fromData` retains that exact object;
@@ -62,7 +64,8 @@ Booking updated = old.update(draft -> {
   absent `Maybe` fields), unlike raw-preserving `fromData`.
 - `createWithoutValidation`, `fromDataWithoutValidation`, and
   `updateWithoutValidation` explicitly skip predicates. They still check shape,
-  declared numeric representability and structural resource limits. A later
+  declared numeric representability, timestamp validity and structural resource
+  limits. Unknown future leap labels still fail structural bypasses. A later
   normal validation still detects invalid or indeterminate bypass-created values.
   Failures use `ValidationException`; no Vavr dependency or adapter is added.
 - Java null is not implicitly converted into absence or a nullable constructor.
@@ -133,7 +136,7 @@ exactly the budget required for one validation pass. Two jetCheck suites add
 determinism, collision, rejection, fuzz and benchmark coverage.
 
 The complete release still requires all model shapes and language execution,
-timestamp codecs, validated Jackson and Avro serde, native schema formats,
+validated Jackson and Avro serde, native schema formats,
 English exports, generated schema-derived tests, versioning, Maven/project/CLI
 integration and the full [specification](../SPEC.md). No Maven deployment or
 product release is implied by these model tests.

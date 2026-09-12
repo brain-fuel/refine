@@ -135,6 +135,8 @@ func (m *modelEmitter) javaType(t *language.Type) string {
 			return "java.lang.String"
 		case "Bool":
 			return "java.lang.Boolean"
+		case "Timestamp":
+			return "Timestamp"
 		}
 		if _, found := m.declarations[name]; found {
 			return m.qualified(name)
@@ -186,6 +188,8 @@ func (m *modelEmitter) encode(t *language.Type, input, location string) string {
 				method = "text"
 			case "Bool":
 				method = "bool"
+			case "Timestamp":
+				method = "timestamp"
 			}
 		}
 		if method != "" {
@@ -231,6 +235,8 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 			return "((Data.Text)" + input + ").value()"
 		case "Bool":
 			return "((Data.Bool)" + input + ").value()"
+		case "Timestamp":
+			return "Timestamp.parse(((Data.Text)" + input + ").value())"
 		}
 		m.javaType(t)
 		return m.qualified(name) + ".fromDataWithoutValidation(" + input + ")"

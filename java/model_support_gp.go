@@ -33,6 +33,7 @@ final class ModelSupport {
     static Data integer(java.math.BigInteger value, String path) { return new Data.Number(Rational.of(nonNull(value, path))); }
     static Data real(Rational value, String path) { return new Data.Number(nonNull(value, path)); }
     static Data text(String value, String path) { return new Data.Text(nonNull(value, path)); }
+    static Data timestamp(Timestamp value, String path) { return new Data.Text(nonNull(value, path).raw()); }
     static Data bool(Boolean value, String path) { return new Data.Bool(nonNull(value, path)); }
     static <T> Data list(java.util.List<T> values, java.util.function.BiFunction<T, String, Data> encode, String path) {
         nonNull(values, path); var result = new java.util.ArrayList<Data>();

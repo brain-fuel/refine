@@ -50,7 +50,7 @@ func (m *modelEmitter) javaType(t *language.Type)string{
     match t.Form{
     case language.NamedType(name):
         if integerType(name){return "java.math.BigInteger"}
-        switch name{case "Real":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean"}
+        switch name{case "Real":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean";case "Timestamp":return "Timestamp"}
         if _,found:=m.declarations[name];found{return m.qualified(name)}
         unsupported(t.At,"unsupported Java model type "+name)
     case language.ListType(element):return "java.util.List<"+m.javaType(element)+">"
@@ -67,7 +67,7 @@ func (m *modelEmitter) encode(t *language.Type,input,location string)string{
     t=unrefined(t)
     match t.Form{
     case language.NamedType(name):
-        method:="";if integerType(name){method="integer"}else{switch name{case "Real":method="real";case "String":method="text";case "Bool":method="bool"}}
+        method:="";if integerType(name){method="integer"}else{switch name{case "Real":method="real";case "String":method="text";case "Bool":method="bool";case "Timestamp":method="timestamp"}}
         if method!=""{return "ModelSupport."+method+"("+input+","+location+")"}
         m.javaType(t);return "ModelSupport.nonNull("+input+","+location+").rawData()"
     case language.ListType(element):
@@ -84,7 +84,7 @@ func (m *modelEmitter) decode(t *language.Type,input string)string{
     match t.Form{
     case language.NamedType(name):
         if integerType(name){return "((Data.Number)"+input+").value().numerator()"}
-        switch name{case "Real":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()"}
+        switch name{case "Real":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())"}
         m.javaType(t);return m.qualified(name)+".fromDataWithoutValidation("+input+")"
     case language.ListType(element):item:=m.fresh();return "ModelSupport.list("+input+","+item+" -> "+m.decode(element,item)+")"
     case language.AppliedType(_,_):

@@ -66,6 +66,7 @@ public final class ContractRuntime {
         NumberValue(Rational value) { this(value, value.isInteger() ? "Int" : "Real"); }
     }
     private record TextValue(String value) implements Val {}
+    private record TimestampValue(Timestamp value) implements Val {}
     private record BoolValue(boolean value) implements Val {}
     private record ListValue(List<Val> values) implements Val { ListValue { values = List.copyOf(values); } }
     private record FieldValue(String name, Val value) {}
@@ -276,6 +277,7 @@ public final class ContractRuntime {
                             case GuardedFunction ignored -> throw fail("evaluation.type", "functions do not support value equality");
                             case NumberValue n -> { Rational r = ((NumberValue)right).value(); step((long)n.value().show().length() + r.show().length()); same[0] = n.value().equals(r); }
                             case TextValue t -> { String r = ((TextValue)right).value(); step((long)t.value().length() + r.length()); same[0] = t.value().equals(r); }
+                            case TimestampValue t -> same[0] = compareTimestamps(t, (TimestampValue)right) == 0;
                             case BoolValue v -> same[0] = v.value() == ((BoolValue)right).value();
                             case ListValue list -> items(list.values(), ((ListValue)right).values(), logicalDepth);
                             case VariantValue v -> {
@@ -331,6 +333,7 @@ public final class ContractRuntime {
             if (List.of("<", "<=", ">", ">=").contains(op)) {
                 int compared;
                 if (a instanceof TextValue t) { String r = ((TextValue)b).value(); step((long)t.value().length() + r.length()); compared = t.value().compareTo(r); }
+                else if (a instanceof TimestampValue t) compared = compareTimestamps(t, (TimestampValue)b);
                 else { NumberValue n = (NumberValue)a, r = (NumberValue)b; numericTypes(n, r); numericCost(n.value(), r.value()); compared = n.value().compareTo(r.value()); }
                 return new BoolValue(switch (op) { case "<" -> compared < 0; case "<=" -> compared <= 0; case ">" -> compared > 0; default -> compared >= 0; });
             }
@@ -341,6 +344,7 @@ public final class ContractRuntime {
             return checkedNumber(switch (op) { case "+" -> n.add(r); case "-" -> n.subtract(r); case "*" -> n.multiply(r); case "%" -> n.remainder(r); default -> throw new AssertionError("unhandled operator"); }, left.numericType());
         }
         void numericTypes(NumberValue a, NumberValue b) { if (!a.numericType().equals(b.numericType())) throw fail("evaluation.type", "numeric operands need an explicit conversion"); }
+        int compareTimestamps(TimestampValue a, TimestampValue b) { numericCost(a.value().fraction(), b.value().fraction()); return a.value().compareTo(b.value()); }
         void numericCost(Rational a, Rational b) { step(BigInteger.valueOf(a.show().length()).multiply(BigInteger.valueOf(b.show().length())).add(BigInteger.ONE)); }
     }
 
@@ -465,6 +469,20 @@ public final class ContractRuntime {
             switch (name) {
                 case "Bool": work.complete(done, input instanceof BoolValue ? new Checked(input, true) : wrong(path, "Expected a Boolean.")); return;
                 case "String": work.complete(done, input instanceof TextValue ? new Checked(input, true) : wrong(path, "Expected text.")); return;
+                case "Timestamp": {
+                    if (input instanceof TimestampValue) { work.complete(done, new Checked(input, true)); return; }
+                    if (!(input instanceof TextValue text)) { work.complete(done, wrong(path, "Expected an RFC 3339 timestamp.")); return; }
+                    long size = text.value().length(); structure.step(size * size + 1);
+                    try { TextCodec.utf8(text.value()); }
+                    catch (IllegalArgumentException failure) { work.complete(done, wrong(path, "Expected an RFC 3339 timestamp.")); return; }
+                    try { work.complete(done, new Checked(new TimestampValue(Timestamp.parse(text.value())), true)); }
+                    catch (Timestamp.Error failure) {
+                        var detail = new Validation.Diagnostic(failure.code(), List.of(path), "", failure.getMessage());
+                        checks.add(failure.code().equals("timestamp.unknown_leap") ? new Validation.Undecided(detail) : new Validation.Violated(detail));
+                        work.complete(done, new Checked(null, false));
+                    }
+                    return;
+                }
                 case "Maybe", "Nullable", "Result": {
                     if (!(input instanceof VariantValue v)) { work.complete(done, wrong(path, "Expected an explicit optional, nullable, or result constructor.")); return; }
                     String none = name.equals("Maybe") ? "Nothing" : name.equals("Nullable") ? "Null" : "Err";

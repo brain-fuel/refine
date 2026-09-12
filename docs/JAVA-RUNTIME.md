@@ -1,7 +1,7 @@
 # Java runtime generation (development)
 
 `goforge.dev/refine/java.GenerateRuntime(packageName)` returns deterministic
-`File{Path, Source}` values for five Java 25 source files. It performs no I/O.
+`File{Path, Source}` values for six Java 25 source files. It performs no I/O.
 The caller owns output placement; generation does not deploy a Maven artifact.
 Runtime source is authored in GoPlus templates and emitted with an MIT header.
 
@@ -28,6 +28,10 @@ contextual-keyword packages with Java 25.
 - `TextCodec`: unchanged Java UTF-16 strings, copying unit-array access,
   canonical ASCII-escaped read/show, strict UTF-8 boundaries. Escaped lone
   surrogates survive read/show but are rejected by UTF-8 encoding.
+- `Timestamp`: immutable RFC 3339 values with exact fractions, retained spelling
+  and offset metadata, instant equality/order, and pinned leap-second knowledge.
+  Explicit civil-coordinate and elapsed-SI duration methods do not silently
+  substitute for one another.
 - `Validation`: sealed outcomes and checks, immutable diagnostics, ordered
   collection and the three predicate combiners. Invalid dominates unknown while
   retaining an incomplete flag and all collected diagnostics.
@@ -45,7 +49,7 @@ separate generation API. The initial
 generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
-not the final shared resource policy. Java regex/timestamps, schema-derived
+not the final shared resource policy. Java regex, schema-derived
 complete model shapes, Jackson/Avro codecs,
 schema-derived test generators, Maven wiring and the full CLI generation path
 remain required. Nothing here establishes full product conformance.
@@ -87,7 +91,7 @@ are test-only; see [dependency roles](DEPENDENCIES.md).
 ## Compiled contract validators
 
 `GenerateValidator(program, packageName, className)` accepts a statically checked
-`*language.Program` and emits eight files: the five primitives above, immutable
+`*language.Program` and emits nine files: the six primitives above, immutable
 `Data` payload trees, `ContractRuntime` execution support, and the named contract
 class. It returns no files if generation fails and performs no filesystem writes.
 The generated contract holds a private immutable definition graph; it does not
@@ -147,7 +151,7 @@ reports indeterminate, rather than mistaking a failed computation for `False`.
 Nested clauses share their enclosing budgets and the continuation queue, so
 recursive contract predicates obey logical depth limits without JVM recursion.
 
-Java regex `matches`/`search` and timestamps still reject
+Java regex `matches`/`search` still reject
 generation with `java.unsupported` and a source position.
 Function-valued payload fields are not serializable payload types.
 Unsupported rules are never dropped. The missing execution forms remain release
@@ -217,7 +221,7 @@ bypass. They return the checked typed view: undeclared record fields are omitted
 and absent `Maybe` fields become `Nothing`. This differs from `fromData`, which
 retains the supplied raw payload. A raw lone surrogate in input text is rejected;
 surrogate payload units must appear inside a quoted escaped string. Timestamp
-reads remain unsupported until Java's timestamp backend is implemented.
+reads accept quoted RFC 3339 text and preserve the original spelling.
 
 Verification compares 34,575 complete reports and read values against Go, plus
 11,717 parser differential/resource cases. The parser tests compare complete
@@ -227,6 +231,54 @@ cover arbitrary UTF-16 round trips, exact rationals/refinement enforcement,
 structured recursive/optional payload round trips and deterministic handling of
 arbitrary text. Model tests cover direct typed factories, parent evidence,
 method/field collisions, failed reads and invalid-bypass revalidation.
+
+### Exact timestamps
+
+`Timestamp` is an immutable value rather than `Instant` or `OffsetDateTime`:
+those Java types cannot retain all supported fractional precision, unknown-local-
+offset metadata and leap-second labels. Boundary payloads remain ordinary
+`Data.Text`; the evaluator parses a separate typed view and never rewrites the
+caller's raw data. Named timestamp models expose `Timestamp` through `value()`;
+its `raw()` accessor returns the original RFC 3339 text.
+
+```java
+Timestamp leap = Timestamp.parse("2016-12-31T23:59:60.000000000001Z");
+String unchanged = leap.raw();
+String canonical = leap.show(); // Quoted canonical text, retaining spelling.
+```
+
+The parser follows the agreed [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339)
+profile: years 0000–9999, lower-case `t`/`z`, exact decimal fractions, minute
+offsets through ±23:59, and `-00:00` metadata. Equality and ordering compare
+instants, not spellings. Equal instants have equal Java hash codes even when
+precision/offset metadata differ. `Timestamp.EPOCH` is the Unix epoch.
+
+Leap labels use the same `IERS-C72-2026-07-06` table as Go. A known-invalid leap
+label is invalid; a possible leap beyond the announced interval is indeterminate,
+including during structural bypass validation. No network, clock or timezone
+database participates. The table is based on
+[IERS Bulletin C](https://hpiers.obspm.fr/iers/bul/bulc/bulletinc.dat) and its
+[historical leap dates](https://hpiers.obspm.fr/iers/bul/bulc/Leap_Second.dat).
+
+Generated validation charges `1 + UTF16Length²` before parsing. Timestamp
+comparison charges `1 + len(leftFraction.show()) * len(rightFraction.show())`;
+display and read export charge the retained spelling length, matching Go.
+All target checks and nested reads retain the shared caller/per-clause budgets.
+Primitive `Timestamp.parse` itself is unmetered and throws `Timestamp.Error`
+with a sanitized `code()`/message; generated APIs translate failures into their
+ordinary validation outcomes/exceptions.
+
+`civilSecondsUntil` rejects leap-labelled endpoints and excludes inserted leaps.
+`siSecondsUntil` includes known leaps, but rejects endpoints outside the pinned
+post-1972 announced interval. Both return exact `Rational` values. These are
+explicit primitive APIs, not yet a DSL duration vocabulary.
+
+Timestamp tests compare primitive parsing, metadata, ordering and durations with
+Go, then compare full validation/typed-read reports and budget boundaries.
+Every UTC month boundary in the pinned history and every legal minute offset
+around a known leap are covered. Three 2,000-case jetCheck suites exercise offset
+equivalence, typed model round trips, exact durations, atomic multi-field updates,
+bypass revalidation and arbitrary UTF-16 inputs, with a 256 KiB JVM stack.
 
 Canonical reading is not JSON/Avro serde or native schema ingestion; those remain
 separate release obligations.

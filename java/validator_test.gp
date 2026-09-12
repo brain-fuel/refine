@@ -214,7 +214,6 @@ public final class ContractConformance {
 func TestValidatorGenerationRejectsUnsupported(t *testing.T){
     for _,source:=range []string{
         "type T = String where matches \"a\" it",
-        "type T = Timestamp",
     }{
         program,err:=language.Compile(source);if err!=nil{t.Fatalf("invalid rejection fixture: %s: %v",source,err)}
         files,err:=GenerateValidator(program,"example","Contract")
@@ -230,7 +229,7 @@ func TestValidatorGenerationRejectsUnsupported(t *testing.T){
 }
 
 func FuzzValidatorGeneration(f *testing.F){
-    for _,source:=range []string{baseFunctionContract,showContract,readContract,
+    for _,source:=range []string{baseFunctionContract,showContract,readContract,timestampContract,
         "f :: (Int where f it) -> Bool\nf _ = True\ntype T = Int where f it",
         "id :: a -> a\nid x = x\ntype T = Int where (let f :: (Int where it > 0) -> Int = id in f it == it)",
         "type Age = Int where it >= 0", "type Box a = {value :: a}\ntype T = Box Int", "data Tree a = Leaf a | Branch (Tree a) (Tree a)\ntype T = Tree Int", "type T = String where it == \"\\ud800\"", "type T = String where length it > 0"}{f.Add(source)}
@@ -240,7 +239,7 @@ func FuzzValidatorGeneration(f *testing.F){
         first,err:=GenerateValidator(program,"example","Contract")
         second,again:=GenerateValidator(program,"example","Contract")
         if err!=nil{if again==nil||first!=nil||second!=nil{t.Fatal("partial or nondeterministic failed generation")};return}
-        if again!=nil||len(first)!=8||len(second)!=8{t.Fatal("invalid source set")}
+        if again!=nil||len(first)!=9||len(second)!=9{t.Fatal("invalid source set")}
         for i:=range first{if first[i]!=second[i]{t.Fatal("nondeterministic validator")}}
     })
 }

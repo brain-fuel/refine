@@ -10,6 +10,7 @@ const codecExecutionJava = `
                         switch (input) {
                             case NumberValue number -> { String shown = number.value().show(); step(shown.length()); work.complete(done, shown); }
                             case TextValue text -> { step(text.value().length()); work.complete(done, TextCodec.show(text.value())); }
+                            case TimestampValue timestamp -> { step(timestamp.value().raw().length()); work.complete(done, timestamp.value().show()); }
                             case BoolValue bool -> work.complete(done, bool.value() ? "True" : "False");
                             case FunctionValue ignored -> throw fail("evaluation.show", "functions do not support canonical display");
                             case GuardedFunction ignored -> throw fail("evaluation.show", "functions do not support canonical display");

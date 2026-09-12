@@ -127,6 +127,7 @@ const codecReadJava = `
                         switch (input) {
                             case NumberValue number -> work.complete(done, new Data.Number(number.value()));
                             case TextValue text -> work.complete(done, new Data.Text(text.value()));
+                            case TimestampValue timestamp -> { step(timestamp.value().raw().length()); work.complete(done, new Data.Text(timestamp.value().raw())); }
                             case BoolValue bool -> work.complete(done, new Data.Bool(bool.value()));
                             case FunctionValue ignored -> throw fail("evaluation.type", "a function is not a serializable payload value");
                             case GuardedFunction ignored -> throw fail("evaluation.type", "a function is not a serializable payload value");

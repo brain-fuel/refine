@@ -601,3 +601,37 @@ native formats and project workflows. The full checklist remains the release gat
   native ingestion/exports, validated Jackson/Avro serde, English output,
   analysis, versioning, schema-derived tests, Maven wiring and the full CLI
   remain required. This checkpoint does not complete the release checklist.
+
+## Java exact timestamps
+
+- Generated `Timestamp` values preserve RFC 3339 spelling, numeric offset,
+  unknown-local-offset metadata and arbitrary decimal fractional precision.
+  Parsing uses UTC calendar arithmetic only, with the same pinned IERS C72
+  leap-second knowledge as Go. Instant equality/order do not round or compare
+  spellings; Java equality/hash codes agree for offset-equivalent instants.
+- Timestamp payloads stay ordinary text in raw `Data`. Validator typed views,
+  comparisons, canonical display/read, generic inferred reads, inline contracts
+  and generated nominal models now execute timestamp semantics. Structural
+  bypasses still reject invalid or unknown leap labels. Parsing, comparison,
+  display and export charge the same logical costs as Go, including nested reads.
+- Explicit primitive civil-coordinate and SI-duration methods return exact
+  rationals. Civil arithmetic refuses leap-labelled endpoints; SI arithmetic
+  refuses unknown history. These methods are not yet DSL duration builtins.
+- Tests pass 14,495 Go/Java primitive comparisons and 29,912 complete
+  report/read comparisons. They cover every month boundary in the pinned
+  history, all 2,879 legal minute offsets around a known leap, malformed dates,
+  year limits, fractions beyond nanoseconds, generic/inline reads, sibling
+  unknown/invalid collection, private diagnostics and small budgets. Three
+  fresh-seeded jetCheck suites add 6,000 cases for offset equivalence, typed
+  round trips, exact durations, atomic updates and bypass revalidation. Java 25
+  compilation treats warnings as errors; execution uses `-Xss256k`.
+- Full local race tests, vet and deterministic GoPlus generation pass.
+  A 10-second validator-emitter fuzz run passed 2,935,672 executions. Runtime
+  generation measured 4,283 ns/op, 29,472 B/op and 27 allocations/op; validator
+  generation measured 548,747 ns/op, 1,543,545 B/op and 11,388 allocations/op
+  on Darwin/arm64 (Apple M5 Max). These are generation, not validation throughput,
+  measurements. GoPlus latest remains v0.158.0.
+- Java regex, complete model shapes, native formats, validated serde, English
+  export, full language/conversions/imports, analysis, versioning, generated
+  schema-derived tests, Maven wiring and the full CLI remain release obligations.
+  No product tag or Maven deployment is implied by this checkpoint.

@@ -40,7 +40,7 @@ func GenerateRuntime(namespace string)([]File,error){
     if namespace!=""{header+="package "+namespace+";\n"}
     types:=[]struct{name string;body string}{
         {"Rational",rationalJava},{"TextCodec",textJava},{"Validation",validationJava},
-        {"ValidationException",validationExceptionJava},{"Budget",budgetJava},
+        {"ValidationException",validationExceptionJava},{"Budget",budgetJava},{"Timestamp",timestampJava},
     }
     files:=make([]File,len(types))
     for i,typ:=range types{files[i]=File{Path:path.Join(strings.ReplaceAll(namespace,".","/"),typ.name+".java"),Source:header+typ.body}}

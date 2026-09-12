@@ -39,7 +39,7 @@ func javaQuote(text string) string {
 func javaList(items []string)string{return "java.util.List.of("+strings.Join(items,",")+")"}
 
 func javaClassName(className string)error {
-    reserved:=" Data ContractRuntime Rational TextCodec Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
+    reserved:=" Data ContractRuntime Rational TextCodec Timestamp Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
     if className==""||strings.Contains(className,".")||strings.Contains(reserved," "+className+" "){return fmt.Errorf("invalid or reserved Java class name: %s",className)}
     return packageName(className)
 }
@@ -82,7 +82,7 @@ func (e *initializer) typ(t *language.Type)string {
     kind,name:="","";args,fields,rules:=[]string{},[]string{},[]string{}
     match t.Form {
     case language.NamedType(n):
-        if n=="Timestamp"{unsupported(t.At,"Java timestamp validation is not yet emitted")};kind,name="named",n
+        kind,name="named",n
     case language.ListType(element):kind="list";args=append(args,e.typ(element))
     case language.RecordType(members):
         kind="record";for _,member:=range members{source:="new ContractRuntime.Member("+e.literal(member.Name)+","+e.typ(member.Type)+")";fields=append(fields,e.node("ContractRuntime.Member",source))}
@@ -180,7 +180,7 @@ func (e *initializer) meta(t *language.Type)string{
     if t==nil{return "null"}
     kind,name:="","";args,fields,rules:=[]string{},[]string{},[]string{}
     match t.Form{
-    case language.NamedType(n):if n=="Timestamp"{unsupported(t.At,"Java timestamps remain required")};kind,name="named",n
+    case language.NamedType(n):kind,name="named",n
     case language.ListType(a):kind="list";args=append(args,e.meta(a))
     case language.AppliedType(a,b):kind="applied";args=append(args,e.meta(a),e.meta(b))
     case language.ArrowType(a,b):kind="arrow";args=append(args,e.meta(a),e.meta(b))

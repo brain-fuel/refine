@@ -67,7 +67,7 @@ func javaQuote(text string) string {
 func javaList(items []string) string { return "java.util.List.of(" + strings.Join(items, ",") + ")" }
 
 func javaClassName(className string) error {
-	reserved := " Data ContractRuntime Rational TextCodec Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
+	reserved := " Data ContractRuntime Rational TextCodec Timestamp Validation ValidationException Budget ModelSupport ModelMaybe ModelNullable ModelResult Draft record var sealed permits yield String StringBuilder Object Integer Long Boolean Character Math System Exception RuntimeException IllegalArgumentException ArithmeticException AssertionError NullPointerException UnsupportedOperationException Override SuppressWarnings Comparable "
 	if className == "" || strings.Contains(className, ".") || strings.Contains(reserved, " "+className+" ") {
 		return fmt.Errorf("invalid or reserved Java class name: %s", className)
 	}
@@ -194,9 +194,6 @@ func (e *initializer) typ(t *language.Type) string {
 	case language.NamedType:
 		n := __gp_m1.Name
 
-		if n == "Timestamp" {
-			unsupported(t.At, "Java timestamp validation is not yet emitted")
-		}
 		kind, name = "named", n
 	case language.ListType:
 		element := __gp_m1.Element
@@ -396,9 +393,6 @@ func (e *initializer) meta(t *language.Type) string {
 	switch __gp_m3 := any(t.Form).(type) {
 	case language.NamedType:
 		n := __gp_m3.Name
-		if n == "Timestamp" {
-			unsupported(t.At, "Java timestamps remain required")
-		}
 		kind, name = "named", n
 	case language.ListType:
 		a := __gp_m3.Element
