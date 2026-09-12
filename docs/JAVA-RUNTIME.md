@@ -32,9 +32,10 @@ contextual-keyword packages with Java 25.
   and offset metadata, instant equality/order, and pinned leap-second knowledge.
   Explicit civil-coordinate and elapsed-SI duration methods do not silently
   substitute for one another.
-- `RegexProgram`: immutable compiled instruction execution with metered full
-  matching/search and pinned Unicode simple folding. This is a matcher building
-  block, not yet a Java pattern compiler or working DSL regex builtin.
+- `RegexProgram`: immutable parsed-tree compilation and instruction execution
+  with metered full matching/search and pinned Unicode simple folding. This is a
+  compiler/matcher building
+  block, not yet a Java pattern-text parser or working DSL regex builtin.
 - `Validation`: sealed outcomes and checks, immutable diagnostics, ordered
   collection and the three predicate combiners. Invalid dominates unknown while
   retaining an incomplete flag and all collected diagnostics.
@@ -294,7 +295,9 @@ promise that different compiler versions produce identical instruction graphs.
 
 Java `RegexProgram` takes the matching instruction profile/Unicode version,
 entry point, and immutable instructions. It rejects unknown profiles, invalid
-targets, malformed rune ranges and unsupported assertion masks before execution.
+reachable targets, malformed rune ranges and unsupported assertion masks before
+execution. Unreachable fragments may retain Go compiler patch-list links; they
+are frozen and cannot become reachable after construction.
 Go `OpcodeName` supplies the corresponding Java enum names. Captures are traversed
 but not exposed: the current predicate API returns only a Boolean match result.
 
@@ -317,7 +320,25 @@ Unicode code point. Three 2,000-case jetCheck suites check literal matching,
 code-point matching and exact budget thresholds; further checks cover immutable
 snapshots, malformed plans and concurrent reuse, at `-Xss256k`.
 
-Dynamic Java pattern parsing/compilation, compilation-cost conformance, and
+`RegexProgram.compileTree(Tree, Budget.Meter)` compiles already parsed and
+normalized trees into the same instruction graph as Go's `regexp/syntax`
+compiler. Immutable `Tree` values describe literals, inclusive rune ranges,
+assertions, captures, concatenation, alternation and greedy/lazy repetitions.
+The method meters tree traversal and an unsigned-64-bit expansion bound before
+simplifying counted repetitions or allocating instructions. Nesting at depth 512
+and expansion overflow produce `regex.limit`; exhaustion produces `regex.budget`.
+Simplification and compilation use explicit work queues, including repetition
+expansions deeper than the source tree, so execution does not depend on JVM stack
+depth. Source parsing and the initial source-size cost are not part of this API.
+
+Compiler tests compare 2,243 parsed patterns and 2,021 synthetic/random trees,
+with 20,454 exact instruction-digest/budget comparisons. They cover dead fragments,
+nullable loops, greedy/lazy bounded and unbounded repetitions, large expansions,
+nested scope recovery and depth/overflow boundaries. Another 6,000 jetCheck cases
+check repetition languages, exact compilation budgets and depth guards at
+`-Xss256k`. Digest comparisons include all instructions, even unreachable ones.
+
+Dynamic Java pattern-text parsing/normalization, source-compilation conformance, and
 connecting `matches`/`search` to the evaluator are still required. Java contract
 generation continues to reject those builtins rather than treating this matcher
 foundation as complete regex support. Native schema regex dialects remain a

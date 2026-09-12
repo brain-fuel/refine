@@ -689,3 +689,40 @@ native formats and project workflows. The full checklist remains the release gat
   Native regex dialects, full language and model shapes, native schema formats,
   validated serde, English exports, analysis, versioning, automatic generated
   tests, Maven/project integration and complete CLI workflows remain required.
+
+## Java parsed regex tree compiler
+
+- Generated `RegexProgram.compileTree` compiles immutable, already parsed and
+  normalized regex trees. Its simplifier and instruction allocation follow Go's
+  `regexp/syntax`, including lazy/greedy branches, nullable loops, capture slots
+  and counted repetition expansion. Explicit work queues avoid JVM recursion
+  even when simplification produces trees deeper than their source.
+- Compilation charges the same tree visits and unsigned-64-bit expansion bound
+  as Go before expansion/allocation. Depth 512 and arithmetic overflow return
+  `regex.limit`; budget exhaustion preserves the exact shared meter state.
+  Source-size charging and source parsing are not part of this tree API.
+- Instruction validation checks every reachable edge while preserving Go's
+  unreachable fragment patch-list links. Shape/range checks still apply to all
+  instructions. Frozen programs prevent dead fragments becoming reachable.
+  Generated sources retain the full Go BSD-style notice for compiler/simplifier
+  adaptations as well as matching and Unicode tables.
+- Tests pass 20,454 exact instruction-digest/budget comparisons across 2,243
+  parsed patterns and 2,021 synthetic/random trees. Cases cover all tree forms,
+  empty/failing/dead fragments, capture ordering, repetition simplification,
+  nested budgets and recovery, depth boundaries and expansion overflow. Three
+  jetCheck suites add 6,000 repetition-language, budget and depth-law cases.
+  The existing 87,252 matcher/budget comparisons and exhaustive Unicode folding
+  checks still pass. Java 25 uses warnings-as-errors and `-Xss256k`.
+- Full local race tests, vet and deterministic GoPlus generation pass.
+  Ten-second fuzz runs passed 6,655,417 Go regex differential executions and
+  3,250,366 validator-generation executions. Runtime generation measured
+  16,351 ns/op, 147,906 B/op and 34 allocations/op; validator generation measured
+  496,669 ns/op, 1,662,316 B/op and 11,393 allocations/op on Darwin/arm64
+  (Apple M5 Max). These are source-generation measurements, not compilation or
+  matching throughput. Latest published GoPlus remains v0.158.0.
+- Dynamic Java pattern-text parsing/normalization and source-compilation cost
+  parity remain required before enabling DSL `matches`/`search`. Generation
+  continues to reject those builtins explicitly. Full native formats, models,
+  serde, English output, analysis, versioning, schema-derived tests, Maven wiring
+  and CLI workflows remain release obligations; no product tag or Maven deploy
+  is implied by this compiler checkpoint.

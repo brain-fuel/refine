@@ -266,6 +266,9 @@ public final class RegexConformance {
         rejects(()->new RegexProgram(RegexProgram.PROFILE,"unknown",literal.start(),literal.instructions()));
         rejects(()->program(-1,literal.instructions()));rejects(()->program(0,List.of()));
         rejects(()->program(0,List.of(inst(RegexProgram.Opcode.NOP,1,0))));
+        var dead=List.of(inst(RegexProgram.Opcode.FAIL,0,0),inst(RegexProgram.Opcode.NOP,9999,0));
+        require(!program(0,dead).match("a",RegexProgram.Mode.SEARCH,meter(1000)));
+        rejects(()->program(1,dead)); // The same edge is invalid when reachable.
         rejects(()->program(0,List.of(inst(RegexProgram.Opcode.ALT,0,0x100000000L))));
         rejects(()->program(0,List.of(inst(RegexProgram.Opcode.EMPTY_WIDTH,0,3))));
         rejects(()->program(0,List.of(inst(RegexProgram.Opcode.RUNE,0,0,99,90))));

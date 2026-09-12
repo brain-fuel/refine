@@ -34,9 +34,9 @@ func buildRegexFoldJava() string {
 var regexFoldSource = buildRegexFoldJava()
 
 func regexProgramJava() string {
-	notice := strings.ReplaceAll(goUnicodeNotice, "Unicode classification tables derived from Go's unicode package.", "Simple-fold tables and rune/empty-width matching derived from Go's unicode and regexp/syntax packages.")
+	notice := strings.ReplaceAll(goUnicodeNotice, "Unicode classification tables derived from Go's unicode package.", "Simple-fold tables, rune/empty-width matching, tree simplification and instruction compilation derived from Go's unicode and regexp/syntax packages.")
 	notice = strings.ReplaceAll(notice, "Copyright 2009 The Go Authors.", "Copyright 2009, 2011 The Go Authors.")
-	return regexProgramImports + notice + regexProgramPrefix + regexFoldSource + regexProgramBody
+	return regexProgramImports + notice + regexProgramPrefix + regexFoldSource + regexCompileJava + regexProgramBody
 }
 
 const regexProgramImports = `
@@ -46,8 +46,9 @@ import java.util.List;
 import java.util.Objects;
 `
 const regexProgramPrefix = `
-/** Immutable, metered regex instruction execution. This is not a pattern parser.
- * Go-generated plans and the future Java compiler share this execution boundary.
+/** Immutable, metered regex tree compilation and instruction execution.
+ * This is not a pattern-text parser. Go-generated plans and Java-compiled trees
+ * share this execution boundary.
  * Programs carry an explicit instruction profile and Unicode table version.
  */
 public final class RegexProgram {
@@ -88,14 +89,24 @@ const regexProgramBody = `
             } else if (!runes.isEmpty()) throw invalid();
             switch (instruction.opcode()) {
                 case MATCH, FAIL -> { if (instruction.out() != 0 || instruction.arg() != 0) throw invalid(); }
-                case ALT, ALT_MATCH -> { target(instruction.out()); target(instruction.arg()); }
+                case ALT, ALT_MATCH -> { }
                 case EMPTY_WIDTH -> {
                     long arg = instruction.arg(); if (arg != 1 && arg != 2 && arg != 4 && arg != 8 && arg != 16 && arg != 32) throw invalid();
-                    target(instruction.out());
                 }
-                case NOP -> { if (instruction.arg() != 0) throw invalid(); target(instruction.out()); }
-                default -> target(instruction.out());
+                case NOP -> { if (instruction.arg() != 0) throw invalid(); }
+                default -> { }
             }
+        }
+        // Go's compiler can leave patch-list links in discarded fragments.
+        // These are not executable targets. Validate every reachable edge;
+        // immutability prevents dead instructions becoming reachable later.
+        var pending = new java.util.ArrayDeque<Integer>(); var seen = new boolean[instructions.size()]; pending.push(start);
+        while (!pending.isEmpty()) {
+            int pc = pending.pop(); if (seen[pc]) continue; seen[pc] = true;
+            var instruction = this.instructions.get(pc);
+            if (instruction.opcode() == Opcode.MATCH || instruction.opcode() == Opcode.FAIL) continue;
+            target(instruction.out()); pending.push(instruction.out());
+            if (instruction.opcode() == Opcode.ALT || instruction.opcode() == Opcode.ALT_MATCH) { target(instruction.arg()); pending.push((int)instruction.arg()); }
         }
     }
     private static IllegalArgumentException invalid() { return new IllegalArgumentException("invalid regular expression instruction program"); }
