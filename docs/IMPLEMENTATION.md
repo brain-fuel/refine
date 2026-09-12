@@ -779,6 +779,16 @@ native formats and project workflows. The full checklist remains the release gat
   765,163 ns/op, 2,388,154 B/op and 11,398 allocations/op on Darwin/arm64
   (Apple M5 Max). These measure source generation, not predicate throughput.
   Unicode vocabulary increases emitted runtime size; GoPlus latest is v0.158.0.
+- A fresh public consumer fetched `v0.0.0-20260912033535-3c0cfa08241a` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated and
+  compiled standalone Java 25 models with warnings-as-errors, then checked exact
+  Go compilation/matching budgets, full/search results, complete diagnostic
+  reports, unknown recovery, validated construction/read, atomic updates and
+  bypass revalidation at `-Xss256k`.
+- Checkpoint `3c0cfa0` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34670789902), including
+  generation, race, vet, CLI and all fuzz gates. No product tag or Maven
+  deployment was made; the full release checklist remains open.
 - Current Go/Java refinement regex conformance does not establish automatic
   compatibility with future Go parser/Unicode changes. Release-stable profile
   auditing and native-schema regex dialects remain required. Full model shapes,
