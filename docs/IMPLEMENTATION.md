@@ -451,5 +451,14 @@ native formats and project workflows. The full checklist remains the release gat
   validator generation benchmark measured 455,620 ns/op, 1,103,522 B/op and 9,530
   allocations/op on Darwin/arm64 (Apple M5 Max), now including a detached full
   type check. Full local race tests, vet and deterministic generation pass.
-  GoPlus latest remains pinned at v0.158.0. Fresh upstream CI and
-  independent-consumer evidence are still required for this checkpoint.
+  GoPlus latest remains pinned at v0.158.0.
+- A fresh external module fetched `v0.0.0-20260912005118-a1844066b133` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated and compiled
+  function-backed invoice models with Java 25 warnings-as-errors, then verified
+  recursive line totals, quantifier checks, invalid construction, atomic updates,
+  bypass revalidation, tiny-budget unknowns and recovery from a looping predicate,
+  all with `-Xss256k`. Mutating a checked snapshot did not affect generation.
+  Checkpoint `a184406` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34662998323), including
+  generation, race, vet, CLI and all fuzz gates. The remaining execution forms
+  and the full release checklist above are still required.
