@@ -171,6 +171,35 @@ invalid/indeterminate returns do not expose an unchecked payload. The separate
 `language.ShowDataWithoutValidation(data, limits)` operation can display invalid
 bypass-created values, but those values still cannot pass validating read.
 
+For a closed generic or composed target, `program.PayloadType(source)` produces
+an immutable checked handle:
+
+```go
+target, err := program.PayloadType("Box Age")
+// Handle err, then use the checked target with the same immutable payload API:
+report := target.ValidateData(candidate, validation.Limits{})
+decoded, report := target.ReadData(text, validation.Limits{})
+```
+
+The program must declare `Box` and `Age`. Targets can also be built-in types,
+anonymous records, lists, nested type applications and arbitrary checked
+refinements, such as `Tree (Int where it > 0)`. Unbound parameters, wrong arities,
+unknown names, function-valued payloads (including aliases/constructor arguments),
+invalid predicates and trailing declarations are rejected before a handle exists.
+`ParseTypeExpression` exposes syntax-only parsing under the usual parser limits.
+Handle creation executes no predicates and does not introduce a synthetic named
+alias or an extra validation step. Existing named-root APIs keep their behavior.
+
+`ValidateDataWithoutRefinements` is an explicitly named structural bypass on the
+handle; subsequent normal validation/read still checks refinements. Nil/zero
+handles produce invalid-root outcomes. Each handle owns checked inference state
+for its originating program, so another program's same-spelled types cannot
+change it. `Source`, `Formatted`, `Syntax` and `CheckedSyntax` support inspection
+and generation; snapshots are caller-owned and cannot mutate the handle. Target
+expression spans refer to its separate source string; declaration spans remain
+relative to the program source. Extra target inference is checked after the
+original module, retaining its generic scope symbols.
+
 The canonical representation is independent of JSON/Avro serde:
 
 - Numbers use reduced integer/fraction spelling, e.g. `42` or `-1/3`.

@@ -5,6 +5,7 @@ import (
     "path"
     "slices"
     "strings"
+    "unicode/utf8"
 
     "goforge.dev/refine/language"
     "goforge.dev/refine/value"
@@ -102,6 +103,14 @@ func (e *initializer) typ(t *language.Type)string {
 // and pattern matching are supported. Unsupported execution features reject
 // the entire generation; see docs/JAVA-RUNTIME.md for the current boundaries.
 func GenerateValidator(program *language.Program,namespace,className string)(files []File,failure error){
+    return GenerateValidatorWithTypes(program,namespace,className,nil)
+}
+
+// GenerateValidatorWithTypes additionally emits named handles for checked closed
+// payload-type expressions, such as "Box Age" or "Tree (Int where it > 0)".
+// Java receives static metadata, never a runtime schema/type-source parser.
+// The target labels are map keys, not Java identifiers. All output is atomic.
+func GenerateValidatorWithTypes(program *language.Program,namespace,className string,targets map[string]string)(files []File,failure error){
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     if program==nil{return nil,fmt.Errorf("a compiled program is required")}
     if err:=packageName(namespace);err!=nil{return nil,err}
@@ -109,6 +118,18 @@ func GenerateValidator(program *language.Program,namespace,className string)(fil
     for _,reserved:=range []string{"Data","ContractRuntime","Rational","TextCodec","Validation","ValidationException","Budget"}{if strings.EqualFold(className,reserved){return nil,fmt.Errorf("contract source name collides with runtime source")}}
     checked:=program.CheckedSyntax();module:=checked.Syntax
     e:=&initializer{prefix:className+"$Refine",checked:&checked};entries:=[]string{}
+    targetEntries:=[]string{};targetNames:=[]string{};for name:=range targets{targetNames=append(targetNames,name)};slices.Sort(targetNames)
+    for _,name:=range targetNames{
+        if name==""||!utf8.ValidString(name){return nil,fmt.Errorf("payload target labels must be nonempty Unicode text")}
+        target,err:=program.PayloadType(targets[name]);if err!=nil{return nil,fmt.Errorf("payload target %q: %w",name,err)}
+        snapshot:=target.CheckedSyntax()
+        // Target predicates and their inferred signatures belong to this
+        // private snapshot. Original declaration/function symbols stay stable.
+        for expr,typ:=range snapshot.Module.Inferred{checked.Inferred[expr]=typ}
+        entry:="java.util.Map.entry("+e.literal(name)+","+e.typ(snapshot.Type)+")"
+        targetEntries=append(targetEntries,e.node("java.util.Map.Entry<String, ContractRuntime.Type>",entry))
+    }
+    targetMap:=e.node("java.util.Map<String, ContractRuntime.Type>",e.prefix+"Support.dictionary("+e.list("java.util.Map.Entry<String, ContractRuntime.Type>",targetEntries)+")")
     for _,decl:=range module.Types{
         body:="null";if decl.Body!=nil{body=e.typ(decl.Body)}
         alternatives:=[]string{}
@@ -144,7 +165,7 @@ public final class %s {
     public static String showWithoutValidation(Data input, Budget.Limits caller) { return ContractRuntime.showWithoutValidation(input, caller); }
     public static ContractRuntime.ReadResult read(String root, String text) { return read(root, text, Budget.Limits.defaults()); }
     public static ContractRuntime.ReadResult read(String root, String text, Budget.Limits caller) { return ContractRuntime.read(DEFINITIONS, FUNCTIONS, root, text, caller); }
-`,className,className,functions)+e.source(definitions,signatures)
+`,className,className,functions)+payloadHandlesJava(className,targetMap)+e.source(definitions,signatures)
     files,failure=GenerateRuntime(namespace);if failure!=nil{return nil,failure}
     prefix:=strings.ReplaceAll(namespace,".","/")
     runtime:=strings.ReplaceAll(contractRuntimeJava,"// @CODEC_UNICODE@",codecUnicodeJava())

@@ -116,6 +116,16 @@ func ParseExpression(source string) (expression *Expr, failure error) {
     return expression, nil
 }
 
+// ParseTypeExpression parses one type, not declarations or executable input.
+// It applies the same lexical, parser and syntax-tree resource limits as Parse.
+func ParseTypeExpression(source string) (typ *Type, failure error) {
+    defer recoverSyntax(&failure)
+    p := parser{tokens:lex(source)}
+    p.lines(); typ=p.typeExpression(); p.lines(); p.need("eof")
+    guardType(typ,0)
+    return typ,nil
+}
+
 func (p *parser) typeAtomStart() bool { return p.is("[") || p.is("(") || p.is("{") || p.is("name") && !reserved(p.peek().text) }
 func (p *parser) typeExpression() *Type {
     p.enter(); defer p.leave()

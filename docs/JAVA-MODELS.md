@@ -215,6 +215,11 @@ The validator can already handle more structural
 forms than the model emitter. Unsupported predicate execution and source-size
 limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
 
+Closed generic validation/read targets are now available through Go's
+`Program.PayloadType` and Java's `GenerateValidatorWithTypes` registration API.
+This supplies checked target metadata without an extra named-alias validation
+layer; it is not yet generic Java model emission or a typed model witness API.
+
 Model predicates may call the generated named/recursive/higher-order function
 engine. Those calls run under the same construction/update validation budget;
 explicit bypass factories still skip predicates. Functions are private evaluator

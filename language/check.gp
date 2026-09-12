@@ -359,7 +359,13 @@ func (c *checker) refinements(t *Type, variables map[string]*term) {
 func Compile(source string) (program *Program, failure error) {
     defer recoverSyntax(&failure)
     module, err := Parse(source); if err != nil { return nil, err }
-    if len(module.Imports) != 0 { return nil, &Error{Code:"language.import",At:module.Imports[0].At,Message:"resolve and bundle imports before standalone compilation"} }
+    return checkModule(module,nil),nil
+}
+
+// An optional payload target is checked only after the original module, so
+// target inference cannot change the module's existing generic scope symbols.
+func checkModule(module *Module,payload *Type)*Program {
+    if len(module.Imports) != 0 { panic(&Error{Code:"language.import",At:module.Imports[0].At,Message:"resolve and bundle imports before standalone compilation"}) }
     c := checker{module:module,declarations:make(map[string]TypeDecl),functions:make(map[string]Function),constructors:make(map[string]constructor),substitution:make(map[int]*term),expressionTerms:make(map[*Expr]*term)}
     module.functionScopes=make(map[string]map[string]string)
     module.declarationScopes=make(map[string]map[string]string)
@@ -419,10 +425,16 @@ func Compile(source string) (program *Program, failure error) {
         }
         if !c.covered(matrix,arguments,0) { typeError(fn.At,"function patterns are not exhaustive; add the missing cases or an explicit fallback") }
     }
+    if payload!=nil{
+        variables:=make(map[string]*term)
+        target:=c.typ(payload,variables,false,true)
+        c.readableType(target,payload.At,make(map[string]bool))
+        c.refinements(payload,variables);c.solveObligations()
+    }
     module.inferred=make(map[*Expr]*Type,len(c.expressionTerms))
     c.reified=make(map[*term]*Type)
     for _,expr:=range c.expressionOrder {module.inferred[expr]=c.reify(c.expressionTerms[expr],expr.At)}
-    return &Program{module:module}, nil
+    return &Program{module:module}
 }
 
 func typeScope(variables map[string]*term)map[string]string {

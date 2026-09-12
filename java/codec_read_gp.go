@@ -174,11 +174,15 @@ const codecBoundaryJava = `
         Definition definition = root == null ? null : definitions.get(root);
         if (definition == null || !definition.parameters().isEmpty()) return new ReadResult(null, new Validation.Invalid(List.of(new Validation.Diagnostic(
             "validation.root", List.of(""), "", "Choose a declared root type with no unbound type parameters.")), false));
+        return readType(definitions,functions,new Type("named",root,List.of(),List.of(),List.of()),text,caller);
+    }
+    static ReadResult readType(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Type target, String text, Budget.Limits caller) {
+        if (target == null) return new ReadResult(null,new Validation.Invalid(List.of(new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a checked payload type.")), false));
         if (text == null) return new ReadResult(null, new Validation.Invalid(List.of(new Validation.Diagnostic("read.syntax", List.of(""), "", "Java null is not canonical text.")), false));
         Eval evaluator = new Eval(new Budget(Budget.Limits.defaults(), caller).beginStructure(), definitions, functions);
         Work work = new Work(); Eval.Engine engine = evaluator.new Engine(work); ReadResult[] result = new ReadResult[1];
         try {
-            engine.decodeText(text, 0, decoded -> engine.checkedValue(new Type("named", root, List.of(), List.of(), List.of()), decoded, Map.of(), 0, checked -> {
+            engine.decodeText(text, 0, decoded -> engine.checkedValue(target, decoded, Map.of(), 0, checked -> {
                 if (checked.outcome().state() == Validation.State.VALID) engine.exportData(checked.data(), 0, data -> result[0] = new ReadResult(data, checked.outcome()));
                 else result[0] = new ReadResult(null, checked.outcome());
             }));

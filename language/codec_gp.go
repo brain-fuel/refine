@@ -257,6 +257,10 @@ func (p *Program) ReadData(root string, text value.Text, caller validation.Limit
 	if rootType == nil {
 		return value.Data{}, validation.Collect([]validation.Check{validation.Violated{Detail: validation.Diagnostic{Code: "validation.root", Paths: []string{""}, Message: "Choose a declared root type with no unbound type parameters."}}})
 	}
+	return p.readDataType(rootType, text, caller)
+}
+
+func (p *Program) readDataType(rootType *Type, text value.Text, caller validation.Limits) (data value.Data, report validation.Report) {
 	e := newEvaluator(p.module, validation.NewBudget(validation.Limits{}, caller).BeginStructure())
 	defer func() {
 		if caught := recover(); caught != nil {

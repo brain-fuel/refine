@@ -364,8 +364,14 @@ public final class ContractRuntime {
         Definition definition = root == null ? null : definitions.get(root);
         if (definition == null || !definition.parameters().isEmpty()) return new Validation.Invalid(List.of(
             new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a declared root type with no unbound type parameters.")), false);
+        return validateType(definitions,functions,new Type("named",root,List.of(),List.of(),List.of()),input,caller,refinements);
+    }
+    // Package-private execution of statically checked emitted type metadata.
+    // The generated contract exposes immutable handles, not an AST ingestion API.
+    static Validation.Outcome validateType(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Type target, Data input, Budget.Limits caller, boolean refinements) {
+        if (target == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a checked payload type.")), false);
         if (input == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.structure", List.of(""), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false);
-        return new Validator(definitions, functions, caller, refinements).run(root, input);
+        return new Validator(definitions, functions, caller, refinements).run(target, input);
     }
     private static final class Validator {
         final Map<String, Definition> definitions;
@@ -384,9 +390,9 @@ public final class ContractRuntime {
             this.enclosing = enclosing; this.structure = enclosing; this.work = work;
             definitions = enclosing.definitions; functions = enclosing.functions; refinements = true; budget = null;
         }
-        Validation.Outcome run(String root, Data input) {
+        Validation.Outcome run(Type root, Data input) {
             try {
-                schedule(new Type("named", root, List.of(), List.of(), List.of()), structure.transfer(input), Map.of(), "", 0, ignored -> {});
+                schedule(root, structure.transfer(input), Map.of(), "", 0, ignored -> {});
                 work.run();
             }
             catch (Failure e) { checks.add(new Validation.Undecided(new Validation.Diagnostic(e.code, List.of(currentPath), "", e.getMessage()))); }

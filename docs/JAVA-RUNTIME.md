@@ -120,6 +120,39 @@ typed view and diagnostics. The input is never modified, even when the typed
 record view excludes extras or supplies an absent optional field. This API uses
 explicit language payload constructors, **not JSON or Avro wire conventions**.
 
+`GenerateValidatorWithTypes(program, packageName, className, targets)` additionally
+registers closed payload-type expressions under application-chosen labels:
+
+```go
+files, err := java.GenerateValidatorWithTypes(program, "com.me.project", "Contract",
+    map[string]string{"box-age": "Box Age", "positive-tree": "Tree (Int where it > 0)"})
+```
+
+The supplied program declares those type constructors. Every expression is checked
+by the Go front end, including anonymous predicates and inferred `read` calls,
+before any output is returned. Invalid targets reject the entire generation.
+Registration order is deterministic; labels are nonempty Unicode strings, not
+Java identifiers. An empty registration map is equivalent to `GenerateValidator`.
+
+```java
+var target = Contract.payloadType("box-age");
+Validation.Outcome outcome = target.validate(candidate);
+Data decoded = target.read("{value = 21}").orThrow();
+```
+
+Handles have private constructors, immutable checked metadata, and methods
+`validate`, `validateWithoutRefinements`, and `read`, each with default and caller
+budget overloads. Unknown/null labels are rejected. Each operation retains the
+same budget and diagnostic behavior as Go's payload-type handle, with no synthetic
+alias layer. Failed reads expose no candidate; successful reads return the checked
+view, including ordinary extra-field removal and optional-field filling in
+language data. Structural bypasses still enforce representability.
+
+Java receives static metadata, not a schema/type-expression parser. This API
+enables instantiated validation targets but does **not** yet implement generic
+Java domain classes or the runtime type witnesses they need. Those remain required
+in [the model backend](JAVA-MODELS.md). No serde or Maven publication is implied.
+
 Supported structural forms include records, aliases, lists, generic/recursive
 tagged unions, `Maybe`, `Nullable`, `Result`, Bool/String, arbitrary integers and
 rationals, and checked fixed-width integers. Primitive-looking user declarations

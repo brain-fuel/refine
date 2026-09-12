@@ -900,3 +900,47 @@ native formats and project workflows. The full checklist remains the release gat
   [CI run](https://github.com/brain-fuel/refine/actions/runs/34673194522), including
   generation, race, vet, CLI and all fuzz gates. Authored GoPlus and generated
   Go were pushed together. No product tag or Maven deployment was made.
+
+## Checked instantiated payload types
+
+- `Program.PayloadType(expression)` creates an immutable, closed validation/read
+  target for instantiated generic declarations, anonymous records, collections,
+  builtins and arbitrary statically checked refinements. `ParseTypeExpression`
+  parses exactly one type under the existing parser/tree limits. Unbound
+  parameters, arity errors, unknown names, function-valued payloads, invalid
+  predicates and trailing declarations fail before a handle is returned.
+- The checker is shared with ordinary module compilation. Additional target
+  inference runs after the original module, preserving its generic scope symbols.
+  Targets have private inference state and caller-owned syntax/checked snapshots;
+  neither mutations nor same-named types in another program change a handle.
+  Creating a handle evaluates no predicates and adds no synthetic alias layer.
+  Existing named-root APIs retain their behavior. Nil/zero handles fail closed.
+- Validation, structural-only bypass and canonical read use the existing Go
+  evaluator. Failed reads expose no candidate. Tests cover generic/recursive
+  structures, anonymous rules, inferred higher-order reads, inline assertions,
+  unknown results, numeric boundaries, mutation isolation and concurrent use.
+  There are 2,691 complete named-root budget/report comparisons plus 3,000
+  property cases for validated versus explicit-bypass outcomes.
+- `GenerateValidatorWithTypes` emits a deterministic registry of checked targets
+  and private-constructor immutable Java handles with validation/bypass/read
+  methods and default/caller budget overloads. Labels are nonempty Unicode map
+  keys; unknown/null labels fail. Invalid registrations reject all output.
+  Java consumes static metadata, not a runtime schema/type-expression parser.
+- Tests pass 19,290 complete Go/Java target report and returned-read-value
+  comparisons plus 6,000 jetCheck cases. These include recursive generic
+  arguments, inline/whole-structure refinements, generic read inference,
+  higher-order predicates, regex, custom messages, unknown recovery, structural
+  bypasses and total/per-clause budget boundaries. Generated handles cannot be
+  constructed directly. A 1,100-target registry and a contract named
+  `PayloadType` compile and execute with Java 25 warnings-as-errors at `-Xss256k`.
+- Full local race tests, vet and deterministic GoPlus generation pass. New
+  ten-second fuzz runs passed 4,655,539 checked-type executions and 1,376,765
+  Java target-generation executions; both gates are included in Linux/macOS CI.
+  Baseline validator generation measured 649,169 ns/op, 2,389,787 B/op and 11,421
+  allocations/op on Darwin/arm64 (Apple M5 Max), not payload throughput.
+- This supplies instantiated validation/read targets needed by generic models;
+  generic Java domain classes and their typed runtime witnesses remain required.
+  Anonymous nested model classes, remaining language/native/serde functionality,
+  English output, analysis, generated tests, versioning, Maven/CLI integration
+  and the full release audit also remain required. No product tag or Maven deploy
+  is made. GoPlus remains pinned to the latest v0.158.0.
