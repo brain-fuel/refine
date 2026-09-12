@@ -587,6 +587,16 @@ native formats and project workflows. The full checklist remains the release gat
   validator generation benchmark measured 571,867 ns/op, 1,535,548 B/op and
   11,386 allocations/op on Darwin/arm64 (Apple M5 Max). These measurements cover
   generation, not payload throughput. The latest GoPlus remains v0.158.0.
+- A fresh public consumer fetched `v0.0.0-20260912020304-fe8449ba6193` with
+  `GOWORK=off` and no replacements. Its race-tested harness generated models,
+  compiled with Java 25 warnings-as-errors and verified nominal parent evidence,
+  generic target inference, recursive-read recovery, exact structured/UTF-16
+  round trips, custom diagnostics, bypass revalidation and caller budgets at
+  `-Xss256k`. Invalid and indeterminate results exposed no candidate payload.
+- Checkpoint `fe8449b` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34666580549), including
+  generation, race, vet, CLI and all fuzz gates. No product tag or Maven
+  deployment was made; the full release checklist remains open.
 - Java timestamps and regex remain explicitly unsupported. Complete models,
   native ingestion/exports, validated Jackson/Avro serde, English output,
   analysis, versioning, schema-derived tests, Maven wiring and the full CLI
