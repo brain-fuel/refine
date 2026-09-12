@@ -120,14 +120,30 @@ share Go's per-clause reporting, stable generated codes, default/custom messages
 invalid-plus-unknown aggregation, and structural/expression budget accounting.
 Custom-message failure preserves the conclusive violation and generated fallback.
 
-The current expression emitter handles literals, `it`, field projection, numeric
-and Boolean operators, equality, concatenation/cons, conditionals, unannotated
-local bindings, and record/list literals. It rejects named functions, function
-application (including builtins), match expressions, annotated local bindings,
-function-valued types and timestamps with `java.unsupported` plus source position.
-It never drops those rules or emits validators that quietly accept them.
-This is a development subset, not the final language contract: all those missing
-forms remain required. Contract initialization is emitted as dependency-ordered
+The expression emitter handles literals, `it`, field projection, numeric/Boolean
+operators, equality, concatenation/cons, conditionals, record/list literals, and
+local bindings with ordinary type annotations. Named functions support generic
+instantiation, recursion, partial application, higher-order arguments/results,
+zero-argument definitions and ordered equations. Case/function patterns support
+bindings, wildcards, literals, constructors, lists and cons patterns.
+
+Implemented builtins are `not`, `isInteger`, `length`, `reverse`, `map`, `filter`,
+`foldl`, `oneOf`, `elem`, `unique`, `all`, `any`, `satisfiesAll`,
+`satisfiesOnlyOneOf`, `satisfiesOneOf`, and `satisfiesAtLeastOneOf`. Quantifiers
+preserve three-outcome behavior: a later decisive result can survive an earlier
+unknown; nested attempts resume at the correct outer continuation/depth.
+Arguments are eager, even when the function ignores them. First-class functions
+remain private execution values, never variants in the public `Data` payload API.
+
+Java builtin `show`/`read`, regex `matches`/`search`, timestamps, and anonymous
+refinement assertions in local/function contracts (including inferred function
+signatures carrying anonymous refinements) still reject generation with
+`java.unsupported` and a source position. Named model/payload refinements already
+execute. Function-valued payload fields are not serializable payload types.
+Unsupported rules are never dropped. The missing execution forms remain release
+obligations, not optional extensions.
+
+Contract initialization is emitted as dependency-ordered
 chunks: bounded static initializers, bounded list construction, sequential class
 loading, and split long string constants. This removes the former 48,000-byte
 contract-source guard without raising JVM stack or method-size limits. Helpers
@@ -142,7 +158,7 @@ unknown, tiny-budget, overflow and deep-tree cases. Three jetCheck suites add
 The all-leaves-checked tree law deliberately generates trees within the documented
 resource limits; separate over-limit cases require Go/Java agreement instead.
 Emitter tests cover all-or-nothing rejection, unsafe class names, detached syntax
-copies, escaped controls/lone surrogates, and deterministic output. A 4.8 MB
+copies, escaped controls/lone surrogates, and deterministic output. A multi-megabyte
 generated-contract fixture covers 1,100 named refinements, a 1,100-field record,
 a 1,100-alternative tagged union, 70,000-character custom messages and constants,
 and a long supplementary-Unicode diagnostic code. Large collection literals and
@@ -157,6 +173,14 @@ current evaluator policy. Full-report tests run with a deliberately small
 `-Xss256k` JVM stack; an additional 18,534 comparisons stress deep record equality,
 deep mismatches, long arithmetic expressions and their total/per-clause budget
 boundaries. Within-policy inputs must still produce conclusive results.
+
+Function execution adds 82,048 complete-report comparisons across recursion, generic
+and higher-order calls, patterns, all quantifier truth-table sequences through
+length four, tiny budgets, nontermination/depth recovery, fixed-width overflow,
+eager ignored arguments and custom-message functions. An additional 3,000
+jetCheck cases exercise recursive sum and higher-order/unknown composition.
+Generated semantic model tests also enforce function-backed predicates in normal
+constructors while preserving explicit bypass behavior.
 
 The report comparisons exercise both normal validation and structural-only
 bypasses. Java `validateStructure` corresponds to Go's explicit

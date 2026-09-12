@@ -418,3 +418,38 @@ native formats and project workflows. The full checklist remains the release gat
   [CI run](https://github.com/brain-fuel/refine/actions/runs/34661325983), including
   all fuzz gates. This verifies bounded initialization, not the unfinished full
   compiler/model/serde/release requirements above.
+
+## Java named-function and pattern execution
+
+- `Program.CheckedSyntax()` supplies a detached, checked syntax/inference/scope
+  snapshot for backends. Mutation tests cover expression/type nodes and generic
+  scope maps without changing the original program or independent snapshots.
+  Java emission now retains type instantiation and generic declaration/function
+  bindings instead of dropping the checker's metadata.
+- Generated Java executes named functions, ordinary and polymorphic recursion,
+  partial application, higher-order arguments/results, nullary definitions,
+  constructors, ordered equations and nested case/list/cons/literal patterns.
+  Ordinary local type annotations are supported. Functions inhabit a private
+  value hierarchy, not the public payload `Data` variants.
+- Collection operators and all four `satisfies*` spellings preserve the Go
+  evaluator's logical-step/depth accounting and three-outcome semantics. Queued
+  exception boundaries let nested quantifiers recover from unknowns without
+  recursively re-entering the host JVM stack or retaining failed continuations.
+- The function suite compares 82,048 complete Go/Java reports, including all
+  no/yes/unknown sequences through length four, tiny total/clause budgets,
+  ignored eager arguments, generic optional arguments, record signatures,
+  fixed-width overflow, builtin shadowing, polymorphic recursion and recovery
+  after depth failure. Another 3,000 fresh jetCheck cases exercise recursive sum
+  and higher-order/unknown composition. Model constructors and bypasses now
+  exercise function-backed predicates too. Existing runtime/model/stack/large
+  initializer suites remain in force.
+- Java builtin `show`/`read`, regex, timestamps and anonymous inline assertions
+  (including refined function signatures) still reject emission explicitly.
+  They remain required alongside the outstanding model, native-format, serde,
+  English, analysis, versioning, generated-test and Maven/CLI work.
+- A 10-second validator-emitter fuzz run passed 5,028,211 executions. The regular
+  validator generation benchmark measured 455,620 ns/op, 1,103,522 B/op and 9,530
+  allocations/op on Darwin/arm64 (Apple M5 Max), now including a detached full
+  type check. Full local race tests, vet and deterministic generation pass.
+  GoPlus latest remains pinned at v0.158.0. Fresh upstream CI and
+  independent-consumer evidence are still required for this checkpoint.

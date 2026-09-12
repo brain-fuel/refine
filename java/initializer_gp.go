@@ -6,6 +6,8 @@ package java
 import (
 	"fmt"
 	"strings"
+
+	"goforge.dev/refine/language"
 )
 
 // Nodes are emitted in dependency order. Each class has bounded initializer
@@ -17,8 +19,9 @@ type initializerNode struct {
 	source string
 }
 type initializer struct {
-	prefix string
-	nodes  []initializerNode
+	prefix  string
+	nodes   []initializerNode
+	checked *language.CheckedModule
 }
 
 const initializerChunk = 32
@@ -107,8 +110,8 @@ func (e *initializer) source(root string) string {
         for (var part : parts) result.addAll(part);
         return java.util.List.copyOf(result);
     }
-    static java.util.Map<String, ContractRuntime.Definition> definitions(java.util.List<java.util.Map.Entry<String, ContractRuntime.Definition>> entries) {
-        var result = new java.util.LinkedHashMap<String, ContractRuntime.Definition>();
+    static <T> java.util.Map<String, T> dictionary(java.util.List<java.util.Map.Entry<String, T>> entries) {
+        var result = new java.util.LinkedHashMap<String, T>();
         for (var entry : entries) if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) throw new AssertionError("duplicate checked type");
         return java.util.Map.copyOf(result);
     }

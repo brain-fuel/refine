@@ -19,6 +19,9 @@ import (
 )
 
 const modelContract = `
+positive :: Int -> Bool
+positive n = n > 0
+type FunctionAge = Int where positive it
 type AccountId = String
 type OtherId = String
 type Age = Int where it >= 0 @code "age.nonnegative"
@@ -136,6 +139,9 @@ public final class Models {
     static BigInteger parentValue(Age parent) { return parent.value(); }
     record Range(int start, int span) {}
     public static void main(String[] args) {
+        require(new FunctionAge(n(1)).value().equals(n(1)));
+        rejects(() -> new FunctionAge(n(0)));
+        require(FunctionAge.createWithoutValidation(n(-1)).validate().state() == Validation.State.INVALID);
         ProofChecks.run();
         String spelling = new String(new char[]{'x', (char)0xd800}); AccountId id = new AccountId(spelling);
         require(id.value() == spelling);

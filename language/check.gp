@@ -19,6 +19,26 @@ func (p *Program) Syntax() *Module {
     return copy
 }
 
+// CheckedModule is a caller-owned code-generation snapshot. Inferred expression
+// keys belong to Syntax's tree; type-variable scopes connect generic declaration
+// parameters to the checker's reified symbols. Mutating any part of the snapshot
+// cannot change the compiled Program or a later snapshot.
+type CheckedModule struct {
+    Syntax *Module
+    Inferred map[*Expr]*Type
+    FunctionScopes map[string]map[string]string
+    DeclarationScopes map[string]map[string]string
+}
+
+func (p *Program) CheckedSyntax() CheckedModule {
+    // Rechecking a fresh tree preserves all inference/AST identity relationships
+    // without exposing the interpreter's compiler-owned representation.
+    copy,err:=Compile(p.module.Source)
+    if err!=nil{panic("checked source stopped compiling")}
+    module:=copy.module
+    return CheckedModule{Syntax:module,Inferred:module.inferred,FunctionScopes:module.functionScopes,DeclarationScopes:module.declarationScopes}
+}
+
 type term struct { name string; args []*term; fields []typedField; variable int; rigid bool; rules []Where }
 type typedField struct { name string; typ *term }
 type constructor struct { parent string; parameters []string; arguments []*Type }

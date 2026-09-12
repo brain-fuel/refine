@@ -26,15 +26,35 @@ public final class ContractRuntime {
     }
     public record Member(String name, Type type) {}
     public record Alternative(String name, List<Type> arguments) { public Alternative { arguments = List.copyOf(arguments); } }
-    public record Definition(List<String> parameters, Type body, List<Alternative> alternatives) {
-        public Definition { parameters = List.copyOf(parameters); alternatives = List.copyOf(alternatives); }
+    public record Scope(String parameter, String symbol) {}
+    public record Definition(List<String> parameters, Type body, List<Alternative> alternatives, List<Scope> scopes) {
+        public Definition { parameters = List.copyOf(parameters); alternatives = List.copyOf(alternatives); scopes = List.copyOf(scopes); }
+        public Definition(List<String> parameters, Type body, List<Alternative> alternatives) { this(parameters, body, alternatives, List.of()); }
     }
+    public record Pattern(String kind, String name, List<Pattern> arguments, Expr literal) { public Pattern { arguments = List.copyOf(arguments); } }
+    public record Arm(Pattern pattern, Expr body) {}
+    public record Equation(List<Pattern> patterns, Expr body) { public Equation { patterns = List.copyOf(patterns); } }
+    public record FunctionDef(Type signature, List<Equation> equations, List<Scope> scopes) { public FunctionDef { equations = List.copyOf(equations); scopes = List.copyOf(scopes); } }
     public record Rule(String code, int offset, String predicate, Expr expression, Expr message, BigInteger steps) {}
-    public record Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names) {
-        public Expr { arguments = List.copyOf(arguments); names = List.copyOf(names); }
+    public record Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names, Type signature, List<Arm> arms) {
+        public Expr { arguments = List.copyOf(arguments); names = List.copyOf(names); arms = List.copyOf(arms); }
+        public Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names) { this(kind, text, flag, arguments, names, null, List.of()); }
     }
+    // Private execution values can later carry partial applications without
+    // putting functions into the public payload Data hierarchy.
+    private sealed interface Val {}
+    private record NumberValue(Rational value, String numericType) implements Val {
+        NumberValue(Rational value) { this(value, value.isInteger() ? "Int" : "Real"); }
+    }
+    private record TextValue(String value) implements Val {}
+    private record BoolValue(boolean value) implements Val {}
+    private record ListValue(List<Val> values) implements Val { ListValue { values = List.copyOf(values); } }
+    private record FieldValue(String name, Val value) {}
+    private record RecordValue(List<FieldValue> fields) implements Val { RecordValue { fields = List.copyOf(fields); } }
+    private record VariantValue(String name, List<Val> values) implements Val { VariantValue { values = List.copyOf(values); } }
+    private record FunctionValue(String name, int arity, List<Val> arguments, Type signature) implements Val { FunctionValue { arguments = List.copyOf(arguments); } }
     private record Binding(Type type, Map<String, Binding> environment) {}
-    private record Checked(Data data, boolean shape) {}
+    private record Checked(Val data, boolean shape) {}
     private static final class Failure extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final String code;
@@ -43,6 +63,11 @@ public final class ContractRuntime {
     private static Failure fail(String code, String message) { return new Failure(code, message); }
     private static String pointer(String path, String name) { return path + "/" + name.replace("~", "~0").replace("/", "~1"); }
     private static int utf8Size(String text) { return text.getBytes(StandardCharsets.UTF_8).length; }
+    private static Type flatten(Type type) {
+        var arguments = new ArrayList<Type>();
+        while (type.kind().equals("applied")) { arguments.addFirst(type.arguments().get(1)); type = type.arguments().getFirst(); }
+        return new Type("named", type.name(), arguments, List.of(), List.of());
+    }
     private static boolean numericPrimitive(String name) {
         if (name.equals("Int") || name.equals("Real")) return true;
         if (!name.matches("U?Int[0-9]+")) return false;
@@ -53,14 +78,35 @@ public final class ContractRuntime {
     /** Continuations are queued, never recursively invoked on the host stack. */
     private static final class Work {
         final ArrayDeque<Runnable> tasks = new ArrayDeque<>();
+        private record Trap(int remaining, Consumer<Failure> handler) {}
+        final ArrayDeque<Trap> traps = new ArrayDeque<>();
         void later(Runnable task) { tasks.push(task); }
         <T> void complete(Consumer<T> receiver, T value) { later(() -> receiver.accept(value)); }
-        void run() { while (!tasks.isEmpty()) tasks.pop().run(); }
+        <T> void attempt(Consumer<Consumer<T>> start, Consumer<T> done, Consumer<Failure> failed) {
+            traps.push(new Trap(tasks.size(), failed));
+            start.accept(value -> { traps.pop(); complete(done, value); });
+        }
+        void run() {
+            while (!tasks.isEmpty()) {
+                try { tasks.pop().run(); }
+                catch (Failure failure) {
+                    if (traps.isEmpty()) throw failure;
+                    Trap trap = traps.pop(); while (tasks.size() > trap.remaining()) tasks.pop();
+                    complete(trap.handler(), failure);
+                }
+            }
+        }
     }
     private static final class Eval {
         final Budget.Meter meter;
+        final Map<String, Definition> definitions;
+        final Map<String, FunctionDef> functions;
+        final Map<String, Integer> constructors = new HashMap<>(Map.of("Nothing", 0, "Just", 1, "Null", 0, "NonNull", 1, "Err", 1, "Ok", 1));
         int depth;
-        Eval(Budget.Meter meter) { this.meter = meter; }
+        Eval(Budget.Meter meter, Map<String, Definition> definitions, Map<String, FunctionDef> functions) {
+            this.meter = meter; this.definitions = definitions; this.functions = functions;
+            for (Definition definition : definitions.values()) for (Alternative alternative : definition.alternatives()) constructors.put(alternative.name(), alternative.arguments().size());
+        }
         void step(long cost) { step(BigInteger.valueOf(cost)); }
         void step(BigInteger cost) {
             try { meter.step(cost); } catch (Budget.Exceeded e) { throw fail("evaluation.budget", "validation step budget exhausted"); }
@@ -73,35 +119,35 @@ public final class ContractRuntime {
             step(1);
             if (logicalDepth >= 512) throw fail("evaluation.depth", "evaluation nesting limit exceeded");
         }
-        Data transfer(Data value) {
-            Work work = new Work(); Data[] result = new Data[1];
+        Val transfer(Data value) {
+            Work work = new Work(); Val[] result = new Val[1];
             class Transfer {
-                void visit(Data input, int logicalDepth, Consumer<Data> done) {
+                void visit(Data input, int logicalDepth, Consumer<Val> done) {
                     work.later(() -> {
                         enterDepth(logicalDepth);
                         switch (input) {
-                            case Data.Number n -> { step(n.value().show().length()); work.complete(done, new Data.Number(n.value())); }
-                            case Data.Text t -> work.complete(done, t);
-                            case Data.Bool b -> work.complete(done, b);
-                            case Data.Sequence list -> { step(list.values().size()); items(list.values(), logicalDepth, values -> new Data.Sequence(values), done); }
-                            case Data.Variant v -> { step((long)v.values().size() + utf8Size(v.name())); items(v.values(), logicalDepth, values -> new Data.Variant(v.name(), values), done); }
+                            case Data.Number n -> { step(n.value().show().length()); work.complete(done, new NumberValue(n.value())); }
+                            case Data.Text t -> work.complete(done, new TextValue(t.value()));
+                            case Data.Bool b -> work.complete(done, new BoolValue(b.value()));
+                            case Data.Sequence list -> { step(list.values().size()); items(list.values(), logicalDepth, values -> new ListValue(values), done); }
+                            case Data.Variant v -> { step((long)v.values().size() + utf8Size(v.name())); items(v.values(), logicalDepth, values -> new VariantValue(v.name(), values), done); }
                             case Data.Struct record -> {
                                 step(record.fields().size());
                                 work.later(new Runnable() {
-                                    int index; final List<Data.Field> fields = new ArrayList<>();
+                                    int index; final List<FieldValue> fields = new ArrayList<>();
                                     @Override public void run() {
-                                        if (index == record.fields().size()) { work.complete(done, new Data.Struct(fields)); return; }
+                                        if (index == record.fields().size()) { work.complete(done, new RecordValue(fields)); return; }
                                         Data.Field field = record.fields().get(index++); step(utf8Size(field.name()));
-                                        visit(field.value(), logicalDepth + 1, item -> { fields.add(new Data.Field(field.name(), item)); work.later(this); });
+                                        visit(field.value(), logicalDepth + 1, item -> { fields.add(new FieldValue(field.name(), item)); work.later(this); });
                                     }
                                 });
                             }
                         }
                     });
                 }
-                void items(List<Data> inputs, int logicalDepth, Function<List<Data>, Data> finish, Consumer<Data> done) {
+                void items(List<Data> inputs, int logicalDepth, Function<List<Val>, Val> finish, Consumer<Val> done) {
                     work.later(new Runnable() {
-                        int index; final List<Data> values = new ArrayList<>();
+                        int index; final List<Val> values = new ArrayList<>();
                         @Override public void run() {
                             if (index == inputs.size()) { work.complete(done, finish.apply(values)); return; }
                             visit(inputs.get(index++), logicalDepth + 1, item -> { values.add(item); work.later(this); });
@@ -111,10 +157,10 @@ public final class ContractRuntime {
             }
             new Transfer().visit(value, depth, data -> result[0] = data); work.run(); return result[0];
         }
-        Data expression(Expr expression, Map<String, Data> environment) {
-            Work work = new Work(); Data[] result = new Data[1];
+        Val expression(Expr expression, Map<String, Val> environment, Map<String, Binding> typeEnvironment) {
+            Work work = new Work(); Val[] result = new Val[1];
             class Expression {
-                void visit(Expr expr, Map<String, Data> env, int logicalDepth, Consumer<Data> done) {
+                void visit(Expr expr, Map<String, Val> env, Map<String, Binding> types, int logicalDepth, Consumer<Val> done) {
                     work.later(() -> {
                         enterDepth(logicalDepth);
                         List<Expr> args = expr.arguments(); String text = expr.text();
@@ -126,46 +172,61 @@ public final class ContractRuntime {
                             if (cost.compareTo(Budget.MAX) > 0) throw fail("evaluation.budget", "numeric literal expansion exceeds evaluation resources");
                         }
                         step(cost);
-                        work.complete(done, new Data.Number(Rational.parse(text), text.indexOf('.') >= 0 || at >= 0 ? "Real" : "Int"));
+                        work.complete(done, new NumberValue(Rational.parse(text), text.indexOf('.') >= 0 || at >= 0 ? "Real" : "Int"));
                     }
-                    case "text" -> { step(utf8Size(text)); work.complete(done, new Data.Text(TextCodec.read(text))); }
-                    case "bool" -> work.complete(done, new Data.Bool(expr.flag()));
+                    case "text" -> { step(utf8Size(text)); work.complete(done, new TextValue(TextCodec.read(text))); }
+                    case "bool" -> work.complete(done, new BoolValue(expr.flag()));
                     case "variable" -> work.complete(done, env.get(text));
-                    case "project" -> visit(args.getFirst(), env, logicalDepth + 1, input -> {
-                        Data.Struct record = (Data.Struct)input; Data found = null;
-                        for (Data.Field field : record.fields()) { step(1); if (field.name().equals(text)) { found = field.value(); break; } }
+                    case "global" -> resolve(text, instantiate(expr.signature(), types), logicalDepth + 1, done);
+                    case "apply" -> visit(args.get(0), env, types, logicalDepth + 1, fn ->
+                        visit(args.get(1), env, types, logicalDepth + 1, arg -> apply(fn, arg, logicalDepth + 1, done)));
+                    case "case" -> visit(args.getFirst(), env, types, logicalDepth + 1, value -> {
+                        work.later(new Runnable() {
+                            int index;
+                            @Override public void run() {
+                                if (index == expr.arms().size()) throw fail("evaluation.pattern", "no pattern matched the value");
+                                Arm arm = expr.arms().get(index++); var local = new HashMap<>(env);
+                                pattern(arm.pattern(), value, local, types, logicalDepth + 1, matched -> {
+                                    if (matched) visit(arm.body(), local, types, logicalDepth + 1, done); else work.later(this);
+                                });
+                            }
+                        });
+                    });
+                    case "project" -> visit(args.getFirst(), env, types, logicalDepth + 1, input -> {
+                        RecordValue record = (RecordValue)input; Val found = null;
+                        for (FieldValue field : record.fields()) { step(1); if (field.name().equals(text)) { found = field.value(); break; } }
                         if (found == null) throw fail("evaluation.field", "record field is missing"); work.complete(done, found);
                     });
-                    case "unary" -> visit(args.getFirst(), env, logicalDepth + 1, input -> {
-                        Data.Number n = (Data.Number)input; step(n.value().show().length());
+                    case "unary" -> visit(args.getFirst(), env, types, logicalDepth + 1, input -> {
+                        NumberValue n = (NumberValue)input; step(n.value().show().length());
                         work.complete(done, checkedNumber(n.value().negate(), n.numericType()));
                     });
-                    case "binary" -> visit(args.get(0), env, logicalDepth + 1, left -> {
-                        if (text.equals("&&") && !((Data.Bool)left).value()) { work.complete(done, new Data.Bool(false)); return; }
-                        if (text.equals("||") && ((Data.Bool)left).value()) { work.complete(done, new Data.Bool(true)); return; }
-                        visit(args.get(1), env, logicalDepth + 1, right -> work.complete(done,
+                    case "binary" -> visit(args.get(0), env, types, logicalDepth + 1, left -> {
+                        if (text.equals("&&") && !((BoolValue)left).value()) { work.complete(done, new BoolValue(false)); return; }
+                        if (text.equals("||") && ((BoolValue)left).value()) { work.complete(done, new BoolValue(true)); return; }
+                        visit(args.get(1), env, types, logicalDepth + 1, right -> work.complete(done,
                             atDepth(logicalDepth + 1, () -> binary(text, left, right))));
                     });
-                    case "if" -> visit(args.get(0), env, logicalDepth + 1, condition ->
-                        visit(args.get(((Data.Bool)condition).value() ? 1 : 2), env, logicalDepth + 1, done));
-                    case "let" -> visit(args.get(0), env, logicalDepth + 1, value -> {
-                        var local = new HashMap<>(env); local.put(text, value); visit(args.get(1), local, logicalDepth + 1, done);
+                    case "if" -> visit(args.get(0), env, types, logicalDepth + 1, condition ->
+                        visit(args.get(((BoolValue)condition).value() ? 1 : 2), env, types, logicalDepth + 1, done));
+                    case "let" -> visit(args.get(0), env, types, logicalDepth + 1, value -> {
+                        var local = new HashMap<>(env); local.put(text, value); visit(args.get(1), local, types, logicalDepth + 1, done);
                     });
                     case "list", "record" -> {
                         step(args.size());
                         work.later(new Runnable() {
-                            int index; final List<Data> values = new ArrayList<>();
+                            int index; final List<Val> values = new ArrayList<>();
                             @Override public void run() {
                                 if (index == args.size()) {
-                                    if (expr.kind().equals("list")) work.complete(done, new Data.Sequence(values));
+                                    if (expr.kind().equals("list")) work.complete(done, new ListValue(values));
                                     else {
-                                        var fields = new ArrayList<Data.Field>();
-                                        for (int i = 0; i < values.size(); i++) fields.add(new Data.Field(expr.names().get(i), values.get(i)));
-                                        work.complete(done, new Data.Struct(fields));
+                                        var fields = new ArrayList<FieldValue>();
+                                        for (int i = 0; i < values.size(); i++) fields.add(new FieldValue(expr.names().get(i), values.get(i)));
+                                        work.complete(done, new RecordValue(fields));
                                     }
                                     return;
                                 }
-                                visit(args.get(index++), env, logicalDepth + 1, value -> { values.add(value); work.later(this); });
+                                visit(args.get(index++), env, types, logicalDepth + 1, value -> { values.add(value); work.later(this); });
                             }
                         });
                     }
@@ -173,40 +234,43 @@ public final class ContractRuntime {
                         }
                     });
                 }
+                ` + functionExecutionJava + `
             }
-            new Expression().visit(expression, environment, depth, data -> result[0] = data); work.run(); return result[0];
+            new Expression().visit(expression, environment, typeEnvironment, depth, data -> result[0] = data); work.run(); return result[0];
         }
-        Data.Number checkedNumber(Rational number, String type) {
+        ` + functionTypesJava + `
+        NumberValue checkedNumber(Rational number, String type) {
             if (!type.equals("Int") && !type.equals("Real")) {
                 int width = Integer.parseInt(type.replace("UInt", "").replace("Int", "")); step(width);
                 try { number.fixedWidth(width, !type.startsWith("UInt")); }
                 catch (ArithmeticException e) { throw fail("evaluation.overflow", "fixed-width result is not representable"); }
             }
-            return new Data.Number(number, type);
+            return new NumberValue(number, type);
         }
-        boolean equal(Data a, Data b) {
+        boolean equal(Val a, Val b) {
             Work work = new Work(); boolean[] same = { true };
             class Equality {
-                void visit(Data left, Data right, int logicalDepth) {
+                void visit(Val left, Val right, int logicalDepth) {
                     work.later(() -> {
                         enterDepth(logicalDepth);
                         switch (left) {
-                            case Data.Number n -> { Rational r = ((Data.Number)right).value(); step((long)n.value().show().length() + r.show().length()); same[0] = n.value().equals(r); }
-                            case Data.Text t -> { String r = ((Data.Text)right).value(); step((long)t.value().length() + r.length()); same[0] = t.value().equals(r); }
-                            case Data.Bool v -> same[0] = v.value() == ((Data.Bool)right).value();
-                            case Data.Sequence list -> items(list.values(), ((Data.Sequence)right).values(), logicalDepth);
-                            case Data.Variant v -> {
-                                var other = (Data.Variant)right; same[0] = v.name().equals(other.name());
+                            case FunctionValue ignored -> throw fail("evaluation.type", "functions do not support value equality");
+                            case NumberValue n -> { Rational r = ((NumberValue)right).value(); step((long)n.value().show().length() + r.show().length()); same[0] = n.value().equals(r); }
+                            case TextValue t -> { String r = ((TextValue)right).value(); step((long)t.value().length() + r.length()); same[0] = t.value().equals(r); }
+                            case BoolValue v -> same[0] = v.value() == ((BoolValue)right).value();
+                            case ListValue list -> items(list.values(), ((ListValue)right).values(), logicalDepth);
+                            case VariantValue v -> {
+                                var other = (VariantValue)right; same[0] = v.name().equals(other.name());
                                 if (same[0]) items(v.values(), other.values(), logicalDepth);
                             }
-                            case Data.Struct record -> {
-                                var other = ((Data.Struct)right).fields(); same[0] = record.fields().size() == other.size();
+                            case RecordValue record -> {
+                                var other = ((RecordValue)right).fields(); same[0] = record.fields().size() == other.size();
                                 if (same[0]) work.later(new Runnable() {
                                     int index;
                                     @Override public void run() {
                                         if (index == record.fields().size()) return;
-                                        Data.Field field = record.fields().get(index++);
-                                        for (Data.Field candidate : other) {
+                                        FieldValue field = record.fields().get(index++);
+                                        for (FieldValue candidate : other) {
                                             step(1);
                                             if (candidate.name().equals(field.name())) { work.later(this); visit(field.value(), candidate.value(), logicalDepth + 1); return; }
                                         }
@@ -217,7 +281,7 @@ public final class ContractRuntime {
                         }
                     });
                 }
-                void items(List<Data> left, List<Data> right, int logicalDepth) {
+                void items(List<Val> left, List<Val> right, int logicalDepth) {
                     same[0] = left.size() == right.size();
                     if (same[0]) work.later(new Runnable() {
                         int index;
@@ -232,58 +296,65 @@ public final class ContractRuntime {
             while (same[0] && !work.tasks.isEmpty()) work.tasks.pop().run();
             return same[0];
         }
-        Data binary(String op, Data a, Data b) {
+        Val binary(String op, Val a, Val b) {
             switch (op) {
-                case "&&": return new Data.Bool(((Data.Bool)a).value() && ((Data.Bool)b).value());
-                case "||": return new Data.Bool(((Data.Bool)a).value() || ((Data.Bool)b).value());
-                case "==": return new Data.Bool(equal(a, b));
-                case "/=": return new Data.Bool(!equal(a, b));
-                case ":": { var values = ((Data.Sequence)b).values(); step((long)values.size() + 1); var result = new ArrayList<Data>(); result.add(a); result.addAll(values); return new Data.Sequence(result); }
+                case "&&": return new BoolValue(((BoolValue)a).value() && ((BoolValue)b).value());
+                case "||": return new BoolValue(((BoolValue)a).value() || ((BoolValue)b).value());
+                case "==": return new BoolValue(equal(a, b));
+                case "/=": return new BoolValue(!equal(a, b));
+                case ":": { var values = ((ListValue)b).values(); step((long)values.size() + 1); var result = new ArrayList<Val>(); result.add(a); result.addAll(values); return new ListValue(result); }
                 case "++": {
-                    if (a instanceof Data.Text t) { String r = ((Data.Text)b).value(); step((long)t.value().length() + r.length()); return new Data.Text(t.value() + r); }
-                    var left = ((Data.Sequence)a).values(); var right = ((Data.Sequence)b).values(); step((long)left.size() + right.size());
-                    var result = new ArrayList<>(left); result.addAll(right); return new Data.Sequence(result);
+                    if (a instanceof TextValue t) { String r = ((TextValue)b).value(); step((long)t.value().length() + r.length()); return new TextValue(t.value() + r); }
+                    var left = ((ListValue)a).values(); var right = ((ListValue)b).values(); step((long)left.size() + right.size());
+                    var result = new ArrayList<>(left); result.addAll(right); return new ListValue(result);
                 }
             }
             if (List.of("<", "<=", ">", ">=").contains(op)) {
                 int compared;
-                if (a instanceof Data.Text t) { String r = ((Data.Text)b).value(); step((long)t.value().length() + r.length()); compared = t.value().compareTo(r); }
-                else { Data.Number n = (Data.Number)a, r = (Data.Number)b; numericTypes(n, r); numericCost(n.value(), r.value()); compared = n.value().compareTo(r.value()); }
-                return new Data.Bool(switch (op) { case "<" -> compared < 0; case "<=" -> compared <= 0; case ">" -> compared > 0; default -> compared >= 0; });
+                if (a instanceof TextValue t) { String r = ((TextValue)b).value(); step((long)t.value().length() + r.length()); compared = t.value().compareTo(r); }
+                else { NumberValue n = (NumberValue)a, r = (NumberValue)b; numericTypes(n, r); numericCost(n.value(), r.value()); compared = n.value().compareTo(r.value()); }
+                return new BoolValue(switch (op) { case "<" -> compared < 0; case "<=" -> compared <= 0; case ">" -> compared > 0; default -> compared >= 0; });
             }
-            Data.Number left = (Data.Number)a, right = (Data.Number)b; numericTypes(left, right);
+            NumberValue left = (NumberValue)a, right = (NumberValue)b; numericTypes(left, right);
             Rational n = left.value(), r = right.value(); numericCost(n, r);
-            if (op.equals("/")) { if (r.signum() == 0) throw fail("evaluation.divide", "division by zero"); return new Data.Number(n.divide(r), "Real"); }
+            if (op.equals("/")) { if (r.signum() == 0) throw fail("evaluation.divide", "division by zero"); return new NumberValue(n.divide(r), "Real"); }
             if (op.equals("%") && r.signum() == 0) throw fail("evaluation.remainder", "integer remainder is undefined");
             return checkedNumber(switch (op) { case "+" -> n.add(r); case "-" -> n.subtract(r); case "*" -> n.multiply(r); case "%" -> n.remainder(r); default -> throw new AssertionError("unhandled operator"); }, left.numericType());
         }
-        void numericTypes(Data.Number a, Data.Number b) { if (!a.numericType().equals(b.numericType())) throw fail("evaluation.type", "numeric operands need an explicit conversion"); }
+        void numericTypes(NumberValue a, NumberValue b) { if (!a.numericType().equals(b.numericType())) throw fail("evaluation.type", "numeric operands need an explicit conversion"); }
         void numericCost(Rational a, Rational b) { step(BigInteger.valueOf(a.show().length()).multiply(BigInteger.valueOf(b.show().length())).add(BigInteger.ONE)); }
     }
 
     public static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, root, input, caller, true);
+        return validate(definitions, Map.of(), root, input, caller, true);
     }
     public static Validation.Outcome validateStructure(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, root, input, caller, false);
+        return validate(definitions, Map.of(), root, input, caller, false);
     }
-    private static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller, boolean refinements) {
+    public static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller) {
+        return validate(definitions, functions, root, input, caller, true);
+    }
+    public static Validation.Outcome validateStructure(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller) {
+        return validate(definitions, functions, root, input, caller, false);
+    }
+    private static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller, boolean refinements) {
         Definition definition = root == null ? null : definitions.get(root);
         if (definition == null || !definition.parameters().isEmpty()) return new Validation.Invalid(List.of(
             new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a declared root type with no unbound type parameters.")), false);
         if (input == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.structure", List.of(""), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false);
-        return new Validator(definitions, caller, refinements).run(root, input);
+        return new Validator(definitions, functions, caller, refinements).run(root, input);
     }
     private static final class Validator {
         final Map<String, Definition> definitions;
+        final Map<String, FunctionDef> functions;
         final Budget budget;
         final Eval structure;
         final List<Validation.Check> checks = new ArrayList<>();
         final boolean refinements;
         final Work work = new Work();
         String currentPath = "";
-        Validator(Map<String, Definition> definitions, Budget.Limits caller, boolean refinements) {
-            this.definitions = definitions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure());
+        Validator(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Budget.Limits caller, boolean refinements) {
+            this.definitions = definitions; this.functions = functions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure(), definitions, functions);
         }
         Validation.Outcome run(String root, Data input) {
             try {
@@ -297,14 +368,14 @@ public final class ContractRuntime {
             checks.add(new Validation.Violated(new Validation.Diagnostic("validation.structure", List.of(path), "", message)));
             return new Checked(null, false);
         }
-        void schedule(Type type, Data input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
+        void schedule(Type type, Val input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
             work.later(() -> {
                 currentPath = path;
                 structure.enterDepth(depth);
                 switch (type.kind()) {
                     case "refined": {
                         schedule(type.arguments().getFirst(), input, env, path, depth + 1, result -> {
-                            if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path);
+                            if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path, env);
                             work.complete(done, result);
                         });
                         return;
@@ -315,28 +386,29 @@ public final class ContractRuntime {
                         else schedule(binding.type(), input, binding.environment(), path, depth + 1, done);
                         return;
                     }
+                    case "applied": { named(flatten(type), input, env, path, depth, done); return; }
                     case "list": {
-                        if (!(input instanceof Data.Sequence list)) { work.complete(done, wrong(path, "Expected a list.")); return; }
+                        if (!(input instanceof ListValue list)) { work.complete(done, wrong(path, "Expected a list.")); return; }
                         structure.step(list.values().size());
-                        items(list.values(), ignored -> type.arguments().getFirst(), env, path, depth, values -> new Data.Sequence(values), done);
+                        items(list.values(), ignored -> type.arguments().getFirst(), env, path, depth, values -> new ListValue(values), done);
                         return;
                     }
                     case "record": {
-                        if (!(input instanceof Data.Struct record)) { work.complete(done, wrong(path, "Expected a record.")); return; }
-                        structure.step((long)record.fields().size() + type.fields().size()); var actual = new HashMap<String, Data>();
-                        for (Data.Field field : record.fields()) actual.put(field.name(), field.value());
+                        if (!(input instanceof RecordValue record)) { work.complete(done, wrong(path, "Expected a record.")); return; }
+                        structure.step((long)record.fields().size() + type.fields().size()); var actual = new HashMap<String, Val>();
+                        for (FieldValue field : record.fields()) actual.put(field.name(), field.value());
                         work.later(new Runnable() {
-                            int index; boolean all = true; final List<Data.Field> result = new ArrayList<>();
+                            int index; boolean all = true; final List<FieldValue> result = new ArrayList<>();
                             @Override public void run() {
-                                if (index == type.fields().size()) { work.complete(done, new Checked(all ? new Data.Struct(result) : null, all)); return; }
+                                if (index == type.fields().size()) { work.complete(done, new Checked(all ? new RecordValue(result) : null, all)); return; }
                                 Member field = type.fields().get(index++);
-                                Data value = actual.get(field.name()); String childPath = pointer(path, field.name());
+                                Val value = actual.get(field.name()); String childPath = pointer(path, field.name());
                                 if (value == null) {
-                                    if (optional(field.type(), env, 0)) value = new Data.Variant("Nothing", List.of());
+                                    if (optional(field.type(), env, 0)) value = new VariantValue("Nothing", List.of());
                                     else { wrong(childPath, "Required field is absent."); all = false; work.later(this); return; }
                                 }
                                 schedule(field.type(), value, env, childPath, depth + 1, checked -> {
-                                    all &= checked.shape(); if (checked.shape()) result.add(new Data.Field(field.name(), checked.data())); work.later(this);
+                                    all &= checked.shape(); if (checked.shape()) result.add(new FieldValue(field.name(), checked.data())); work.later(this);
                                 });
                             }
                         });
@@ -346,9 +418,9 @@ public final class ContractRuntime {
                 }
             });
         }
-        void items(List<Data> inputs, Function<Integer, Type> type, Map<String, Binding> env, String path, int depth, Function<List<Data>, Data> finish, Consumer<Checked> done) {
+        void items(List<Val> inputs, Function<Integer, Type> type, Map<String, Binding> env, String path, int depth, Function<List<Val>, Val> finish, Consumer<Checked> done) {
             work.later(new Runnable() {
-                int index; boolean all = true; final List<Data> values = new ArrayList<>();
+                int index; boolean all = true; final List<Val> values = new ArrayList<>();
                 @Override public void run() {
                     if (index == inputs.size()) { work.complete(done, new Checked(all ? finish.apply(values) : null, all)); return; }
                     int i = index++;
@@ -358,27 +430,27 @@ public final class ContractRuntime {
                 }
             });
         }
-        void named(Type type, Data input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
+        void named(Type type, Val input, Map<String, Binding> env, String path, int depth, Consumer<Checked> done) {
             String name = type.name(); var args = type.arguments();
             switch (name) {
-                case "Bool": work.complete(done, input instanceof Data.Bool ? new Checked(input, true) : wrong(path, "Expected a Boolean.")); return;
-                case "String": work.complete(done, input instanceof Data.Text ? new Checked(input, true) : wrong(path, "Expected text.")); return;
+                case "Bool": work.complete(done, input instanceof BoolValue ? new Checked(input, true) : wrong(path, "Expected a Boolean.")); return;
+                case "String": work.complete(done, input instanceof TextValue ? new Checked(input, true) : wrong(path, "Expected text.")); return;
                 case "Maybe", "Nullable", "Result": {
-                    if (!(input instanceof Data.Variant v)) { work.complete(done, wrong(path, "Expected an explicit optional, nullable, or result constructor.")); return; }
+                    if (!(input instanceof VariantValue v)) { work.complete(done, wrong(path, "Expected an explicit optional, nullable, or result constructor.")); return; }
                     String none = name.equals("Maybe") ? "Nothing" : name.equals("Nullable") ? "Null" : "Err";
                     String some = name.equals("Maybe") ? "Just" : name.equals("Nullable") ? "NonNull" : "Ok";
                     if (!name.equals("Result") && v.name().equals(none) && v.values().isEmpty()) { work.complete(done, new Checked(input, true)); return; }
                     if ((v.name().equals(some) || name.equals("Result") && v.name().equals(none)) && v.values().size() == 1) {
                         int index = name.equals("Result") && v.name().equals("Ok") ? 1 : 0;
                         schedule(args.get(index), v.values().getFirst(), env, path, depth + 1, checked -> work.complete(done,
-                            new Checked(checked.shape() ? new Data.Variant(v.name(), List.of(checked.data())) : null, checked.shape())));
+                            new Checked(checked.shape() ? new VariantValue(v.name(), List.of(checked.data())) : null, checked.shape())));
                         return;
                     }
                     work.complete(done, wrong(path, "Constructor does not match the declared optional, nullable, or result type.")); return;
                 }
             }
             if (numericPrimitive(name)) {
-                if (!(input instanceof Data.Number n)) { work.complete(done, wrong(path, "Expected an exact number.")); return; }
+                if (!(input instanceof NumberValue n)) { work.complete(done, wrong(path, "Expected an exact number.")); return; }
                 structure.step(n.value().show().length());
                 if (!name.equals("Real") && !n.value().isInteger()) { work.complete(done, wrong(path, "Expected an integer without fractional coercion.")); return; }
                 if (!name.equals("Real") && !name.equals("Int")) {
@@ -387,15 +459,15 @@ public final class ContractRuntime {
                     try { n.value().fixedWidth((int)width, !name.startsWith("UInt")); }
                     catch (ArithmeticException e) { work.complete(done, wrong(path, "Integer is outside its declared fixed-width range.")); return; }
                 }
-                work.complete(done, new Checked(new Data.Number(n.value(), name), true)); return;
+                work.complete(done, new Checked(new NumberValue(n.value(), name), true)); return;
             }
             Definition definition = definitions.get(name); var bindings = bindings(definition, args, env);
             if (definition.body() != null) { schedule(definition.body(), input, bindings, path, depth + 1, done); return; }
-            if (!(input instanceof Data.Variant value)) { work.complete(done, wrong(path, "Expected a tagged data alternative.")); return; }
+            if (!(input instanceof VariantValue value)) { work.complete(done, wrong(path, "Expected a tagged data alternative.")); return; }
             for (Alternative alternative : definition.alternatives()) {
                 structure.step(1); if (!alternative.name().equals(value.name())) continue;
                 if (alternative.arguments().size() != value.values().size()) { work.complete(done, wrong(path, "Constructor has the wrong number of arguments.")); return; }
-                items(value.values(), i -> alternative.arguments().get(i), bindings, path, depth, values -> new Data.Variant(value.name(), values), done);
+                items(value.values(), i -> alternative.arguments().get(i), bindings, path, depth, values -> new VariantValue(value.name(), values), done);
                 return;
             }
             work.complete(done, wrong(path, "Constructor does not belong to the declared data type."));
@@ -403,12 +475,14 @@ public final class ContractRuntime {
         Map<String, Binding> bindings(Definition definition, List<Type> arguments, Map<String, Binding> environment) {
             var result = new HashMap<String, Binding>();
             for (int i = 0; i < arguments.size(); i++) result.put(definition.parameters().get(i), new Binding(arguments.get(i), environment));
+            for (Scope scope : definition.scopes()) if (result.containsKey(scope.parameter())) result.put(scope.symbol(), result.get(scope.parameter()));
             return result;
         }
         boolean optional(Type type, Map<String, Binding> env, int depth) {
             while (true) {
                 structure.step(1); if (depth++ >= 512) throw fail("evaluation.depth", "optional type expansion nesting limit exceeded");
                 if (type.kind().equals("refined")) { type = type.arguments().getFirst(); continue; }
+                if (type.kind().equals("applied")) type = flatten(type);
                 if (!type.kind().equals("named")) return false;
                 Binding binding = env.get(type.name()); if (binding != null) { type = binding.type(); env = binding.environment(); continue; }
                 if (type.name().equals("Maybe") && type.arguments().size() == 1) return true;
@@ -417,7 +491,7 @@ public final class ContractRuntime {
                 env = bindings(definition, type.arguments(), env); type = definition.body();
             }
         }
-        void rule(Rule rule, Data input, String path) {
+        void rule(Rule rule, Val input, String path, Map<String, Binding> types) {
             String code = rule.code();
             if (code.isEmpty()) {
                 try {
@@ -426,15 +500,15 @@ public final class ContractRuntime {
                 } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
             }
             String message = "Value must satisfy the declared condition: " + rule.predicate() + ".";
-            Eval evaluator = new Eval(budget.beginClause(rule.steps())); var env = Map.of("it", input);
+            Eval evaluator = new Eval(budget.beginClause(rule.steps()), definitions, functions); var env = Map.of("it", input);
             boolean satisfied;
-            try { satisfied = ((Data.Bool)evaluator.expression(rule.expression(), env)).value(); }
+            try { satisfied = ((BoolValue)evaluator.expression(rule.expression(), env, types)).value(); }
             catch (Failure e) {
                 checks.add(new Validation.Undecided(new Validation.Diagnostic(code, List.of(path), rule.predicate(), "Could not determine whether the condition holds: " + e.code + ": " + e.getMessage() + "."))); return;
             }
             if (satisfied) { checks.add(new Validation.Satisfied()); return; }
             if (rule.message() != null) {
-                try { String custom = ((Data.Text)evaluator.expression(rule.message(), env)).value(); TextCodec.utf8(custom); message = custom; }
+                try { String custom = ((TextValue)evaluator.expression(rule.message(), env, types)).value(); TextCodec.utf8(custom); message = custom; }
                 catch (Failure | IllegalArgumentException ignored) { /* The violation remains conclusive. */ }
             }
             checks.add(new Validation.Violated(new Validation.Diagnostic(code, List.of(path), rule.predicate(), message)));

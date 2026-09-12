@@ -6,6 +6,7 @@ package java
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"goforge.dev/refine/language"
@@ -75,7 +76,8 @@ func javaClassName(className string) error {
 
 func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 	kind, text, flag := "", "", false
-	args, names := []string{}, []string{}
+	args, names, arms := []string{}, []string{}, []string{}
+	signature := "null"
 	child := func(arg *language.Expr) string { return e.expr(arg, scope) }
 	switch __gp_m0 := any(expr.Form).(type) {
 	case language.NumberLiteral:
@@ -89,10 +91,24 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 		kind, flag = "bool", b
 	case language.Variable:
 		name := __gp_m0.Name
-		if !scope[name] {
-			unsupported(expr.At, "function and constructor expressions are not yet emitted")
-		}
+
 		kind, text = "variable", name
+		if !scope[name] {
+			if name == "read" || name == "show" || name == "matches" || name == "search" {
+				declared := false
+				for _, fn := range e.checked.Syntax.Functions {
+					if fn.Name == name {
+						declared = true
+						break
+					}
+				}
+				if !declared {
+					unsupported(expr.At, "Java execution for "+name+" remains required")
+				}
+			}
+			kind = "global"
+			signature = e.meta(e.checked.Inferred[expr])
+		}
 	case language.Project:
 		record := __gp_m0.Record
 		field := __gp_m0.Field
@@ -121,8 +137,8 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 		bound := __gp_m0.Value
 		body := __gp_m0.Body
 
-		if annotation != nil {
-			unsupported(expr.At, "annotated expression bindings are not yet emitted")
+		if annotation != nil && inlineRefinement(annotation) {
+			unsupported(expr.At, "Java inline annotation contracts remain required")
 		}
 		kind, text = "let", name
 		args = append(args, child(bound))
@@ -146,13 +162,28 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 			args = append(args, child(field.Value))
 		}
 	case language.Apply:
-		unsupported(expr.At, "function application is not yet emitted")
+		fn := __gp_m0.Function
+		arg := __gp_m0.Argument
+		kind = "apply"
+		args = append(args, child(fn), child(arg))
 	case language.Case:
-		unsupported(expr.At, "pattern-match expressions are not yet emitted")
+		subject := __gp_m0.Value
+		branches := __gp_m0.Arms
+
+		kind = "case"
+		args = append(args, child(subject))
+		for _, arm := range branches {
+			local := make(map[string]bool)
+			for name, v := range scope {
+				local[name] = v
+			}
+			pattern := e.pattern(arm.Pattern, local)
+			arms = append(arms, e.node("ContractRuntime.Arm", "new ContractRuntime.Arm("+pattern+","+e.expr(arm.Body, local)+")"))
+		}
 	default:
 		panic("goplus: impossible enum value in match")
 	}
-	source := fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s)", javaQuote(kind), e.literal(text), flag, e.list("ContractRuntime.Expr", args), e.strings(names))
+	source := fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s,%s,%s)", javaQuote(kind), e.literal(text), flag, e.list("ContractRuntime.Expr", args), e.strings(names), signature, e.list("ContractRuntime.Arm", arms))
 	return e.node("ContractRuntime.Expr", source)
 }
 
@@ -195,34 +226,10 @@ func (e *initializer) typ(t *language.Type) string {
 			rules = append(rules, e.node("ContractRuntime.Rule", source))
 		}
 	case language.AppliedType:
-
-		root := t
-		arguments := []*language.Type{}
-		for {
-			stop := false
-			switch __gp_m2 := any(root.Form).(type) {
-			case language.AppliedType:
-				fn := __gp_m2.Constructor
-				arg := __gp_m2.Argument
-				arguments = append([]*language.Type{arg}, arguments...)
-				root = fn
-			default:
-				stop = true
-			}
-			if stop {
-				break
-			}
-		}
-		switch __gp_m3 := any(root.Form).(type) {
-		case language.NamedType:
-			n := __gp_m3.Name
-			kind, name = "named", n
-		default:
-			unsupported(t.At, "unsupported type constructor")
-		}
-		for _, arg := range arguments {
-			args = append(args, e.typ(arg))
-		}
+		fn := __gp_m1.Constructor
+		arg := __gp_m1.Argument
+		kind = "applied"
+		args = append(args, e.typ(fn), e.typ(arg))
 	case language.ArrowType:
 		unsupported(t.At, "function-valued types are not payload types")
 	default:
@@ -234,8 +241,9 @@ func (e *initializer) typ(t *language.Type) string {
 
 // GenerateValidator emits a checked contract and its Java 25 runtime. It does
 // not yet emit semantic model classes or native serde. Structural records,
-// aliases, lists, generic/recursive ADTs and expression-only refinements are
-// supported; unsupported execution features reject the entire generation.
+// aliases, lists, generic/recursive ADTs, named/recursive/higher-order functions
+// and pattern matching are supported. Unsupported execution features reject
+// the entire generation; see docs/JAVA-RUNTIME.md for the current boundaries.
 func GenerateValidator(program *language.Program, namespace, className string) (files []File, failure error) {
 	defer func() {
 		if caught := recover(); caught != nil {
@@ -261,11 +269,9 @@ func GenerateValidator(program *language.Program, namespace, className string) (
 			return nil, fmt.Errorf("contract source name collides with runtime source")
 		}
 	}
-	module := program.Syntax()
-	if len(module.Functions) != 0 {
-		unsupported(module.Functions[0].At, "named function emission remains required")
-	}
-	e := &initializer{prefix: className + "$Refine"}
+	checked := program.CheckedSyntax()
+	module := checked.Syntax
+	e := &initializer{prefix: className + "$Refine", checked: &checked}
 	entries := []string{}
 	for _, decl := range module.Types {
 		body := "null"
@@ -281,10 +287,25 @@ func GenerateValidator(program *language.Program, namespace, className string) (
 			source := "new ContractRuntime.Alternative(" + e.literal(variant.Name) + "," + e.list("ContractRuntime.Type", args) + ")"
 			alternatives = append(alternatives, e.node("ContractRuntime.Alternative", source))
 		}
-		definition := e.node("ContractRuntime.Definition", fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s)", e.strings(decl.Parameters), body, e.list("ContractRuntime.Alternative", alternatives)))
+		definition := e.node("ContractRuntime.Definition", fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s,%s)", e.strings(decl.Parameters), body, e.list("ContractRuntime.Alternative", alternatives), e.scopes(checked.DeclarationScopes[decl.Name])))
 		entries = append(entries, e.node("java.util.Map.Entry<String, ContractRuntime.Definition>", "java.util.Map.entry("+e.literal(decl.Name)+","+definition+")"))
 	}
-	definitions := e.node("java.util.Map<String, ContractRuntime.Definition>", e.prefix+"Support.definitions("+e.list("java.util.Map.Entry<String, ContractRuntime.Definition>", entries)+")")
+	definitions := e.node("java.util.Map<String, ContractRuntime.Definition>", e.prefix+"Support.dictionary("+e.list("java.util.Map.Entry<String, ContractRuntime.Definition>", entries)+")")
+	functionEntries := []string{}
+	for _, fn := range module.Functions {
+		equations := []string{}
+		for _, equation := range fn.Equations {
+			scope := map[string]bool{}
+			patterns := []string{}
+			for _, p := range equation.Patterns {
+				patterns = append(patterns, e.pattern(p, scope))
+			}
+			equations = append(equations, e.node("ContractRuntime.Equation", "new ContractRuntime.Equation("+e.list("ContractRuntime.Pattern", patterns)+","+e.expr(equation.Body, scope)+")"))
+		}
+		definition := e.node("ContractRuntime.FunctionDef", "new ContractRuntime.FunctionDef("+e.meta(fn.Signature)+","+e.list("ContractRuntime.Equation", equations)+","+e.scopes(checked.FunctionScopes[fn.Name])+")")
+		functionEntries = append(functionEntries, e.node("java.util.Map.Entry<String, ContractRuntime.FunctionDef>", "java.util.Map.entry("+e.literal(fn.Name)+","+definition+")"))
+	}
+	functions := e.node("java.util.Map<String, ContractRuntime.FunctionDef>", e.prefix+"Support.dictionary("+e.list("java.util.Map.Entry<String, ContractRuntime.FunctionDef>", functionEntries)+")")
 	header := "// Generated by Refine: development Java 25 contract. MIT licensed.\n"
 	if namespace != "" {
 		header += "package " + namespace + ";\n"
@@ -293,11 +314,12 @@ func GenerateValidator(program *language.Program, namespace, className string) (
 public final class %s {
     private %s() {}
     private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = definitions();
+    private static final java.util.Map<String, ContractRuntime.FunctionDef> FUNCTIONS = %s;
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
-    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, root, input, caller); }
-    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, root, input, caller); }
+    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
+    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
-`, className, className) + e.source(definitions)
+`, className, className, functions) + e.source(definitions)
 	files, failure = GenerateRuntime(namespace)
 	if failure != nil {
 		return nil, failure
@@ -305,4 +327,128 @@ public final class %s {
 	prefix := strings.ReplaceAll(namespace, ".", "/")
 	files = append(files, File{Path: path.Join(prefix, "Data.java"), Source: header + dataJava}, File{Path: path.Join(prefix, "ContractRuntime.java"), Source: header + contractRuntimeJava}, File{Path: path.Join(prefix, className+".java"), Source: header + source})
 	return files, nil
+}
+
+func (e *initializer) scopes(scope map[string]string) string {
+	names := []string{}
+	for name := range scope {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	entries := []string{}
+	for _, name := range names {
+		entries = append(entries, e.node("ContractRuntime.Scope", "new ContractRuntime.Scope("+e.literal(name)+","+e.literal(scope[name])+")"))
+	}
+	return e.list("ContractRuntime.Scope", entries)
+}
+
+func inlineRefinement(t *language.Type) bool {
+	switch __gp_m2 := any(t.Form).(type) {
+	case language.RefinedType:
+		return true
+	case language.ListType:
+		a := __gp_m2.Element
+		return inlineRefinement(a)
+	case language.AppliedType:
+		a := __gp_m2.Constructor
+		b := __gp_m2.Argument
+		return inlineRefinement(a) || inlineRefinement(b)
+	case language.ArrowType:
+		a := __gp_m2.Argument
+		b := __gp_m2.Result
+		return inlineRefinement(a) || inlineRefinement(b)
+	case language.RecordType:
+		fields := __gp_m2.Fields
+		for _, field := range fields {
+			if inlineRefinement(field.Type) {
+				return true
+			}
+		}
+	case language.NamedType:
+
+	default:
+		panic("goplus: impossible enum value in match")
+	}
+	return false
+}
+
+// Inference metadata retains binary type application and arrow nodes: their
+// traversal contributes to the shared evaluator's exact logical-step cost.
+func (e *initializer) meta(t *language.Type) string {
+	if t == nil {
+		return "null"
+	}
+	kind, name := "", ""
+	args, fields := []string{}, []string{}
+	switch __gp_m3 := any(t.Form).(type) {
+	case language.NamedType:
+		n := __gp_m3.Name
+		if n == "Timestamp" {
+			unsupported(t.At, "Java timestamps remain required")
+		}
+		kind, name = "named", n
+	case language.ListType:
+		a := __gp_m3.Element
+		kind = "list"
+		args = append(args, e.meta(a))
+	case language.AppliedType:
+		a := __gp_m3.Constructor
+		b := __gp_m3.Argument
+		kind = "applied"
+		args = append(args, e.meta(a), e.meta(b))
+	case language.ArrowType:
+		a := __gp_m3.Argument
+		b := __gp_m3.Result
+		kind = "arrow"
+		args = append(args, e.meta(a), e.meta(b))
+	case language.RecordType:
+		members := __gp_m3.Fields
+		kind = "record"
+		for _, field := range members {
+			fields = append(fields, e.node("ContractRuntime.Member", "new ContractRuntime.Member("+e.literal(field.Name)+","+e.meta(field.Type)+")"))
+		}
+	case language.RefinedType:
+		unsupported(t.At, "Java inline function contracts remain required")
+	default:
+		panic("goplus: impossible enum value in match")
+	}
+	return e.node("ContractRuntime.Type", "new ContractRuntime.Type("+javaQuote(kind)+","+e.literal(name)+","+e.list("ContractRuntime.Type", args)+","+e.list("ContractRuntime.Member", fields)+",java.util.List.of())")
+}
+
+func (e *initializer) pattern(p *language.Pattern, scope map[string]bool) string {
+	kind, name, literal := "", "", "null"
+	args := []string{}
+	switch __gp_m4 := any(p.Form).(type) {
+	case language.BindPattern:
+		n := __gp_m4.Name
+		kind, name = "bind", n
+		scope[n] = true
+	case language.WildPattern:
+		kind = "wild"
+	case language.LiteralPattern:
+		expr := __gp_m4.Value
+		kind = "literal"
+		literal = e.expr(expr, map[string]bool{})
+	case language.ConstructorPattern:
+		n := __gp_m4.Name
+		children := __gp_m4.Arguments
+		kind, name = "constructor", n
+		for _, child := range children {
+			args = append(args, e.pattern(child, scope))
+		}
+	case language.ListPattern:
+		children := __gp_m4.Elements
+		kind = "list"
+		for _, child := range children {
+			args = append(args, e.pattern(child, scope))
+		}
+	case language.ConsPattern:
+		a := __gp_m4.Head
+		b := __gp_m4.Tail
+		kind = "cons"
+		args = append(args, e.pattern(a, scope), e.pattern(b, scope))
+	default:
+		panic("goplus: impossible enum value in match")
+	}
+	return e.node("ContractRuntime.Pattern", "new ContractRuntime.Pattern("+javaQuote(kind)+","+e.literal(name)+","+e.list("ContractRuntime.Pattern", args)+","+literal+")")
 }

@@ -108,6 +108,11 @@ model generation explicitly. The validator can already handle more structural
 forms than the model emitter. Unsupported predicate execution and source-size
 limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
 
+Model predicates may call the generated named/recursive/higher-order function
+engine. Those calls run under the same construction/update validation budget;
+explicit bypass factories still skip predicates. Functions are private evaluator
+values and do not replace the domain types or appear in the public payload tree.
+
 Tests compile generated sources with Java 25 and all warnings treated as errors.
 They cover normal/bypass constructors, parent substitution, negative compilation
 for unrelated nominal types, evidence isolation, snapshots of nested lists,

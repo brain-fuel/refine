@@ -114,3 +114,14 @@ The command `refine typecheck --json file.refine` reports its phase explicitly.
 Success means static checking succeeded; it does not claim native schema validity,
 satisfiability, compatibility, or successful payload validation. Those commands
 and gates must be implemented before a product release.
+
+## Code-generation snapshots
+
+`Program.Syntax()` returns detached source syntax without inference metadata.
+`Program.CheckedSyntax()` instead returns a caller-owned `CheckedModule`: its
+syntax tree, inferred expression types keyed by that same tree's expression
+pointers, and the generic-variable scopes for functions and declarations.
+The snapshot is produced by checking a fresh tree. Mutating its syntax, type
+nodes, maps or scopes cannot change the original `Program` or another snapshot.
+Backends can therefore retain the type information needed for polymorphic calls
+and typed codecs without gaining access to the evaluator's private checked AST.

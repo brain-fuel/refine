@@ -3,6 +3,7 @@ package java
 import (
     "fmt"
     "path"
+    "slices"
     "strings"
 
     "goforge.dev/refine/language"
@@ -44,26 +45,36 @@ func javaClassName(className string)error {
 }
 
 func (e *initializer) expr(expr *language.Expr,scope map[string]bool)string {
-    kind,text,flag:="","",false;args,names:=[]string{},[]string{}
+    kind,text,flag:="","",false;args,names,arms:=[]string{},[]string{},[]string{};signature:="null"
     child:=func(arg *language.Expr)string{return e.expr(arg,scope)}
     match expr.Form {
     case language.NumberLiteral(raw):kind,text="number",raw
     case language.TextLiteral(raw):kind,text="text",raw
     case language.BoolLiteral(b):kind,flag="bool",b
-    case language.Variable(name):if !scope[name]{unsupported(expr.At,"function and constructor expressions are not yet emitted")};kind,text="variable",name
+    case language.Variable(name):
+        kind,text="variable",name
+        if !scope[name]{
+            if name=="read"||name=="show"||name=="matches"||name=="search"{
+                declared:=false;for _,fn:=range e.checked.Syntax.Functions{if fn.Name==name{declared=true;break}}
+                if !declared{unsupported(expr.At,"Java execution for "+name+" remains required")}
+            }
+            kind="global";signature=e.meta(e.checked.Inferred[expr])
+        }
     case language.Project(record,field):kind,text="project",field;args=append(args,child(record))
     case language.Unary(op,operand):kind,text="unary",op;args=append(args,child(operand))
     case language.Binary(op,left,right):kind,text="binary",op;args=append(args,child(left),child(right))
     case language.Conditional(test,yes,no):kind="if";args=append(args,child(test),child(yes),child(no))
     case language.Let(name,annotation,bound,body):
-        if annotation!=nil{unsupported(expr.At,"annotated expression bindings are not yet emitted")}
+        if annotation!=nil&&inlineRefinement(annotation){unsupported(expr.At,"Java inline annotation contracts remain required")}
         kind,text="let",name;args=append(args,child(bound));local:=make(map[string]bool);for key,v:=range scope{local[key]=v};local[name]=true;args=append(args,e.expr(body,local))
     case language.ListLiteral(elements):kind="list";for _,element:=range elements{args=append(args,child(element))}
     case language.RecordLiteral(fields):kind="record";for _,field:=range fields{names=append(names,field.Name);args=append(args,child(field.Value))}
-    case language.Apply(_,_):unsupported(expr.At,"function application is not yet emitted")
-    case language.Case(_,_):unsupported(expr.At,"pattern-match expressions are not yet emitted")
+    case language.Apply(fn,arg):kind="apply";args=append(args,child(fn),child(arg))
+    case language.Case(subject,branches):
+        kind="case";args=append(args,child(subject))
+        for _,arm:=range branches{local:=make(map[string]bool);for name,v:=range scope{local[name]=v};pattern:=e.pattern(arm.Pattern,local);arms=append(arms,e.node("ContractRuntime.Arm","new ContractRuntime.Arm("+pattern+","+e.expr(arm.Body,local)+")"))}
     }
-    source:=fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s)",javaQuote(kind),e.literal(text),flag,e.list("ContractRuntime.Expr",args),e.strings(names))
+    source:=fmt.Sprintf("new ContractRuntime.Expr(%s,%s,%v,%s,%s,%s,%s)",javaQuote(kind),e.literal(text),flag,e.list("ContractRuntime.Expr",args),e.strings(names),signature,e.list("ContractRuntime.Arm",arms))
     return e.node("ContractRuntime.Expr",source)
 }
 
@@ -82,11 +93,7 @@ func (e *initializer) typ(t *language.Type)string {
             source:=fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s))",e.literal(rule.Code),rule.At.Start.Offset,e.literal(language.FormatExpression(rule.Predicate)),e.expr(rule.Predicate,scope),message,javaQuote(fmt.Sprint(rule.Steps)))
             rules=append(rules,e.node("ContractRuntime.Rule",source))
         }
-    case language.AppliedType(_,_):
-        root:=t;arguments:=[]*language.Type{}
-        for{stop:=false;match root.Form{case language.AppliedType(fn,arg):arguments=append([]*language.Type{arg},arguments...);root=fn;case _:stop=true};if stop{break}}
-        match root.Form{case language.NamedType(n):kind,name="named",n;case _:unsupported(t.At,"unsupported type constructor")}
-        for _,arg:=range arguments{args=append(args,e.typ(arg))}
+    case language.AppliedType(fn,arg):kind="applied";args=append(args,e.typ(fn),e.typ(arg))
     case language.ArrowType(_,_):unsupported(t.At,"function-valued types are not payload types")
     }
     source:=fmt.Sprintf("new ContractRuntime.Type(%s,%s,%s,%s,%s)",javaQuote(kind),e.literal(name),e.list("ContractRuntime.Type",args),e.list("ContractRuntime.Member",fields),e.list("ContractRuntime.Rule",rules))
@@ -95,37 +102,93 @@ func (e *initializer) typ(t *language.Type)string {
 
 // GenerateValidator emits a checked contract and its Java 25 runtime. It does
 // not yet emit semantic model classes or native serde. Structural records,
-// aliases, lists, generic/recursive ADTs and expression-only refinements are
-// supported; unsupported execution features reject the entire generation.
+// aliases, lists, generic/recursive ADTs, named/recursive/higher-order functions
+// and pattern matching are supported. Unsupported execution features reject
+// the entire generation; see docs/JAVA-RUNTIME.md for the current boundaries.
 func GenerateValidator(program *language.Program,namespace,className string)(files []File,failure error){
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     if program==nil{return nil,fmt.Errorf("a compiled program is required")}
     if err:=packageName(namespace);err!=nil{return nil,err}
     if err:=javaClassName(className);err!=nil{return nil,err}
     for _,reserved:=range []string{"Data","ContractRuntime","Rational","TextCodec","Validation","ValidationException","Budget"}{if strings.EqualFold(className,reserved){return nil,fmt.Errorf("contract source name collides with runtime source")}}
-    module:=program.Syntax()
-    if len(module.Functions)!=0{unsupported(module.Functions[0].At,"named function emission remains required")}
-    e:=&initializer{prefix:className+"$Refine"};entries:=[]string{}
+    checked:=program.CheckedSyntax();module:=checked.Syntax
+    e:=&initializer{prefix:className+"$Refine",checked:&checked};entries:=[]string{}
     for _,decl:=range module.Types{
         body:="null";if decl.Body!=nil{body=e.typ(decl.Body)}
         alternatives:=[]string{}
         for _,variant:=range decl.Variants{args:=[]string{};for _,arg:=range variant.Arguments{args=append(args,e.typ(arg))};source:="new ContractRuntime.Alternative("+e.literal(variant.Name)+","+e.list("ContractRuntime.Type",args)+")";alternatives=append(alternatives,e.node("ContractRuntime.Alternative",source))}
-        definition:=e.node("ContractRuntime.Definition",fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s)",e.strings(decl.Parameters),body,e.list("ContractRuntime.Alternative",alternatives)))
+        definition:=e.node("ContractRuntime.Definition",fmt.Sprintf("new ContractRuntime.Definition(%s,%s,%s,%s)",e.strings(decl.Parameters),body,e.list("ContractRuntime.Alternative",alternatives),e.scopes(checked.DeclarationScopes[decl.Name])))
         entries=append(entries,e.node("java.util.Map.Entry<String, ContractRuntime.Definition>","java.util.Map.entry("+e.literal(decl.Name)+","+definition+")"))
     }
-    definitions:=e.node("java.util.Map<String, ContractRuntime.Definition>",e.prefix+"Support.definitions("+e.list("java.util.Map.Entry<String, ContractRuntime.Definition>",entries)+")")
+    definitions:=e.node("java.util.Map<String, ContractRuntime.Definition>",e.prefix+"Support.dictionary("+e.list("java.util.Map.Entry<String, ContractRuntime.Definition>",entries)+")")
+    functionEntries:=[]string{}
+    for _,fn:=range module.Functions{
+        equations:=[]string{}
+        for _,equation:=range fn.Equations{scope:=map[string]bool{};patterns:=[]string{};for _,p:=range equation.Patterns{patterns=append(patterns,e.pattern(p,scope))};equations=append(equations,e.node("ContractRuntime.Equation","new ContractRuntime.Equation("+e.list("ContractRuntime.Pattern",patterns)+","+e.expr(equation.Body,scope)+")"))}
+        definition:=e.node("ContractRuntime.FunctionDef","new ContractRuntime.FunctionDef("+e.meta(fn.Signature)+","+e.list("ContractRuntime.Equation",equations)+","+e.scopes(checked.FunctionScopes[fn.Name])+")")
+        functionEntries=append(functionEntries,e.node("java.util.Map.Entry<String, ContractRuntime.FunctionDef>","java.util.Map.entry("+e.literal(fn.Name)+","+definition+")"))
+    }
+    functions:=e.node("java.util.Map<String, ContractRuntime.FunctionDef>",e.prefix+"Support.dictionary("+e.list("java.util.Map.Entry<String, ContractRuntime.FunctionDef>",functionEntries)+")")
     header:="// Generated by Refine: development Java 25 contract. MIT licensed.\n";if namespace!=""{header+="package "+namespace+";\n"}
     source:=fmt.Sprintf(`
 public final class %s {
     private %s() {}
     private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = definitions();
+    private static final java.util.Map<String, ContractRuntime.FunctionDef> FUNCTIONS = %s;
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
-    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, root, input, caller); }
-    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, root, input, caller); }
+    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
+    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
-`,className,className)+e.source(definitions)
+`,className,className,functions)+e.source(definitions)
     files,failure=GenerateRuntime(namespace);if failure!=nil{return nil,failure}
     prefix:=strings.ReplaceAll(namespace,".","/")
     files=append(files,File{Path:path.Join(prefix,"Data.java"),Source:header+dataJava},File{Path:path.Join(prefix,"ContractRuntime.java"),Source:header+contractRuntimeJava},File{Path:path.Join(prefix,className+".java"),Source:header+source})
     return files,nil
+}
+
+func (e *initializer) scopes(scope map[string]string)string{
+    names:=[]string{};for name:=range scope{names=append(names,name)};slices.Sort(names)
+    entries:=[]string{};for _,name:=range names{entries=append(entries,e.node("ContractRuntime.Scope","new ContractRuntime.Scope("+e.literal(name)+","+e.literal(scope[name])+")"))}
+    return e.list("ContractRuntime.Scope",entries)
+}
+
+func inlineRefinement(t *language.Type)bool{
+    match t.Form{
+    case language.RefinedType(_,_):return true
+    case language.ListType(a):return inlineRefinement(a)
+    case language.AppliedType(a,b):return inlineRefinement(a)||inlineRefinement(b)
+    case language.ArrowType(a,b):return inlineRefinement(a)||inlineRefinement(b)
+    case language.RecordType(fields):for _,field:=range fields{if inlineRefinement(field.Type){return true}}
+    case language.NamedType(_):
+    }
+    return false
+}
+
+// Inference metadata retains binary type application and arrow nodes: their
+// traversal contributes to the shared evaluator's exact logical-step cost.
+func (e *initializer) meta(t *language.Type)string{
+    if t==nil{return "null"}
+    kind,name:="","";args,fields:=[]string{},[]string{}
+    match t.Form{
+    case language.NamedType(n):if n=="Timestamp"{unsupported(t.At,"Java timestamps remain required")};kind,name="named",n
+    case language.ListType(a):kind="list";args=append(args,e.meta(a))
+    case language.AppliedType(a,b):kind="applied";args=append(args,e.meta(a),e.meta(b))
+    case language.ArrowType(a,b):kind="arrow";args=append(args,e.meta(a),e.meta(b))
+    case language.RecordType(members):kind="record";for _,field:=range members{fields=append(fields,e.node("ContractRuntime.Member","new ContractRuntime.Member("+e.literal(field.Name)+","+e.meta(field.Type)+")"))}
+    case language.RefinedType(_,_):unsupported(t.At,"Java inline function contracts remain required")
+    }
+    return e.node("ContractRuntime.Type","new ContractRuntime.Type("+javaQuote(kind)+","+e.literal(name)+","+e.list("ContractRuntime.Type",args)+","+e.list("ContractRuntime.Member",fields)+",java.util.List.of())")
+}
+
+func (e *initializer) pattern(p *language.Pattern,scope map[string]bool)string{
+    kind,name,literal:="","","null";args:=[]string{}
+    match p.Form{
+    case language.BindPattern(n):kind,name="bind",n;scope[n]=true
+    case language.WildPattern():kind="wild"
+    case language.LiteralPattern(expr):kind="literal";literal=e.expr(expr,map[string]bool{})
+    case language.ConstructorPattern(n,children):kind,name="constructor",n;for _,child:=range children{args=append(args,e.pattern(child,scope))}
+    case language.ListPattern(children):kind="list";for _,child:=range children{args=append(args,e.pattern(child,scope))}
+    case language.ConsPattern(a,b):kind="cons";args=append(args,e.pattern(a,scope),e.pattern(b,scope))
+    }
+    return e.node("ContractRuntime.Pattern","new ContractRuntime.Pattern("+javaQuote(kind)+","+e.literal(name)+","+e.list("ContractRuntime.Pattern",args)+","+literal+")")
 }
