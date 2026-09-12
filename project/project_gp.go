@@ -136,6 +136,10 @@ func Generate(input GenerateInput) (Bundle, error) {
 		if contract.Version != nil && !contract.Version.Valid() {
 			return Bundle{}, fmt.Errorf("project.version: invalid version")
 		}
+		schemaAnalysis, err := checkContractSchema(contract)
+		if err != nil {
+			return Bundle{}, err
+		}
 		identity := contract.Family + "\x00" + contractSuffix(contract.Version)
 		if seen[identity] {
 			return Bundle{}, fmt.Errorf("project.contract: duplicate %s", contract.Family)
@@ -154,7 +158,7 @@ func Generate(input GenerateInput) (Bundle, error) {
 					jsonWire = true
 				}
 			}
-			generated, err := contractSerde(contract, namespace, class, formats)
+			generated, err := contractJavaSources(contract, namespace, class, formats)
 			if err != nil {
 				return Bundle{}, err
 			}
@@ -204,7 +208,12 @@ func Generate(input GenerateInput) (Bundle, error) {
 		if err != nil {
 			return Bundle{}, err
 		}
-		doc, err := explain.GeneratePayload(payload)
+		var doc explain.Document
+		if contract.Wire.OpenAPI != nil {
+			doc, err = explain.Generate(contract.Program)
+		} else {
+			doc, err = explain.GeneratePayload(payload)
+		}
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -215,6 +224,9 @@ func Generate(input GenerateInput) (Bundle, error) {
 		docJSON = append(docJSON, '\n')
 		resourceBase := path.Join(layout.ResourceDir, "refine", contract.Family, contractSuffix(contract.Version))
 		module := contract.Program.Syntax()
+		if err = addFile(all, path.Join(resourceBase, "schema-analysis.json"), schemaAnalysis); err != nil {
+			return Bundle{}, err
+		}
 		if err = addFile(all, path.Join(resourceBase, "contract.refine"), []byte(module.Source)); err != nil {
 			return Bundle{}, err
 		}

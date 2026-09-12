@@ -1,0 +1,14 @@
+package project
+
+import (
+    "strings"
+    "testing"
+    "goforge.dev/refine/native"
+)
+
+func TestGenerateNativeNumberProjectIncludesOrdinaryAndJavaOutputs(t *testing.T){
+    p,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"number","minimum":0}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Amount"}});if err!=nil{t.Fatal(err)}
+    output,err:=Generate(GenerateInput{Contracts:[]Contract{{Family:"amount",NativeProject:p,Formats:[]native.Format{native.JSONSchema}}}});if err!=nil{t.Fatal(err)}
+    found:=map[string]bool{};for _,file:=range output.Files{switch{case strings.HasSuffix(file.Path,"Amount.java"):found["model"]=true;case strings.HasSuffix(file.Path,"RefineJSONModule.java"):found["serde"]=true;case strings.HasSuffix(file.Path,"contract.refined.json"):found["bundle"]=true;case strings.HasSuffix(file.Path,"ordinary-json-schema.json"):found["ordinary"]=true}}
+    for _,name:=range []string{"model","serde","bundle","ordinary"}{if !found[name]{t.Fatal("missing numeric project output",name)}}
+}

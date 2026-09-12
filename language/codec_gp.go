@@ -11,7 +11,11 @@ import (
 )
 
 func (e *evaluator) checkedValue(t *Type, input evalValue) (result evalValue, report validation.Report) {
-	v := &payloadValidator{program: &Program{module: e.module}, declarations: make(map[string]TypeDecl), structure: e, enclosing: e}
+	return e.checkedValueMode(t, input, false)
+}
+
+func (e *evaluator) checkedValueMode(t *Type, input evalValue, withoutRefinements bool) (result evalValue, report validation.Report) {
+	v := &payloadValidator{program: &Program{module: e.module}, declarations: make(map[string]TypeDecl), structure: e, enclosing: e, withoutRefinements: withoutRefinements}
 	for _, decl := range e.module.Types {
 		v.declarations[decl.Name] = decl
 	}
@@ -247,6 +251,22 @@ func (e *evaluator) typedRead(signature *Type, input evalValue, at Span) (result
 // evaluates source text. An invalid or indeterminate result exposes no candidate
 // value; callers must check the report before using the returned Data.
 func (p *Program) ReadData(root string, text value.Text, caller validation.Limits) (data value.Data, report validation.Report) {
+	return p.readNamedData(root, text, caller, false)
+}
+
+// ReadDataWithoutRefinements explicitly bypasses where clauses, not structural
+// validation. It uses the same non-executing text grammar, typed representation,
+// exact numeric/timestamp checks and resource limits as ReadData. An invalid or
+// indeterminate structural result exposes no candidate. A successful result is
+// not evidence that the refinements hold; call ValidateData to establish that.
+func (p *Program) ReadDataWithoutRefinements(root string, text value.Text, caller validation.Limits) (value.Data, validation.Report) {
+	return p.readNamedData(root, text, caller, true)
+}
+
+func (p *Program) readNamedData(root string, text value.Text, caller validation.Limits, withoutRefinements bool) (data value.Data, report validation.Report) {
+	if p == nil || p.module == nil {
+		return value.Data{}, invalidPayloadType()
+	}
 	var rootType *Type
 	for _, decl := range p.module.Types {
 		if decl.Name == root && len(decl.Parameters) == 0 {
@@ -257,10 +277,14 @@ func (p *Program) ReadData(root string, text value.Text, caller validation.Limit
 	if rootType == nil {
 		return value.Data{}, validation.Collect([]validation.Check{validation.Violated{Detail: validation.Diagnostic{Code: "validation.root", Paths: []string{""}, Message: "Choose a declared root type with no unbound type parameters."}}})
 	}
-	return p.readDataType(rootType, text, caller)
+	return p.readDataTypeMode(rootType, text, caller, withoutRefinements)
 }
 
 func (p *Program) readDataType(rootType *Type, text value.Text, caller validation.Limits) (data value.Data, report validation.Report) {
+	return p.readDataTypeMode(rootType, text, caller, false)
+}
+
+func (p *Program) readDataTypeMode(rootType *Type, text value.Text, caller validation.Limits, withoutRefinements bool) (data value.Data, report validation.Report) {
 	e := newEvaluator(p.module, validation.NewBudget(validation.Limits{}, caller).BeginStructure())
 	defer func() {
 		if caught := recover(); caught != nil {
@@ -278,7 +302,7 @@ func (p *Program) readDataType(rootType *Type, text value.Text, caller validatio
 		}
 	}()
 	candidate := e.decodeText(text, rootType.At)
-	checked, report := e.checkedValue(rootType, candidate)
+	checked, report := e.checkedValueMode(rootType, candidate, withoutRefinements)
 	if validation.StateName(report.State()) == "valid" {
 		data = e.toData(checked, rootType.At)
 	}

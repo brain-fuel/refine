@@ -19,7 +19,7 @@ func workflow(args []string,input io.Reader,output,errorOutput io.Writer)int{
     command:=args[0];flags:=flag.NewFlagSet(command,flag.ContinueOnError);flags.SetOutput(errorOutput)
     jsonMode:=flags.Bool("json",false,"emit machine-readable diagnostics")
     var total,clause uint64
-    if command=="validate"{flags.Uint64Var(&total,"total-steps",0,"tighten total logical step limit");flags.Uint64Var(&clause,"clause-steps",0,"tighten clause logical step limit")}
+    if command=="validate"||command=="check-schema"{flags.Uint64Var(&total,"total-steps",0,"tighten total logical step limit");flags.Uint64Var(&clause,"clause-steps",0,"tighten clause logical step limit")}
     if err:=flags.Parse(args[1:]);err!=nil{return 2}
     paths:=flags.Args();expected:=1
     switch command{case "validate":expected=3;case "validate-native","satisfiable":expected=2;case "compare-payload":expected=4}
@@ -33,9 +33,10 @@ func workflow(args []string,input io.Reader,output,errorOutput io.Writer)int{
     code:=0
     finish:=func(err error)int{
         if err!=nil{code=1;result.State="invalid";detail:=diagnostic{Code:"refine.error",Message:"The requested phase failed."}
-            var langError *language.Error;var nativeError *native.Error
+            var langError *language.Error;var nativeError *native.Error;var schemaError *analysis.SchemaError
             if errors.As(err,&langError){detail=diagnostic{Code:langError.Code,Message:langError.Message,Line:langError.At.Start.Line,Column:langError.At.Start.Column,Offset:langError.At.Start.Offset};if langError.Code=="language.limit"{result.State="indeterminate"}}
             if errors.As(err,&nativeError){detail=diagnostic{Code:nativeError.Code,Path:nativeError.Pointer,Message:"Native schema structure validation failed. Oracle details are omitted to avoid exposing schema examples or default values."};if nativeError.Code=="native.limit"{result.State="indeterminate"}}
+            if errors.As(err,&schemaError){detail=diagnostic{Code:"schema.unsatisfiable",Path:schemaError.Type,Message:schemaError.Finding.Explanation}}
             result.Diagnostics=append(result.Diagnostics,detail)
         }
         if *jsonMode{if err:=json.NewEncoder(output).Encode(result);err!=nil{return 2}}else{
@@ -53,6 +54,11 @@ func workflow(args []string,input io.Reader,output,errorOutput io.Writer)int{
     }
     program,err:=language.Compile(string(content[0]));if err!=nil{return finish(err)}
     switch command{
+    case "check-schema":
+        checked,err:=analysis.CheckSchema(program,validation.Limits{Total:total,Clause:clause});result.Result=checked
+        result.Summary="Refine declaration satisfiability checked; native schema and wire semantics require separate validation."
+        for _,item:=range checked.Findings{if item.Finding.Outcome==analysis.Unknown{result.State="unknown";result.Diagnostics=append(result.Diagnostics,diagnostic{Code:item.Finding.Code,Path:item.Type,Message:item.Finding.Explanation})}}
+        if err!=nil{return finish(err)}
     case "explain":
         document,err:=explain.Generate(program);if err!=nil{return finish(err)}
         if !*jsonMode{if _,err:=io.WriteString(output,document.Markdown());err!=nil{return 2};return 0}

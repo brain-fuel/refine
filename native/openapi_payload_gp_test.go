@@ -26,6 +26,24 @@ func TestOpenAPI31ExactJSONSchemaPayloadValidation(t *testing.T) {
 	}
 }
 
+func TestOpenAPI321ResourceIngestionAndNativePayload(t *testing.T) {
+	source := "openapi: 3.2.1\ninfo: {title: Current, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Count: {type: integer, minimum: 2}\n"
+	resources := []Resource{{URI: "https://example.test/current.yaml", Source: source}}
+	project, err := IngestProjectResources(OpenAPI, resources, ProjectOptions{Root: ResourceSelector{Resource: "https://example.test/current.yaml", Pointer: "/components/schemas/Count", TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Version() != "3.2.1" || project.NativeDocument().Original() != source {
+		t.Fatalf("3.2.1 identity changed: %s %q", project.Version(), project.NativeDocument().Original())
+	}
+	if err := project.ValidateJSON([]byte(`2`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.ValidateJSON([]byte(`1`)); problemCode(err) != "native.payload" {
+		t.Fatalf("3.2.1 scalar constraint not enforced: %v", err)
+	}
+}
+
 func TestOpenAPIExactYAMLNumbersAndExternalResources(t *testing.T) {
 	hexadecimal := "openapi: 3.2.0\ninfo: {title: Hex, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Value: {type: integer, minimum: 0x10}\n"
 	project, err := IngestProject(OpenAPI, []byte(hexadecimal), ProjectOptions{Root: ResourceSelector{Pointer: "/components/schemas/Value", TypeName: "Value"}})

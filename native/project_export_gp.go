@@ -104,7 +104,7 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	var addition map[string]any
 	canCompose := p.Format() == JSONSchema || p.Format() == OpenAPI && !strings.HasPrefix(p.Version(), "3.0.")
 	if canCompose {
-		lowered, lowerErr := LowerPayloadWithMetadata(JSONSchema, payload, p.metadata, LowerOptions{Mode: Ordinary, AllowDocumentedLoss: true})
+		lowered, lowerErr := LowerPayloadWithMetadata(JSONSchema, payload, p.metadata, LowerOptions{Mode: Ordinary, AllowDocumentedLoss: true, nativeJSONNumbers: true})
 		if lowerErr != nil {
 			if mode == Ordinary {
 				return nil, &Error{Code: "native.unrepresentable", Format: p.Format(), Message: "editable payload cannot be composed with the native project", Cause: lowerErr}
@@ -130,6 +130,10 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 		}
 		losses = append(losses, projectUncomposedPayloadLoss(p))
 		companion = projectUncomposedCompanion(companion, p)
+	}
+	companion, losses, err = projectOpenAPIExplanation(p.program, p.metadata, companion, losses)
+	if err != nil {
+		return nil, wrap(p.Format(), "native.explain", "", err)
 	}
 	if mode == Ordinary && len(losses) > 0 && !options.AllowDocumentedLoss {
 		return nil, &Error{Code: "native.unrepresentable", Format: p.Format(), Message: fmt.Sprintf("%d refinement rule(s) require documented-loss permission in an ordinary project export", len(losses))}
@@ -183,6 +187,11 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 		return nil, &Error{Code: "native.export", Format: p.Format(), Pointer: targetPointer, Message: "selected schema cannot be updated", Cause: err}
 	}
 	if addition != nil {
+		if p.Format() == OpenAPI {
+			if err := projectOpenAPIAddition(document, addition); err != nil {
+				return nil, err
+			}
+		}
 		delete(addition, "description")
 		existing, ok := target["allOf"].([]any)
 		if !ok && target["allOf"] != nil {
@@ -209,8 +218,16 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	}
 	encoded = append(encoded, '\n')
 	resources[rootIndex] = Resource{URI: resources[rootIndex].URI, Source: string(encoded)}
-	if _, err := IngestProjectResources(p.Format(), resources, ProjectOptions{ResourceID: p.root.Resource, Root: p.root, Metadata: p.metadata}); err != nil {
-		return nil, &Error{Code: "native.export-invalid", Format: p.Format(), Message: "exported resource set failed native ingestion: " + err.Error(), Cause: err}
+	if mode == Ordinary {
+		resources, err = ordinaryProjectResources(p.Format(), resources, p.root)
+		if err == nil {
+			err = validateOrdinaryProjectResources(p.Format(), resources, p.root)
+		}
+	} else {
+		_, err = IngestProjectResources(p.Format(), resources, ProjectOptions{ResourceID: p.root.Resource, Root: p.root, Metadata: p.metadata})
+	}
+	if err != nil {
+		return nil, &Error{Code: "native.export-invalid", Format: p.Format(), Message: "exported resource set failed native validation: " + err.Error(), Cause: err}
 	}
 	return &ProjectExport{format: p.Format(), version: p.Version(), root: p.root, metadata: copyMetadata(p.metadata), resources: resources, nativeConstraintSources: p.NativeConstraintSources(), companion: companion, losses: append([]Loss(nil), losses...)}, nil
 }

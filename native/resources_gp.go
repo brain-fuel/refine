@@ -62,9 +62,13 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	case JSONSchema:
 		document, err = validateJSONResources(byURI, options.Root)
 		if err == nil {
-			source, err = projectJSONResourceRoot(byURI, options.Root, false)
-			if err == nil && document.ConstraintSource() != "" {
-				source += "\n" + document.ConstraintSource()
+			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
+				source = annotated
+			} else {
+				source, err = projectJSONResourceRoot(byURI, options.Root, false)
+				if err == nil && document.ConstraintSource() != "" {
+					source += "\n" + document.ConstraintSource()
+				}
 			}
 		}
 	case OpenAPI:
@@ -128,7 +132,7 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 		}
 	}
 	_ = mainBytes
-	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked}, nil
+	return validateProject(&Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked})
 }
 
 func sortedResourceURIs(resources map[string][]byte) []string {
@@ -215,6 +219,14 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 			yamlRoot = node
 		}
 	}
+	version, ok := declaredOpenAPIVersion(yamlRoot)
+	if !ok || !openAPIVersion.MatchString(version) || !supportedOpenAPI(version) {
+		return nil, &Error{Code: "native.version", Format: OpenAPI, Pointer: "/openapi", Message: "supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0-3.2.1"}
+	}
+	oracleInput, err := openAPIOracleInput(main, yamlRoot, version)
+	if err != nil {
+		return nil, wrap(OpenAPI, "native.structure", "", err)
+	}
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = true
 	loader.ReadFromURIFunc = func(_ *openapi3.Loader, target *url.URL) ([]byte, error) {
@@ -226,12 +238,9 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 		return nil, fmt.Errorf("resource %s is not in the explicit bundle", copy.String())
 	}
 	location, _ := url.Parse(root.Resource)
-	parsed, err := loader.LoadFromDataWithPath(main, location)
+	parsed, err := loader.LoadFromDataWithPath(oracleInput, location)
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.structure", "", err)
-	}
-	if !supportedOpenAPI(parsed.OpenAPI) {
-		return nil, &Error{Code: "native.version", Format: OpenAPI, Pointer: "/openapi", Message: "supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0"}
 	}
 	if err := parsed.Validate(context.Background(), openapi3.SetRegexCompiler(openAPIRegexp)); err != nil {
 		return nil, wrap(OpenAPI, "native.structure", "", err)
@@ -240,14 +249,17 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 	if err != nil {
 		return nil, err
 	}
-	return &Document{format: OpenAPI, version: parsed.OpenAPI, raw: string(main), annotations: annotations}, nil
+	return &Document{format: OpenAPI, version: version, raw: string(main), annotations: annotations}, nil
 }
 
 func validateAvroResources(resources []Resource, root ResourceSelector) (*Document, string, error) {
 	cache := &avro.SchemaCache{}
 	sources := []string{}
+	documents := make([]schemajson.Document, len(resources))
+	schemas := make([]avro.Schema, len(resources))
+	index := newRawAvroDefaults()
 	var main schemajson.Document
-	for index, resource := range resources {
+	for i, resource := range resources {
 		doc, err := schemajson.Parse([]byte(resource.Source), schemajson.Limits{})
 		if err != nil {
 			return nil, "", wrap(Avro, "native.syntax", resource.URI, err)
@@ -255,10 +267,30 @@ func validateAvroResources(resources []Resource, root ResourceSelector) (*Docume
 		if err := scalarJSON(doc.Root(), ""); err != nil {
 			return nil, "", wrap(Avro, "native.encoding", resource.URI, err)
 		}
-		if _, err := avro.ParseBytesWithCache([]byte(resource.Source), "", cache); err != nil {
+		schema, err := parseAvroStructure([]byte(resource.Source), cache)
+		if err != nil {
 			return nil, "", wrap(Avro, "native.structure", resource.URI, err)
 		}
-		selector := ResourceSelector{TypeName: fmt.Sprintf("NativeResource%d", index+1)}
+		documents[i] = doc
+		schemas[i] = schema
+		index.walk(doc.Root(), schema, resource.URI, "")
+	}
+	matcher := newAvroDefaultMatcher(index, schemajson.DefaultNodes, schemajson.DefaultBytes)
+	for i, resource := range resources {
+		doc := documents[i]
+		schema := schemas[i]
+		if err := auditAvroDefaultsWithMatcher(doc.Root(), schema, "", matcher); err != nil {
+			var limited *Error
+			if errors.As(err, &limited) && limited.Code == "native.limit" {
+				pointer := resource.URI
+				if limited.Pointer != "" {
+					pointer += "#" + limited.Pointer
+				}
+				return nil, "", &Error{Code: "native.limit", Format: Avro, Pointer: pointer, Message: limited.Message, Cause: err}
+			}
+			return nil, "", wrap(Avro, "native.default", resource.URI, err)
+		}
+		selector := ResourceSelector{TypeName: fmt.Sprintf("NativeResource%d", i+1)}
 		if resource.URI == root.Resource {
 			selector.TypeName = root.TypeName
 			main = doc

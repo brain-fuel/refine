@@ -37,15 +37,17 @@ canonical show/read, and deterministic dynamic regex predicates; see the
 [Java runtime guide](docs/JAVA-RUNTIME.md). Checked native ingestion and bundles,
 generic model families, bounded Jackson 3 serde, English algorithm export,
 conservative logical analysis, release-planning libraries, schema-derived
-JetCheck tests, and Maven generation are now available. Complete native wire
-enforcement, Avro serde, remaining language/model shapes, and full release
-orchestration remain in progress.
+JetCheck tests, Maven generation, validated Avro binary/JSON serde, and pure
+OpenAPI request/response-context validation are available. Native projection
+coverage, cross-format conversion, generator/example coverage, and the complete
+specification/release audit remain in progress.
 
 The development CLI exposes only the phases currently implemented:
 
 ```sh
 go build -o bin/refine ./cmd/refine
 bin/refine typecheck --json language/testdata/contracts.refine
+bin/refine check-schema --json language/testdata/contracts.refine
 bin/refine fmt language/testdata/contracts.refine
 bin/refine inspect-json --json value/testdata/numbers.json
 bin/refine explain examples/invoice.refine
@@ -55,6 +57,9 @@ bin/refine project maven
 
 `typecheck` is not payload/native schema validation. See
 [docs/LANGUAGE.md](docs/LANGUAGE.md) for syntax, static checks, and remaining gaps.
+`check-schema` additionally rejects proven-empty declarations while explicitly
+reporting unknown satisfiability. Unknown permits compilation, not a claim of
+proof; native schema validity and wire enforcement remain separate checks.
 The [worked examples](examples/README.md), [native schema guide](docs/NATIVE.md),
 [Jackson serde guide](docs/SERDE-JSON.md), and [Maven workflow](docs/PROJECT.md)
 describe executable workflows and their current limits.

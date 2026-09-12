@@ -32,6 +32,9 @@ type LowerOptions struct {
 	// Zero selects DefaultLowerGenericSpecializations; values above the hard
 	// package maximum are rejected before lowering.
 	MaxGenericSpecializations int
+	// Native JSON projects already select numeric JSON wire values. This is
+	// not a public opt-out from standalone exact-number encoding requirements.
+	nativeJSONNumbers bool
 }
 type Loss struct {
 	Owner       string
@@ -106,6 +109,7 @@ type lowerer struct {
 	nativeNames         map[string]string
 	specializationCount int
 	maxSpecializations  int
+	nativeJSONNumbers   bool
 }
 
 // LowerPayload lowers one immutable checked payload type. It validates the
@@ -169,6 +173,7 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 			l.nativeNames[name+"Wire"] = "scalar wire " + name
 		}
 	}
+	l.nativeJSONNumbers = options.nativeJSONNumbers && (format == JSONSchema || format == OpenAPI)
 	schema, err := l.typ(checked.Type, false)
 	if err != nil {
 		return nil, err
@@ -199,8 +204,8 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 		if version == "" {
 			version = "3.2.0"
 		}
-		if version != "3.1.0" && version != "3.1.1" && version != "3.1.2" && version != "3.2.0" {
-			return nil, &Error{Code: "native.unrepresentable", Format: OpenAPI, Message: "lowering currently requires OpenAPI 3.1.x or 3.2.0; 3.0 ingestion remains supported"}
+		if version != "3.1.0" && version != "3.1.1" && version != "3.1.2" && version != "3.2.0" && version != "3.2.1" {
+			return nil, &Error{Code: "native.unrepresentable", Format: OpenAPI, Message: "lowering currently requires a published OpenAPI 3.1.x or 3.2.x patch; 3.0 ingestion remains supported"}
 		}
 		rootName := "RefineRoot"
 		for {
@@ -229,7 +234,7 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 			object = map[string]any{"type": root}
 			root = object
 		}
-		object["x-refine"] = map[string]any{"source": l.module.Source, "root": l.rootSource}
+		object["x-refine"] = map[string]any{"source": l.module.Source, "root": l.rootSource, "metadata": copiedMetadata}
 	}
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -410,6 +415,9 @@ func (l *lowerer) named(name string) (any, error) {
 		}
 		return map[string]any{"type": "integer"}, nil
 	case "Real":
+		if l.nativeJSONNumbers {
+			return map[string]any{"type": "number", "description": "The native JSON numeric wire format carries exact finite decimals. Refine calculations retain exact rationals; serialization rejects a value such as 1/3 rather than rounding it."}, nil
+		}
 		return nil, l.unrepresentable(name, "exact rationals such as 1/3 need an explicit lossless wire encoding")
 	case "Timestamp":
 		return nil, l.unrepresentable(name, "Timestamp preserves exact RFC 3339 value semantics and needs an explicit wire encoding policy")

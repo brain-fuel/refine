@@ -25,12 +25,14 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T){
     schemaDir:=filepath.Join(root,"schemata","greeting");if err:=os.MkdirAll(schemaDir,0755);err!=nil{t.Fatal(err)}
     schema:=[]byte("package example.test\ntype Greeting = {text :: String where length it > 0}\n")
     for _,version:=range []string{"v1.0.0","SNAPSHOT"}{if err:=os.WriteFile(filepath.Join(schemaDir,version+".refine"),schema,0600);err!=nil{t.Fatal(err)}}
-    // One native bundle exercises the independent native oracle and candidate
-    // filter in the same four lifecycle builds, not a second Maven campaign.
+    // Native bundles exercise exact numeric and ECMA oracles in the same four
+    // lifecycle builds, not separate Maven campaigns for each adapter.
     nativeProject,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"integer","multipleOf":3}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Multiple"}});if err!=nil{t.Fatal(err)}
     nativeProject,err=nativeProject.WithMetadata(native.WireMetadata{PublicationNamespace:"example.test"});if err!=nil{t.Fatal(err)}
     nativeBundle,err:=nativeProject.Bundle();if err!=nil{t.Fatal(err)};nativeDir:=filepath.Join(root,"schemata","multiple");if err=os.MkdirAll(nativeDir,0755);err!=nil{t.Fatal(err)};if err=os.WriteFile(filepath.Join(nativeDir,"SNAPSHOT.refined.json"),nativeBundle,0600);err!=nil{t.Fatal(err)}
-    if err=os.WriteFile(filepath.Join(root,"refine.project.json"),[]byte(`{"families":{"multiple":{"formats":["json-schema"]}}}`),0600);err!=nil{t.Fatal(err)}
+    patternProject,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"string","pattern":"^[a-z]+$"}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Code"},Metadata:native.WireMetadata{PublicationNamespace:"example.test"}});if err!=nil{t.Fatal(err)};patternBundle,err:=patternProject.Bundle();if err!=nil{t.Fatal(err)};patternDir:=filepath.Join(root,"schemata","code");if err=os.MkdirAll(patternDir,0755);err!=nil{t.Fatal(err)};if err=os.WriteFile(filepath.Join(patternDir,"SNAPSHOT.refined.json"),patternBundle,0600);err!=nil{t.Fatal(err)}
+    if err=os.WriteFile(filepath.Join(root,"refine.project.json"),[]byte(`{"families":{"multiple":{"formats":["json-schema"]},"code":{"formats":["json-schema"]}}}`),0600);err!=nil{t.Fatal(err)}
+    fragment:=exec.Command(executable,"project","maven","--root",root,"--executable",executable);fragment.Dir=root;detected,err:=fragment.Output();if err!=nil{t.Fatal("Maven dependency detection",err)};if !strings.Contains(string(detected),"org.graalvm.polyglot"){t.Fatal("native regex dependency was not inferred")};pom=`<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example.test</groupId><artifactId>refine-fixture</artifactId><version>0.0.1</version>`+string(detected)+`</project>`;if err=os.WriteFile(filepath.Join(root,"pom.xml"),[]byte(pom),0600);err!=nil{t.Fatal(err)}
     run:=func(){t.Helper();command:=exec.Command(maven,"--batch-mode","--no-transfer-progress","package");command.Dir=root;command.Env=os.Environ();if javaHome:=os.Getenv("REFINE_JAVA_HOME");javaHome!=""{command.Env=append(command.Env,"JAVA_HOME="+javaHome)};if output,err:=command.CombinedOutput();err!=nil{t.Fatalf("unsigned Maven build: %v\n%s",err,output)}}
     run()
     jar:=filepath.Join(root,"target","refine-fixture-0.0.1.jar");first,err:=os.ReadFile(jar);if err!=nil{t.Fatal(err)}

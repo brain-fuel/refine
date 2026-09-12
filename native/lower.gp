@@ -27,6 +27,9 @@ type LowerOptions struct {
     // Zero selects DefaultLowerGenericSpecializations; values above the hard
     // package maximum are rejected before lowering.
     MaxGenericSpecializations int
+    // Native JSON projects already select numeric JSON wire values. This is
+    // not a public opt-out from standalone exact-number encoding requirements.
+    nativeJSONNumbers bool
 }
 type Loss struct { Owner string; Location string; Predicate string; Explanation string }
 type Export struct { format Format; version string; data []byte; companion string; losses []Loss }
@@ -59,6 +62,7 @@ type lowerer struct {
     nativeNames map[string]string
     specializationCount int
     maxSpecializations int
+    nativeJSONNumbers bool
 }
 
 // LowerPayload lowers one immutable checked payload type. It validates the
@@ -82,6 +86,7 @@ func lowerPayload(format Format,payload *language.PayloadType,metadata WireMetad
     copiedMetadata:=copyMetadata(metadata);if format==Avro&&(len(copiedMetadata.ExtraFields)>0||len(copiedMetadata.Discriminators)>0){return nil,&Error{Code:"native.unrepresentable",Format:Avro,Message:"JSON extra-field and discriminator policies cannot be represented by Avro lowering"}}
     l:=&lowerer{format:format,mode:mode,allowLoss:options.AllowDocumentedLoss,module:checked.Module.Syntax,rootSource:payload.Source(),declarations:make(map[string]language.TypeDecl),definitions:make(map[string]any),building:make(map[string]bool),avroDefined:make(map[string]bool),explanation:explained,companion:explained.Markdown(),explanationUsed:make(map[int]bool),encodings:copiedMetadata.Scalars,extraFields:copiedMetadata.ExtraFields,discriminators:copiedMetadata.Discriminators,owner:"$payload",specializationNames:make(map[string]string),nativeNames:make(map[string]string),maxSpecializations:maxSpecializations}
     l.nativeNames["Anonymous"]="reserved anonymous Avro record";for _,decl:=range l.module.Types{l.declarations[decl.Name]=decl;l.nativeNames[decl.Name]="declaration "+decl.Name};for name,encoding:=range l.encodings{if encoding.Kind==RationalRecord{l.nativeNames[name+"Wire"]="scalar wire "+name}}
+    l.nativeJSONNumbers=options.nativeJSONNumbers&&(format==JSONSchema||format==OpenAPI)
     schema,err:=l.typ(checked.Type,false);if err!=nil{return nil,err}
     l.finishCompanion()
     if mode==Ordinary&&len(l.losses)>0&&!options.AllowDocumentedLoss{return nil,&Error{Code:"native.unrepresentable",Format:format,Message:fmt.Sprintf("%d refinement rule(s) have no exact native representation; set AllowDocumentedLoss to embed explanations and receive the loss list",len(l.losses))}}
@@ -92,13 +97,13 @@ func lowerPayload(format Format,payload *language.PayloadType,metadata WireMetad
         object,ok:=schema.(map[string]any);if !ok{object=map[string]any{"allOf":[]any{schema}}};object["$schema"]="https://json-schema.org/draft/2020-12/schema"
         if len(l.definitions)>0{object["$defs"]=l.definitions};root=object;version="2020-12"
     case OpenAPI:
-        version=options.OpenAPIVersion;if version==""{version="3.2.0"};if version!="3.1.0"&&version!="3.1.1"&&version!="3.1.2"&&version!="3.2.0"{return nil,&Error{Code:"native.unrepresentable",Format:OpenAPI,Message:"lowering currently requires OpenAPI 3.1.x or 3.2.0; 3.0 ingestion remains supported"}}
+        version=options.OpenAPIVersion;if version==""{version="3.2.0"};if version!="3.1.0"&&version!="3.1.1"&&version!="3.1.2"&&version!="3.2.0"&&version!="3.2.1"{return nil,&Error{Code:"native.unrepresentable",Format:OpenAPI,Message:"lowering currently requires a published OpenAPI 3.1.x or 3.2.x patch; 3.0 ingestion remains supported"}}
         rootName:="RefineRoot";for {if _,collision:=l.definitions[rootName];!collision{break};rootName+="_"};components:=map[string]any{rootName:schema};for name,definition:=range l.definitions{components[name]=definition}
         root=map[string]any{"openapi":version,"info":map[string]any{"title":"Refine generated contract","version":"SNAPSHOT"},"paths":map[string]any{},"components":map[string]any{"schemas":components}}
     case Avro:root=schema;version="1.12.0"
     default:return nil,&Error{Code:"native.format",Format:format,Message:"supported lowering formats are json-schema, avro, and openapi"}
     }
-    if mode==Refined{object,ok:=root.(map[string]any);if !ok{if format!=Avro{return nil,&Error{Code:"native.unrepresentable",Format:format,Message:"the native root cannot carry a Refine annotation"}};object=map[string]any{"type":root};root=object};object["x-refine"]=map[string]any{"source":l.module.Source,"root":l.rootSource}}
+    if mode==Refined{object,ok:=root.(map[string]any);if !ok{if format!=Avro{return nil,&Error{Code:"native.unrepresentable",Format:format,Message:"the native root cannot carry a Refine annotation"}};object=map[string]any{"type":root};root=object};object["x-refine"]=map[string]any{"source":l.module.Source,"root":l.rootSource,"metadata":copiedMetadata}}
     data,err:=json.MarshalIndent(root,"","  ");if err!=nil{return nil,wrap(format,"native.lower","",err)};data=append(data,'\n')
     if _,err:=Parse(format,data,Options{});err!=nil{return nil,&Error{Code:"native.lower-invalid",Format:format,Message:"generated document failed native validation: "+err.Error(),Cause:err}}
     return &Export{format:format,version:version,data:data,companion:l.companion,losses:append([]Loss(nil),l.losses...)},nil
@@ -143,7 +148,7 @@ func (l *lowerer) named(name string)(any,error){
     case "String":return map[string]any{"type":"string"},nil
     case "Bool":return map[string]any{"type":"boolean"},nil
     case "Int":if l.format==Avro{return nil,l.unrepresentable(name,"arbitrary-precision integers need an explicit lossless Avro wire encoding")};return map[string]any{"type":"integer"},nil
-    case "Real":return nil,l.unrepresentable(name,"exact rationals such as 1/3 need an explicit lossless wire encoding")
+    case "Real":if l.nativeJSONNumbers{return map[string]any{"type":"number","description":"The native JSON numeric wire format carries exact finite decimals. Refine calculations retain exact rationals; serialization rejects a value such as 1/3 rather than rounding it."},nil};return nil,l.unrepresentable(name,"exact rationals such as 1/3 need an explicit lossless wire encoding")
     case "Timestamp":return nil,l.unrepresentable(name,"Timestamp preserves exact RFC 3339 value semantics and needs an explicit wire encoding policy")
     case "Int32":if l.format==Avro{return "int",nil};return map[string]any{"type":"integer","minimum":json.Number("-2147483648"),"maximum":json.Number("2147483647")},nil
     case "Int64":if l.format==Avro{return "long",nil};return map[string]any{"type":"integer","minimum":json.Number("-9223372036854775808"),"maximum":json.Number("9223372036854775807")},nil

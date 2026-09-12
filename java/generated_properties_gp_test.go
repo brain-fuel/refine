@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"goforge.dev/refine/language"
+	"goforge.dev/refine/native"
 	"goforge.dev/refine/value"
 )
 
@@ -164,16 +165,30 @@ func TestGeneratedPropertiesUseModelBoundariesAndTypedReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := filtered[0].Source
-	if !strings.Contains(text, "NATIVE_CANDIDATES.acceptsNativeCandidate(data)") || !strings.Contains(text, "nativeCandidate(d) && Contract.validate") {
-		t.Fatal("native-only candidate filter was not placed before positive refinement selection")
+	if !strings.Contains(text, "NATIVE_CANDIDATES.acceptsNativeCandidate(data)") || strings.Count(text, "nativeCandidate(d) &&") < 2 {
+		t.Fatal("native-only candidate filter was not placed before positive and invalid refinement selection")
+	}
+	if !strings.Contains(text, "WIRE=AgeModule.strictMapper()") {
+		t.Fatal("wire properties did not select bounded strict mapper")
 	}
 	avroFiltered, err := GeneratePropertyTests(program, "example", "Contract", PropertyTestOptions{Targets: []PropertyTarget{{Name: "Age"}}, AvroSerde: "AgeAvroSerde"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text = avroFiltered[0].Source
-	if !strings.Contains(text, "AVRO.acceptsNativeCandidate(data)") || !strings.Contains(text, "nativeCandidate(d) && Contract.validate") {
-		t.Fatal("Avro-native candidate filter was not placed before positive refinement selection")
+	if !strings.Contains(text, "AVRO.acceptsNativeCandidate(data)") || strings.Count(text, "nativeCandidate(d) &&") < 2 {
+		t.Fatal("Avro-native candidate filter was not placed before positive and invalid refinement selection")
+	}
+	nativeInvalid := PropertyTestOptions{
+		Targets:  []PropertyTarget{{Name: "Age"}},
+		Examples: []PropertyExample{{Target: "Age", Value: value.OfNumber(value.Integer(-1)), Expected: ExampleInvalid, NativeExpected: ExampleNativeInvalid, DiagnosticCodes: []string{"age.min"}}},
+	}
+	if generated, err := GeneratePropertyTests(program, "example", "Contract", nativeInvalid); err == nil || generated != nil || !strings.Contains(err.Error(), "cannot claim refinement diagnostics") {
+		t.Fatalf("ambiguous native-invalid example was accepted: %v", err)
+	}
+	nativeInvalid.Examples[0].DiagnosticCodes = nil
+	if generated, err := GeneratePropertyTests(program, "example", "Contract", nativeInvalid); err == nil || generated != nil || !strings.Contains(err.Error(), "no native property adapter") {
+		t.Fatalf("native outcome without adapter was accepted: %v", err)
 	}
 }
 
@@ -216,3 +231,107 @@ type NestedInt = Nested Int
 		t.Fatalf("timestamp/float/generic recursive properties: %v\n%s", err, output)
 	}
 }
+
+// One javac/JVM regression covers Result rule discovery, typed examples as
+// executable model/wire evidence and native filtering of invalid candidates.
+func TestGeneratedPropertiesExecuteResultExamplesAndNativeInvalidFiltering(t *testing.T) {
+	compiler, vm := javaTools(t)
+	classpath := jetCheckClasspath(t) + string(os.PathListSeparator) + networkntClasspath(t)
+	files := []File{}
+	source := `type ExtendedText = String where length it > 100 @code "long.minimum"
+type Negative = Int where it < 0 @code "negative.required"
+type Positive = Int where it > 0 @code "positive.required"
+type Outcome = Result Negative Positive
+`
+	ok, _ := value.Variant("Ok", []value.Data{value.OfNumber(value.Integer(2))})
+	invalid, _ := value.Variant("Ok", []value.Data{value.OfNumber(value.Integer(0))})
+	longText, err := value.TextFromUTF8(strings.Repeat("x", 101))
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples := []PropertyExample{{Target: "ExtendedText", Value: value.OfText(longText), Expected: ExampleValid}, {Target: "Outcome", Value: ok, Expected: ExampleValid}, {Target: "Outcome", Value: invalid, Expected: ExampleInvalid, DiagnosticCodes: []string{"positive.required"}}}
+	program, err := language.Compile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := GenerateModels(program, "example.propertyevidence", "Contract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties, err := GeneratePropertyTests(program, "example.propertyevidence", "Contract", PropertyTestOptions{Targets: []PropertyTarget{{Name: "ExtendedText"}, {Name: "Outcome"}}, CaseCount: 4, AttemptBudget: 500, Seed: 419, Examples: examples})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(properties[0].Source, "invalid Outcome negative.required") || !strings.Contains(properties[0].Source, "invalid Outcome positive.required") {
+		t.Fatal("Result payload refinements were not traversed")
+	}
+	if !strings.Contains(properties[0].Source, "sampledFrom(new Data.Text") || !strings.Contains(properties[0].Source, "validBoundary0(exampleData0)") || !strings.Contains(properties[0].Source, "invalidBoundary1(exampleData2") {
+		t.Fatal("typed examples were not seeded and executed through model boundaries")
+	}
+	files = append(files, models...)
+	files = append(files, properties...)
+	schema := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","multipleOf":3}`
+	nativeProject, err := native.IngestProject(native.JSONSchema, []byte(schema), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Value"}, Metadata: native.WireMetadata{PublicationNamespace: "example.nativeproperty"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(nativeProject.EditableSource(), "type Value = Int", "type Value = Int where it /= 1 @code \"value.not-one\"", 1)
+	nativeProject, err = nativeProject.WithEditedSource(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeFiles, err := GenerateProjectJSONSerde(nativeProject, "Contract", "ValueModule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeProgram, err := language.Compile(nativeProject.EditableSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := JSONNativeValidatorName(nativeProgram, "Contract", "ValueModule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	badText, err := value.TextFromUTF8("not-an-integer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeExamples := []PropertyExample{{Target: "Value", Value: value.OfNumber(value.Integer(4)), Expected: ExampleValid, NativeExpected: ExampleNativeInvalid}, {Target: "Value", Value: value.OfText(badText), Expected: ExampleInvalid, NativeExpected: ExampleNativeInvalid}}
+	nativeProperties, err := GeneratePropertyTests(nativeProgram, "example.nativeproperty", "Contract", PropertyTestOptions{Targets: []PropertyTarget{{Name: "Value"}}, CaseCount: 1, AttemptBudget: 40, Seed: 421, JSONModule: "ValueModule", NativeJSONValidator: validator, Examples: nativeExamples})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nativeProperties[0].Source, "nativeCandidate(d) && targeted(") {
+		t.Fatal("invalid refinement candidates were not native-filtered")
+	}
+	files = append(files, nativeFiles...)
+	files = append(files, nativeProperties...)
+	files = append(files, File{Path: "PropertyEvidenceHarness.java", Source: propertyEvidenceHarnessJava})
+	dir := t.TempDir()
+	sources := []string{}
+	for _, file := range files {
+		target := filepath.Join(dir, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(file.Source), 0644); err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, target)
+	}
+	classes := filepath.Join(dir, "classes")
+	args := append([]string{"--release", "25", "-encoding", "UTF-8", "-Xlint:all", "-Werror", "-cp", classpath, "-d", classes}, sources...)
+	if output, err := exec.Command(compiler, args...).CombinedOutput(); err != nil {
+		t.Fatalf("grouped property evidence javac: %v\n%s", err, output)
+	}
+	if output, err := exec.Command(vm, "-Xss256k", "-cp", classes+string(os.PathListSeparator)+classpath, "PropertyEvidenceHarness").CombinedOutput(); err != nil {
+		t.Fatalf("grouped property evidence runtime: %v\n%s", err, output)
+	}
+}
+
+const propertyEvidenceHarnessJava = `
+public final class PropertyEvidenceHarness {
+ private static boolean contains(Throwable failure,String text){for(Throwable current=failure;current!=null;current=current.getCause())if(current.getMessage()!=null&&current.getMessage().contains(text))return true;return false;}
+ public static void main(String[] args)throws Throwable{example.propertyevidence.ContractGeneratedProperties.main(args);try{example.nativeproperty.ContractGeneratedProperties.main(args);throw new AssertionError("native-incompatible invalid candidate was credited to a refinement");}catch(Throwable expected){if(!contains(expected,"property generation exhausted: invalid Value value.not-one"))throw expected;}}
+}
+`

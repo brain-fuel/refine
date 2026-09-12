@@ -6,6 +6,7 @@ import (
     "strings"
 
     "goforge.dev/refine/language"
+    refineopenapi "goforge.dev/refine/openapi"
 )
 
 type ExtraFieldMode string
@@ -38,17 +39,20 @@ type WireMetadata struct {
     // payload. Zero selects DefaultNumericExpansion; explicit values are
     // bounded so metadata cannot disable resource protection accidentally.
     NumericExpansion int
+    // OpenAPI binds explicitly authored request/response context types to
+    // native operation identifiers. No binding is inferred from paths.
+    OpenAPI *refineopenapi.Schema `json:"openapi,omitempty"`
 }
 
 const DefaultNumericExpansion=65536
 const MaxNumericExpansion=1000000
 func (m WireMetadata) NumericExpansionLimit()int{if m.NumericExpansion==0{return DefaultNumericExpansion};return m.NumericExpansion}
 
-func copyMetadata(in WireMetadata)WireMetadata{out:=WireMetadata{PublicationNamespace:in.PublicationNamespace,NumericExpansion:in.NumericExpansion,ExtraFields:make(map[string]ExtraFieldMode),Scalars:make(map[string]ScalarEncoding),Discriminators:make(map[string]Discriminator)}
+func copyMetadata(in WireMetadata)WireMetadata{out:=WireMetadata{PublicationNamespace:in.PublicationNamespace,NumericExpansion:in.NumericExpansion,OpenAPI:copyOpenAPISchema(in.OpenAPI),ExtraFields:make(map[string]ExtraFieldMode),Scalars:make(map[string]ScalarEncoding),Discriminators:make(map[string]Discriminator)}
     for k,v:=range in.ExtraFields{out.ExtraFields[k]=v};for k,v:=range in.Scalars{out.Scalars[k]=v};for k,v:=range in.Discriminators{copy:=Discriminator{Field:v.Field,Values:make(map[string]string),Arguments:make(map[string][]string)};for a,b:=range v.Values{copy.Values[a]=b};for a,b:=range v.Arguments{copy.Arguments[a]=append([]string(nil),b...)};out.Discriminators[k]=copy};return out}
 
-func metadataEmpty(value WireMetadata)bool{return value.PublicationNamespace==""&&value.NumericExpansion==0&&len(value.ExtraFields)==0&&len(value.Scalars)==0&&len(value.Discriminators)==0}
-func metadataEqual(a,b WireMetadata)bool{if a.PublicationNamespace!=b.PublicationNamespace||a.NumericExpansion!=b.NumericExpansion||len(a.ExtraFields)!=len(b.ExtraFields)||len(a.Scalars)!=len(b.Scalars)||len(a.Discriminators)!=len(b.Discriminators){return false};for key,value:=range a.ExtraFields{if b.ExtraFields[key]!=value{return false}};for key,value:=range a.Scalars{if b.Scalars[key]!=value{return false}};for key,value:=range a.Discriminators{other,ok:=b.Discriminators[key];if !ok||value.Field!=other.Field||len(value.Values)!=len(other.Values)||len(value.Arguments)!=len(other.Arguments){return false};for name,tag:=range value.Values{if other.Values[name]!=tag{return false}};for name,args:=range value.Arguments{otherArgs,ok:=other.Arguments[name];if !ok||len(args)!=len(otherArgs){return false};for i:=range args{if args[i]!=otherArgs[i]{return false}}}};return true}
+func metadataEmpty(value WireMetadata)bool{return value.PublicationNamespace==""&&value.NumericExpansion==0&&value.OpenAPI==nil&&len(value.ExtraFields)==0&&len(value.Scalars)==0&&len(value.Discriminators)==0}
+func metadataEqual(a,b WireMetadata)bool{if a.PublicationNamespace!=b.PublicationNamespace||a.NumericExpansion!=b.NumericExpansion||!openAPISchemaEqual(a.OpenAPI,b.OpenAPI)||len(a.ExtraFields)!=len(b.ExtraFields)||len(a.Scalars)!=len(b.Scalars)||len(a.Discriminators)!=len(b.Discriminators){return false};for key,value:=range a.ExtraFields{if b.ExtraFields[key]!=value{return false}};for key,value:=range a.Scalars{if b.Scalars[key]!=value{return false}};for key,value:=range a.Discriminators{other,ok:=b.Discriminators[key];if !ok||value.Field!=other.Field||len(value.Values)!=len(other.Values)||len(value.Arguments)!=len(other.Arguments){return false};for name,tag:=range value.Values{if other.Values[name]!=tag{return false}};for name,args:=range value.Arguments{otherArgs,ok:=other.Arguments[name];if !ok||len(args)!=len(otherArgs){return false};for i:=range args{if args[i]!=otherArgs[i]{return false}}}};return true}
 
 var namespacePattern=regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$`)
 var memberPattern=regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -61,7 +65,7 @@ func validateMetadata(program *language.Program,metadata WireMetadata)error{
     for name,wire:=range metadata.Discriminators{decl,ok:=types[name];if !ok||decl.Body!=nil{return fmt.Errorf("discriminator requires tagged union type %s",name)};if !memberPattern.MatchString(wire.Field){return fmt.Errorf("invalid discriminator field for %s",name)};expected:=make(map[string]int);for _,variant:=range decl.Variants{expected[variant.Name]=len(variant.Arguments)};if len(wire.Values)!=len(expected)||len(wire.Arguments)!=len(expected){return fmt.Errorf("discriminator metadata must cover every constructor of %s",name)};seenValues:=make(map[string]bool)
         for constructor,arity:=range expected{tag,ok:=wire.Values[constructor];if !ok||tag==""{return fmt.Errorf("missing discriminator value for %s.%s",name,constructor)};if seenValues[tag]{return fmt.Errorf("duplicate discriminator wire value %q for %s",tag,name)};seenValues[tag]=true;args,ok:=wire.Arguments[constructor];if !ok||len(args)!=arity{return fmt.Errorf("constructor argument names for %s.%s must have arity %d",name,constructor,arity)};seenArgs:=map[string]bool{wire.Field:true};for _,arg:=range args{if !memberPattern.MatchString(arg)||seenArgs[arg]{return fmt.Errorf("invalid or duplicate member %q for %s.%s",arg,name,constructor)};seenArgs[arg]=true}}
         for constructor:=range wire.Values{if _,ok:=expected[constructor];!ok{return fmt.Errorf("unknown constructor %s.%s",name,constructor)}};for constructor:=range wire.Arguments{if _,ok:=expected[constructor];!ok{return fmt.Errorf("unknown constructor %s.%s",name,constructor)}}
-    };return nil
+    };return validateOpenAPIMetadata(program,metadata.OpenAPI)
 }
 
 func metadataTypeKind(name string,types map[string]language.TypeDecl,visiting map[string]bool)string{if visiting[name]{return ""};visiting[name]=true;decl,ok:=types[name];if !ok||decl.Body==nil{return ""};return metadataSyntaxKind(decl.Body,types,visiting)}

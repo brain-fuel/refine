@@ -20,6 +20,7 @@ const usage = `refine — refinement schema tooling (development)
 
 Usage:
   refine typecheck [--json] <source.refine|->
+  refine check-schema [--json] [--total-steps N] [--clause-steps N] <source.refine|->
   refine fmt <source.refine|->
   refine inspect-json [--json] <document.json|->
   refine explain [--json] <source.refine|->
@@ -28,7 +29,7 @@ Usage:
   refine satisfiable [--json] <source.refine|-> <type>
   refine compare-payload [--json] <old.refine|-> <old-type> <new.refine|-> <new-type>
   refine project generate [--root DIR] [--config FILE] [--package NAME] [--output DIR] [--flat] [--check] [--json]
-  refine project maven [--executable PATH]
+  refine project maven [--root DIR] [--config FILE] [--executable PATH] [--native-regex]
   refine release plan [--root DIR] [--config FILE] [--json] [family...]
   refine release promote [--root DIR] [--config FILE] [--json] [family...]
   refine release recover [--root DIR]
@@ -40,6 +41,8 @@ Usage:
 
 typecheck checks the language's static rules; it is not yet native schema,
 satisfiability, compatibility, or payload validation.
+check-schema also rejects proven-empty declarations and reports unknown proofs;
+unknown satisfiability allows compilation and is never described as proven valid.
 fmt writes formatted source to stdout and never overwrites the input file.
 inspect-json checks JSON syntax and duplicate keys, not schema validity.
 validate reads canonical Refine value text, not JSON or Avro wire data.
@@ -101,7 +104,7 @@ func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return nativeCommand(args[1:], input, output, errorOutput)
 	}
 	switch command {
-	case "explain", "validate", "validate-native", "satisfiable", "compare-payload":
+	case "explain", "validate", "validate-native", "satisfiable", "compare-payload", "check-schema":
 		return workflow(args, input, output, errorOutput)
 	}
 	if command != "typecheck" && command != "fmt" && command != "inspect-json" {

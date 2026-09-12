@@ -6,6 +6,7 @@ import (
     "strings"
 
     jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+    "goforge.dev/refine/analysis"
     "goforge.dev/refine/language"
     "goforge.dev/refine/provenance"
     "goforge.dev/refine/schemajson"
@@ -19,7 +20,7 @@ type Resource struct { URI string; Source string }
 // Project couples editable checked language source to an immutable native
 // sidecar. The sidecar remains authoritative for constraints not represented by
 // the language projection.
-type Project struct { document *Document; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool }
+type Project struct { document *Document; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool; avroDefaultChecks []AvroDefaultCheck; schemaChecks analysis.SchemaReport }
 
 func (p *Project) Format()Format{if p==nil||p.document==nil{return ""};return p.document.Format()}
 func (p *Project) Version()string{if p==nil||p.document==nil{return ""};return p.document.Version()}
@@ -55,7 +56,7 @@ func IngestProject(format Format,input []byte,options ProjectOptions)(*Project,e
     options,err:=normalizeProjectOptions(format,options);if err!=nil{return nil,err};var document *Document;source:=""
     switch format{
     case JSONSchema:
-        document,err=ParseJSONSchema(input,Options{});if err==nil{doc,_:=schemajson.Parse(input,Options{}.Limits);source,err=projectJSON(doc,options.Root,false);if err==nil&&document.ConstraintSource()!=""{source+="\n"+document.ConstraintSource()}}
+        document,err=ParseJSONSchema(input,Options{});if err==nil{if annotated,_,ok:=rootAnnotation(document,options.Root);ok{source=annotated}else{doc,_:=schemajson.Parse(input,Options{}.Limits);source,err=projectJSON(doc,options.Root,false);if err==nil&&document.ConstraintSource()!=""{source+="\n"+document.ConstraintSource()}}}
     case Avro:
         if options.Root.Pointer!=""{return nil,&Error{Code:"native.root",Format:Avro,Pointer:options.Root.Pointer,Message:"Avro root selector pointer must be empty"}};document,err=ParseAvro(input,Options{});if err==nil{doc,_:=schemajson.Parse(input,Options{}.Limits);source,err=projectAvro(doc,options.Root)}
     case OpenAPI:
@@ -63,7 +64,7 @@ func IngestProject(format Format,input []byte,options ProjectOptions)(*Project,e
     default:return nil,&Error{Code:"native.format",Format:format,Message:"unsupported project format"}
     }
     if err!=nil{return nil,err};if annotated,rootName,ok:=rootAnnotation(document,options.Root);ok{source=annotated;if rootName!=options.Root.TypeName{source+="\ntype "+options.Root.TypeName+" = "+rootName+"\n"}};if annotation,ok:=selectedRootAnnotation(document,options.Root);ok{options.Metadata,err=mergeAnnotationMetadata(format,options.Metadata,annotation);if err!=nil{return nil,err}};program,err:=language.Compile(source);if err!=nil{return nil,wrap(format,"native.projection","",err)};if _,err:=program.PayloadType(options.Root.TypeName);err!=nil{return nil,wrap(format,"native.root",options.Root.Pointer,err)};if err:=validateMetadata(program,options.Metadata);err!=nil{return nil,wrap(format,"native.metadata","",err)}
-    origins:=make(map[string]*provenance.JSONSchema);units:=make(map[string]string);linked:=make(map[string]bool);if document.jsonProvenance!=nil{origins[options.ResourceID]=document.jsonProvenance;canonical:=document.ConstraintSource();if canonical!=""{units[options.ResourceID]=canonical;linked[options.ResourceID]=nativeConstraintUnitsUnchanged(document.jsonProvenance,source)}};return &Project{document:document,root:options.Root,source:source,program:program,metadata:copyMetadata(options.Metadata),resources:[]Resource{{URI:options.ResourceID,Source:document.Original()}},jsonOrigins:origins,nativeUnitSources:units,nativeUnitsInEditable:linked},nil
+    origins:=make(map[string]*provenance.JSONSchema);units:=make(map[string]string);linked:=make(map[string]bool);if document.jsonProvenance!=nil{origins[options.ResourceID]=document.jsonProvenance;canonical:=document.ConstraintSource();if canonical!=""{units[options.ResourceID]=canonical;linked[options.ResourceID]=nativeConstraintUnitsUnchanged(document.jsonProvenance,source)}};return validateProject(&Project{document:document,root:options.Root,source:source,program:program,metadata:copyMetadata(options.Metadata),resources:[]Resource{{URI:options.ResourceID,Source:document.Original()}},jsonOrigins:origins,nativeUnitSources:units,nativeUnitsInEditable:linked})
 }
 
 func copyStringMap(in map[string]string)map[string]string{out:=make(map[string]string,len(in));for key,item:=range in{out[key]=item};return out}
@@ -80,13 +81,13 @@ func mergeAnnotationMetadata(format Format,configured WireMetadata,annotation An
 
 // WithEditedSource checks an author's refinements while retaining the exact
 // immutable native sidecar, root selector, and wire metadata.
-func (p *Project) WithEditedSource(source string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};program,err:=language.Compile(source);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=source;copy.program=program;copy.languageEntry="";copy.languageFiles=nil;copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=p.editedUnitSources(source);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return &copy,nil}
+func (p *Project) WithEditedSource(source string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};program,err:=language.Compile(source);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=source;copy.program=program;copy.languageEntry="";copy.languageFiles=nil;copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=p.editedUnitSources(source);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return validateProject(&copy)}
 
 // WithEditedSources resolves imports only from the supplied map through the
 // language package's bounded, immutable source bundle.
-func (p *Project) WithEditedSources(entry string,sources map[string]string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};bundle,err:=language.CompileSources(entry,sources);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};program:=bundle.Program();if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=program.Source();copy.program=program;copy.languageEntry=bundle.Entry();copy.languageFiles=bundle.Files();copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=p.editedUnitSources(copy.source);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return &copy,nil}
+func (p *Project) WithEditedSources(entry string,sources map[string]string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};bundle,err:=language.CompileSources(entry,sources);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};program:=bundle.Program();if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=program.Source();copy.program=program;copy.languageEntry=bundle.Entry();copy.languageFiles=bundle.Files();copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=p.editedUnitSources(copy.source);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return validateProject(&copy)}
 
-func (p *Project) WithMetadata(metadata WireMetadata)(*Project,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};if err:=validateMetadata(p.program,metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.metadata=copyMetadata(metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=copyStringMap(p.nativeUnitSources);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return &copy,nil}
+func (p *Project) WithMetadata(metadata WireMetadata)(*Project,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};if err:=validateMetadata(p.program,metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.metadata=copyMetadata(metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitSources=copyStringMap(p.nativeUnitSources);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable);return validateProject(&copy)}
 
 // ValidateJSON performs native-only validation at a JSON Schema or supported
 // OpenAPI Schema Object root. It does not run the editable language refinements.

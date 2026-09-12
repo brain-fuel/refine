@@ -119,3 +119,36 @@ func TestGenerateNativeBundleRejectsConflictingOrLossyConfiguration(t *testing.T
 		})
 	}
 }
+
+func TestMavenInfersOnlyRequiredNativeRegexDependency(t *testing.T) {
+	for _, tc := range []struct {
+		schema         string
+		excluded, want bool
+	}{
+		{`{"type":"string","pattern":"a+"}`, false, true},
+		{`{"type":"string","pattern":"a+"}`, true, false},
+		{`{"type":"string","examples":[{"pattern":"a+"}]}`, false, false},
+	} {
+		p, err := native.IngestProject(native.JSONSchema, []byte(tc.schema), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Code"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snippet, err := MavenSnippetForProject(GenerateInput{Contracts: []Contract{{Family: "code", NativeProject: p, NoCodegen: tc.excluded}}}, MavenOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(snippet, "org.graalvm.polyglot") != tc.want {
+			t.Fatal("wrong optional regex dependency selection", tc)
+		}
+	}
+	if strings.Contains(MavenSnippet(MavenOptions{}), "org.graalvm.polyglot") {
+		t.Fatal("plain Maven snippet acquired optional regex runtime")
+	}
+	if !strings.Contains(MavenSnippet(MavenOptions{NativeRegex: true}), "org.graalvm.polyglot") {
+		t.Fatal("explicit regex bootstrap option ignored")
+	}
+	snippet := MavenSnippet(MavenOptions{NativeRegex: true})
+	if !strings.Contains(snippet, "<artifactId>polyglot</artifactId><version>25.0.1</version></dependency>") || !strings.Contains(snippet, "<artifactId>js</artifactId><version>25.0.1</version><type>pom</type><scope>runtime</scope>") {
+		t.Fatal("regex API must compile and its engine must remain a runtime dependency")
+	}
+}

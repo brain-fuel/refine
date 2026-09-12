@@ -12,7 +12,7 @@ import (
 func normalizeContract(c Contract)(Contract,error){
     if c.NativeProject==nil{return c,nil}
     if c.Program!=nil{return c,fmt.Errorf("project.native: Program and NativeProject are mutually exclusive")}
-    if c.Wire.PublicationNamespace!=""||c.Wire.NumericExpansion!=0||len(c.Wire.Scalars)>0||len(c.Wire.ExtraFields)>0||len(c.Wire.Discriminators)>0{return c,fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")}
+    if projectWireConfigured(c.Wire){return c,fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")}
     root:=c.NativeProject.Root().TypeName;if c.RootType!=""&&c.RootType!=root{return c,fmt.Errorf("project.native: configured root disagrees with bundled root")};c.RootType=root
     program,err:=language.Compile(c.NativeProject.EditableSource());if err!=nil{return c,err};c.Program=program;c.Wire=c.NativeProject.Metadata()
     if c.JavaPackage==""&&c.LogicalNamespace==""{c.LogicalNamespace=c.Wire.PublicationNamespace}

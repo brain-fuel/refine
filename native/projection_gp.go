@@ -108,6 +108,12 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 	if schemajson.KindName(node.Kind()) != "object" {
 		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path, Message: "schema position must be an object or Boolean"}
 	}
+	if additional, ok := node.Lookup("additionalProperties"); ok && schemajson.KindName(additional.Kind()) == "object" {
+		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/additionalProperties", Message: "schema-valued additionalProperties requires a language map type; Boolean permissive or closed extra-field policies remain supported"}
+	}
+	if patterns, ok := node.Lookup("patternProperties"); ok && schemajson.KindName(patterns.Kind()) == "object" && len(patterns.Members()) > 0 {
+		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/patternProperties", Message: "patternProperties map values require a language map type; retain this schema in the native document until typed maps are implemented"}
+	}
 	if ref, ok := node.Lookup("$ref"); ok {
 		raw, ok := nodeString(ref)
 		if !ok {

@@ -1,0 +1,31 @@
+package native
+
+import (
+    "encoding/json"
+    "strings"
+    "goforge.dev/refine/schemajson"
+)
+
+// Ordinary outputs contain native schemas and English, not executable Refine
+// annotations. Only recognized schema positions are stripped; payload values
+// whose keys happen to spell x-refine are ordinary user data.
+func ordinaryProjectResources(format Format,resources []Resource,root ResourceSelector)([]Resource,error){
+    out:=append([]Resource(nil),resources...)
+    for i,resource:=range out{
+        raw:=[]byte(resource.Source);var err error;if format==OpenAPI{raw,err=openAPIResourceJSON(raw);if err!=nil{return nil,err}}
+        doc,err:=schemajson.Parse(raw,schemajson.Limits{});if err!=nil{return nil,err};var annotations []Annotation
+        switch{case format==Avro:annotations,err=avroAnnotations(doc.Root());case format==OpenAPI&&resource.URI==root.Resource:if item,ok:=doc.Root().Lookup("x-refine");ok{annotation,e:=jsonAnnotation(OpenAPI,"/x-refine",item);err=e;annotations=[]Annotation{annotation}};default:annotations,err=jsonSchemaAnnotations(doc.Root())};if err!=nil{return nil,err};if len(annotations)==0{continue}
+        decoder:=json.NewDecoder(strings.NewReader(string(raw)));decoder.UseNumber();var document any;if err:=decoder.Decode(&document);err!=nil{return nil,err}
+        for _,annotation:=range annotations{index:=strings.LastIndex(annotation.Pointer,"/");parent,err:=effectiveSchemaObject(document,annotation.Pointer[:index]);if err!=nil{return nil,err};delete(parent,"x-refine")}
+        encoded,err:=json.MarshalIndent(document,"","  ");if err!=nil{return nil,err};out[i].Source=string(append(encoded,'\n'))
+    }
+    return out,nil
+}
+
+// A native-only export cannot re-type-check bindings to declarations that were
+// intentionally erased. The checked Project already owns those declarations;
+// validate the emitted native document and explicit resource closure here.
+func validateOrdinaryProjectResources(format Format,resources []Resource,root ResourceSelector)error{
+    byURI:=map[string][]byte{};for _,resource:=range resources{byURI[resource.URI]=[]byte(resource.Source)}
+    var err error;switch format{case JSONSchema:_,err=validateJSONResources(byURI,root);case OpenAPI:_,err=validateOpenAPIResources(byURI,root);case Avro:_,_,err=validateAvroResources(resources,root)};return err
+}

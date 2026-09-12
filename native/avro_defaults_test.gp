@@ -1,0 +1,191 @@
+package native
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	avro "github.com/hamba/avro/v2"
+	"goforge.dev/refine/schemajson"
+	"goforge.dev/refine/validation"
+)
+
+func TestAvroDefaultsRejectNumericTruncationAndOverflow(t *testing.T) {
+	cases := []struct {
+		typ, def string
+		valid    bool
+	}{
+		{`"int"`, `1`, true}, {`"int"`, `1.0`, false}, {`"int"`, `1e0`, false}, {`"int"`, `1.5`, false}, {`"int"`, `2147483647`, true}, {`"int"`, `2147483648`, false}, {`"int"`, `-2147483649`, false},
+		{`"long"`, `9007199254740993`, true}, {`"long"`, `1.0`, false}, {`"long"`, `1e0`, false}, {`"long"`, `9223372036854775807`, true}, {`"long"`, `9223372036854775808`, false}, {`"long"`, `-9223372036854775809`, false}, {`"long"`, `-0.1`, false},
+		{`{"type":"array","items":"int"}`, `[1,2.5]`, false}, {`{"type":"map","values":"long"}`, `{"x":9223372036854775808}`, false},
+		{`["null","int"]`, `1.5`, false}, {`["int","double"]`, `1.0`, true}, {`["int","double"]`, `1.5`, true},
+		{`{"type":"record","name":"Inner","fields":[{"name":"n","type":"int"}]}`, `{"n":1.5}`, false},
+	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			source := fmt.Sprintf(`{"type":"record","name":"Outer","fields":[{"name":"item","type":%s,"default":%s}]}`, tc.typ, tc.def)
+			_, err := ParseAvro([]byte(source), Options{})
+			if (err == nil) != tc.valid {
+				t.Fatalf("%s default %s: %v", tc.typ, tc.def, err)
+			}
+		})
+	}
+}
+
+func TestAvroDefaultsAuditNamedReferencesAndDependencyResources(t *testing.T) {
+	source := `{"type":"record","name":"Outer","fields":[{"name":"a","type":{"type":"record","name":"Inner","fields":[{"name":"n","type":"long"}]}},{"name":"b","type":"Inner","default":{"n":9223372036854775808}}]}`
+	if _, err := ParseAvro([]byte(source), Options{}); problemCode(err) != "native.default" {
+		t.Fatal("named default was not exactly checked", err)
+	}
+	resources := []Resource{{URI: "urn:inner", Source: `{"type":"record","name":"Inner","fields":[{"name":"n","type":"long","default":9223372036854775808}]}`}, {URI: "urn:outer", Source: `{"type":"record","name":"Outer","fields":[{"name":"inner","type":"Inner"}]}`}}
+	if _, err := IngestProjectResources(Avro, resources, ProjectOptions{Root: ResourceSelector{Resource: "urn:outer", TypeName: "Outer"}}); problemCode(err) != "native.default" {
+		t.Fatal("dependency default was not exactly checked", err)
+	}
+}
+
+func TestAvroDefaultsUseFirstMatchingUnionBranchWithoutChangingOriginal(t *testing.T) {
+	cases := []string{
+		`{"type":"record","name":"MaybeCount","fields":[{"name":"count","type":["null","int"],"default":3}]}`,
+		`{"type":"record","name":"TextChoice","fields":[{"name":"choice","type":["int","string"],"default":"x"}]}`,
+	}
+	for _, source := range cases {
+		document, err := ParseAvro([]byte(source), Options{})
+		if err != nil {
+			t.Fatalf("valid Avro 1.12 non-first union default rejected: %v", err)
+		}
+		if document.Original() != source || string(document.ExportOriginal()) != source {
+			t.Fatal("default adaptation changed immutable original bytes")
+		}
+	}
+	invalid := `{"type":"record","name":"Bad","fields":[{"name":"choice","type":["null","int"],"default":"x"}]}`
+	if _, err := ParseAvro([]byte(invalid), Options{}); problemCode(err) != "native.default" {
+		t.Fatalf("no-match union default accepted: %v", err)
+	}
+}
+
+func TestAvroUnionDefaultNamedReferencesAndNestedOmissions(t *testing.T) {
+	source := `{"type":"record","name":"Envelope","namespace":"sample","fields":[{"name":"definition","type":{"type":"record","name":"Inner","fields":[{"name":"n","type":"int","default":7}]}},{"name":"choice","type":["null","sample.Inner"],"default":{}}]}`
+	if _, err := ParseAvro([]byte(source), Options{}); err != nil {
+		t.Fatalf("named non-first default with nested field fallback rejected: %v", err)
+	}
+	resources := []Resource{{URI: "urn:avro:inner", Source: `{"type":"record","name":"Inner","fields":[{"name":"n","type":"int","default":7}]}`}, {URI: "urn:avro:outer", Source: `{"type":"record","name":"Outer","fields":[{"name":"choice","type":["null","Inner"],"default":{}}]}`}}
+	if _, err := IngestProjectResources(Avro, resources, ProjectOptions{Root: ResourceSelector{Resource: "urn:avro:outer", TypeName: "OuterDatum"}}); err != nil {
+		t.Fatalf("dependency named default rejected: %v", err)
+	}
+	missing := `{"type":"record","name":"Outer","fields":[{"name":"definition","type":{"type":"record","name":"Inner","fields":[{"name":"n","type":"int"}]}},{"name":"choice","type":["null","Inner"],"default":{}}]}`
+	if _, err := ParseAvro([]byte(missing), Options{}); problemCode(err) != "native.default" {
+		t.Fatalf("record default omitted required nested field: %v", err)
+	}
+	cyclic := `{"type":"record","name":"Node","fields":[{"name":"next","type":["null","Node"],"default":{}}]}`
+	if _, err := ParseAvro([]byte(cyclic), Options{}); problemCode(err) != "native.limit" {
+		t.Fatalf("cyclic missing-field default did not remain indeterminate at its resource bound: %v", err)
+	}
+	cyclicResources := []Resource{{URI: "urn:avro:cyclic", Source: cyclic}}
+	if _, err := IngestProjectResources(Avro, cyclicResources, ProjectOptions{Root: ResourceSelector{Resource: "urn:avro:cyclic", TypeName: "NodeDatum"}}); problemCode(err) != "native.limit" {
+		t.Fatalf("resource ingestion reclassified matcher exhaustion as a default mismatch: %v", err)
+	}
+}
+
+func TestAvroDefaultMatcherUsesAggregateTriStateBudget(t *testing.T) {
+	definitions := ""
+	for i := 6; i >= 0; i-- {
+		typ := `"int"`
+		def := `0`
+		if i < 6 {
+			typ = fmt.Sprintf(`"R%d"`, i+1)
+			def = `{}`
+		}
+		definitions += fmt.Sprintf(`{"name":"definition%d","type":{"type":"record","name":"R%d","fields":[{"name":"left","type":%s,"default":%s},{"name":"right","type":%s,"default":%s}]}},`, i, i, typ, def, typ, def)
+	}
+	source := `{"type":"record","name":"Envelope","fields":[` + definitions + `{"name":"choice","type":"R0","default":{}}]}`
+	doc, err := schemajson.Parse([]byte(source), schemajson.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := parseAvroStructure([]byte(source), &avro.SchemaCache{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := newRawAvroDefaults()
+	index.walk(doc.Root(), schema, "", "")
+	rawFields, _ := doc.Root().Lookup("fields")
+	raw := rawFields.Elements()[len(rawFields.Elements())-1]
+	def, _ := raw.Lookup("default")
+	fields := schema.(*avro.RecordSchema).Fields()
+	choice := fields[len(fields)-1]
+	matched, err := newAvroDefaultMatcher(index, 64, schemajson.DefaultBytes).match(choice.Type(), def, 0)
+	var limited *avroPayloadLimitError
+	if matched || !errors.As(err, &limited) {
+		t.Fatalf("exponential fallback did not produce explicit resource exhaustion: matched=%v err=%v", matched, err)
+	}
+	simple := `{"type":"record","name":"Two","fields":[{"name":"a","type":"int","default":1},{"name":"b","type":"int","default":2}]}`
+	simpleDoc, err := schemajson.Parse([]byte(simple), schemajson.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	simpleSchema, err := parseAvroStructure([]byte(simple), &avro.SchemaCache{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	simpleIndex := newRawAvroDefaults()
+	simpleIndex.walk(simpleDoc.Root(), simpleSchema, "", "")
+	if err := auditAvroDefaultsWithMatcher(simpleDoc.Root(), simpleSchema, "", newAvroDefaultMatcher(simpleIndex, 1, schemajson.DefaultBytes)); problemCode(err) != "native.limit" {
+		t.Fatalf("matcher budget reset between field defaults: %v", err)
+	}
+	textDoc, err := schemajson.Parse([]byte(`"abcdefgh"`), schemajson.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytesSchema, err := parseAvroStructure([]byte(`"bytes"`), &avro.SchemaCache{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, err := newAvroDefaultMatcher(nil, 10, 4).match(bytesSchema, textDoc.Root(), 0); matched || !errors.As(err, &limited) {
+		t.Fatalf("scalar work was processed beyond its aggregate input-unit bound: matched=%v err=%v", matched, err)
+	}
+}
+
+func TestAvroUnionDefaultNativeBinaryAndRefinedChecks(t *testing.T) {
+	schema := `{"type":"record","name":"MaybeCount","fields":[{"name":"count","type":["null","int"],"default":3}]}`
+	project := avroProject(t, schema)
+	checks := project.AvroDefaultChecks()
+	if len(checks) != 1 || checks[0].State != "valid" {
+		t.Fatalf("refinement-aware default check absent: %+v", checks)
+	}
+	wire := []byte{2, 6}
+	if err := project.ValidateAvroBinary(wire, AvroPayloadLimits{}); err != nil {
+		t.Fatalf("writer datum rejected: %v", err)
+	}
+	if _, report, err := project.DecodeAndValidateAvro(wire, AvroPayloadLimits{}, validation.Limits{}); err != nil || validation.StateName(report.State()) != "valid" {
+		t.Fatalf("full native/refined datum rejected: %v %+v", err, report)
+	}
+	if err := project.ValidateAvroBinary(nil, AvroPayloadLimits{}); problemCode(err) != "native.payload" {
+		t.Fatalf("reader default was incorrectly synthesized into missing writer bytes: %v", err)
+	}
+	edited := strings.Replace(project.EditableSource(), "Nullable (Int32)", "Nullable (Int32 where fromInt32 it > 3)", 1)
+	if edited == project.EditableSource() {
+		t.Fatal("projected non-first nullable branch was absent")
+	}
+	if _, err := project.WithEditedSource(edited); problemCode(err) != "native.default-refinement" {
+		t.Fatalf("non-first default bypassed checked refinement: %v", err)
+	}
+}
+
+func TestAvroDefaultRemovalOnlyVisitsRecordFieldPositions(t *testing.T) {
+	source := `{"type":"record","name":"R","x-meta":{"default":"keep"},"fields":[{"name":"value","type":"int","x-meta":{"default":"also-keep"},"default":3}]}`
+	oracle, err := avroStructureInput([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(oracle)
+	if !strings.Contains(text, `"x-meta":{"default":"keep"}`) || !strings.Contains(text, `"x-meta":{"default":"also-keep"}`) {
+		t.Fatalf("non-schema default lookalike was removed: %s", text)
+	}
+	if strings.Contains(text, `"default":3`) {
+		t.Fatalf("record field default remained in hamba oracle input: %s", text)
+	}
+	if _, err := ParseAvro([]byte(source), Options{}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -105,3 +105,13 @@ func (t *PayloadType) ReadData(text value.Text, caller validation.Limits) (value
 	}
 	return t.program.readDataType(t.typ, text, caller)
 }
+
+// ReadDataWithoutRefinements is the explicit structural-only text boundary for
+// this closed type, including generic and inline-refined targets. It never runs
+// a where clause and never bypasses shape, representation or resource checks.
+func (t *PayloadType) ReadDataWithoutRefinements(text value.Text, caller validation.Limits) (value.Data, validation.Report) {
+	if t == nil || t.typ == nil || t.program == nil {
+		return value.Data{}, invalidPayloadType()
+	}
+	return t.program.readDataTypeMode(t.typ, text, caller, true)
+}

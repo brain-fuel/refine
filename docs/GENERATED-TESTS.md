@@ -16,7 +16,10 @@ authors do not provide Java generator classes or method names.
   (default 10,000).
 - `Seed`: the deterministic jetCheck seed used for replayable runs.
 - `Examples`: typed `value.Data` payloads with expected valid, invalid, or
-  indeterminate outcomes and optional required diagnostic codes.
+  indeterminate outcomes and required diagnostic evidence for refinement-invalid
+  examples. `NativeExpected` defaults to native-valid when a native adapter is
+  configured; explicit `ExampleNativeInvalid` instead requires native or
+  structural rejection and cannot claim a refinement diagnostic.
 - `Replays`: a serialized jetCheck counterexample bound to one valid property,
   or to one invalid property by target and diagnostic code.
 - `JSONModule`: the generated Jackson module for a single target, enabling
@@ -27,9 +30,10 @@ authors do not provide Java generator classes or method names.
   JSON module in the same suite.
 - `NativeJSONValidator`: the explicit generated native-validator helper name.
   Together with `JSONModule`, it enables that module's native-only candidate
-  predicate before positive-property refinement filtering. Native-invalid
-  structure returns false; limits, indeterminate outcomes, unexpected runtime
-  failures, and errors propagate instead of becoming discarded candidates.
+  predicate before positive and clause-targeted-invalid refinement filtering.
+  Native-invalid structure returns false; limits, indeterminate outcomes,
+  unexpected runtime failures, and errors propagate instead of becoming
+  discarded candidates.
 
 For every target, the emitted suite derives a structural `Data` generator. A
 valid candidate must pass the contract filter, the normal generated model
@@ -85,8 +89,18 @@ example a string constrained to more than 100 characters while the current text
 distribution stops at 24—therefore fails explicitly and calls for a better
 strategy or explicit input adjustment.
 
-Embedded examples run through the same generated contract validator and assert
-their declared outcome and diagnostic codes. They are supplied through typed
+Embedded valid and refinement-invalid examples run before random properties and
+through the same generated model construction/bypass, canonical read, and JSON
+or Avro wire boundaries as generated candidates. Native-valid examples must
+also pass every configured native candidate predicate. Valid examples are mixed
+only into their named target's candidate distribution, after these assertions,
+so a difficult but supplied valid case can satisfy generation without being
+relabelled or weakening exhaustion. A refinement-invalid example names exactly
+one diagnostic and cannot be credited unless the payload is native-compatible.
+An explicit native-invalid example names no refinement diagnostic: a
+Refine-valid value must be rejected by staged wire output with zero published
+bytes, while a Refine-invalid value must be classified as structurally invalid
+by both normal and bypass model construction. They are supplied through typed
 options until native schema metadata exposes a stable, unambiguous executable
 example API; native `examples` annotations are not guessed or treated as Refine
 metadata.

@@ -19,7 +19,7 @@ func normalizeContract(c Contract) (Contract, error) {
 	if c.Program != nil {
 		return c, fmt.Errorf("project.native: Program and NativeProject are mutually exclusive")
 	}
-	if c.Wire.PublicationNamespace != "" || c.Wire.NumericExpansion != 0 || len(c.Wire.Scalars) > 0 || len(c.Wire.ExtraFields) > 0 || len(c.Wire.Discriminators) > 0 {
+	if projectWireConfigured(c.Wire) {
 		return c, fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")
 	}
 	root := c.NativeProject.Root().TypeName

@@ -40,7 +40,7 @@ func TestNativeArtifactWorkflow(t *testing.T) {
 		t.Fatal("editable source mismatch", errors.String())
 	}
 	source := filepath.Join(root, "edited.refine")
-	editedSource := strings.Replace(parsed.EditableSource(), "type Age = Int", "type Age = Int where False @message \"secret author message\"", 1)
+	editedSource := strings.Replace(parsed.EditableSource(), "type Age = Int", "type Age = Int where it < 3 @message \"secret author message\"", 1)
 	if err := os.WriteFile(source, []byte(editedSource), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +160,68 @@ func TestNativeRefinedJSONValidationBoundary(t *testing.T) {
 	var output, errors bytes.Buffer
 	if status := Run([]string{"native", "validate-payload", artifact, "-"}, strings.NewReader("-3"), &output, &errors); status != 1 || output.Len() != 0 || !strings.Contains(errors.String(), "positive") {
 		t.Fatalf("human refinement failure %d %s %s", status, output.String(), errors.String())
+	}
+}
+
+func TestNativeRefinedAvroValidationBoundary(t *testing.T) {
+	project, err := native.IngestProject(native.Avro, []byte(`{"type":"record","name":"Counter","fields":[{"name":"count","type":"int"}]}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Counter"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Replace(project.EditableSource(), "type Counter = {count :: Int32}", "type Counter = {count :: Int32} where fromInt32 it.count > 0 @code \"positive-count\"", 1)
+	project, err = project.WithEditedSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := project.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(t.TempDir(), "contract.refined.json")
+	if err = os.WriteFile(artifact, bundle, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name               string
+		payload            []byte
+		state, code        string
+		nativeOnly, budget bool
+	}{{"valid", []byte{2}, "valid", "", false, false}, {"refinement rejects", []byte{1}, "invalid", "positive-count", false, false}, {"native rejects", []byte{4, 0}, "invalid", "native.payload", false, false}, {"refinement budget", []byte{2}, "indeterminate", "", false, true}, {"native only", []byte{1}, "valid", "", true, false}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var output, errors bytes.Buffer
+			args := []string{"native", "validate-payload", "--json"}
+			if tc.nativeOnly {
+				args = append(args, "--native-only")
+			}
+			if tc.budget {
+				args = append(args, "--total-steps", "1")
+			}
+			args = append(args, artifact, "-")
+			status := Run(args, bytes.NewReader(tc.payload), &output, &errors)
+			want := 1
+			if tc.state == "valid" {
+				want = 0
+			}
+			if status != want {
+				t.Fatalf("status %d: %s %s", status, output.String(), errors.String())
+			}
+			var got report
+			if err := json.Unmarshal(output.Bytes(), &got); err != nil || got.State != tc.state {
+				t.Fatalf("report %s: %v", output.String(), err)
+			}
+			if tc.code != "" {
+				found := false
+				for _, detail := range got.Diagnostics {
+					if detail.Code == tc.code {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing %s: %s", tc.code, output.String())
+				}
+			}
+		})
 	}
 }
 

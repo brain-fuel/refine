@@ -13,6 +13,7 @@ jobs:
       REFINE_REQUIRE_JAVA: '1'
       REFINE_REQUIRE_MAVEN: '1'
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -67,6 +68,7 @@ jobs:
         shell: bash
         run: |
           native_json_dir=$(mktemp -d "$RUNNER_TEMP/refine-native-json.XXXXXX")
+          graaljs_dir=$(mktemp -d "$RUNNER_TEMP/refine-graaljs.XXXXXX")
           for artifact in \
             com/networknt/json-schema-validator/3.0.7/json-schema-validator-3.0.7.jar \
             tools/jackson/core/jackson-databind/3.2.1/jackson-databind-3.2.1.jar \
@@ -78,8 +80,25 @@ jobs:
           do
             curl --fail --silent --show-error --location --retry 3 "https://repo.maven.apache.org/maven2/$artifact" -o "$native_json_dir/${artifact##*/}"
           done
+          for artifact in \
+            org/graalvm/sdk/collections/25.0.1/collections-25.0.1.jar \
+            org/graalvm/shadowed/icu4j/25.0.1/icu4j-25.0.1.jar \
+            org/graalvm/sdk/jniutils/25.0.1/jniutils-25.0.1.jar \
+            org/graalvm/js/js-language/25.0.1/js-language-25.0.1.jar \
+            org/graalvm/sdk/nativeimage/25.0.1/nativeimage-25.0.1.jar \
+            org/graalvm/polyglot/polyglot/25.0.1/polyglot-25.0.1.jar \
+            org/graalvm/regex/regex/25.0.1/regex-25.0.1.jar \
+            org/graalvm/truffle/truffle-api/25.0.1/truffle-api-25.0.1.jar \
+            org/graalvm/truffle/truffle-compiler/25.0.1/truffle-compiler-25.0.1.jar \
+            org/graalvm/truffle/truffle-runtime/25.0.1/truffle-runtime-25.0.1.jar \
+            org/graalvm/sdk/word/25.0.1/word-25.0.1.jar \
+            org/graalvm/shadowed/xz/25.0.1/xz-25.0.1.jar
+          do
+            curl --fail --silent --show-error --location --retry 3 "https://repo.maven.apache.org/maven2/$artifact" -o "$graaljs_dir/${artifact##*/}"
+          done
           echo "REFINE_NETWORKNT_DIR=$native_json_dir" >> "$GITHUB_ENV"
-          # Go tests verify all seven pinned SHA-256 digests before execution.
+          echo "REFINE_GRAALJS_DIR=$graaljs_dir" >> "$GITHUB_ENV"
+          # Go tests verify all seven networknt and twelve GraalJS jar SHA-256 digests before execution.
       - name: Provision pinned Maven for unsigned build integration
         shell: bash
         run: |
@@ -113,7 +132,7 @@ jobs:
           go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzCompile$' -fuzztime=10s
           go test ./language -run '^$' -fuzz '^FuzzEvaluatorDeterminism$' -fuzztime=10s
-          go test ./language -run '^$' -fuzz '^FuzzTypedReadShow$' -fuzztime=10s
+          go test ./language -run '^$' -fuzz '^FuzzTypedReadShow$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./language -run '^$' -fuzz '^FuzzPayloadType$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./value -run '^$' -fuzz '^FuzzDataMutationIsolation$' -fuzztime=10s
           go test ./java -run '^$' -fuzz '^FuzzRuntimePackageNames$' -fuzztime=10s -fuzzminimizetime=1000x

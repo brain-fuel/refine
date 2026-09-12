@@ -155,12 +155,18 @@ func nativeCommand(args []string, input io.Reader, output, errorOutput io.Writer
 		}
 	case "validate-payload":
 		if !nativeOnly {
-			_, checked, decodeErr := project.DecodeAndValidateJSON(loaded[paths[1]], validation.Limits{Total: totalSteps, Clause: clauseSteps})
+			var checked validation.Report
+			var decodeErr error
+			if project.Format() == native.Avro {
+				_, checked, decodeErr = project.DecodeAndValidateAvro(loaded[paths[1]], native.AvroPayloadLimits{}, validation.Limits{Total: totalSteps, Clause: clauseSteps})
+			} else {
+				_, checked, decodeErr = project.DecodeAndValidateJSON(loaded[paths[1]], validation.Limits{Total: totalSteps, Clause: clauseSteps})
+			}
 			if decodeErr != nil {
 				return failure(decodeErr)
 			}
 			state := validation.StateName(checked.State())
-			result := report{Phase: "native.validate-payload", State: state, Summary: "Native and refined JSON payload validation: " + state, Diagnostics: []diagnostic{}, Result: struct {
+			result := report{Phase: "native.validate-payload", State: state, Summary: "Native and refined payload validation: " + state, Diagnostics: []diagnostic{}, Result: struct {
 				NativeOnly bool              `json:"nativeOnly"`
 				Validation validation.Report `json:"validation"`
 			}{false, checked}}

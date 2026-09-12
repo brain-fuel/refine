@@ -54,8 +54,8 @@ func nativeCommand(args []string,input io.Reader,output,errorOutput io.Writer)in
     case "update":project,err=project.WithEditedSource(string(loaded[paths[1]]));if err==nil{artifact,err=project.Bundle()}
     case "validate-payload":
         if !nativeOnly{
-            _,checked,decodeErr:=project.DecodeAndValidateJSON(loaded[paths[1]],validation.Limits{Total:totalSteps,Clause:clauseSteps});if decodeErr!=nil{return failure(decodeErr)}
-            state:=validation.StateName(checked.State());result:=report{Phase:"native.validate-payload",State:state,Summary:"Native and refined JSON payload validation: "+state,Diagnostics:[]diagnostic{},Result:struct{NativeOnly bool `json:"nativeOnly"`;Validation validation.Report `json:"validation"`}{false,checked}}
+            var checked validation.Report;var decodeErr error;if project.Format()==native.Avro{_,checked,decodeErr=project.DecodeAndValidateAvro(loaded[paths[1]],native.AvroPayloadLimits{},validation.Limits{Total:totalSteps,Clause:clauseSteps})}else{_,checked,decodeErr=project.DecodeAndValidateJSON(loaded[paths[1]],validation.Limits{Total:totalSteps,Clause:clauseSteps})};if decodeErr!=nil{return failure(decodeErr)}
+            state:=validation.StateName(checked.State());result:=report{Phase:"native.validate-payload",State:state,Summary:"Native and refined payload validation: "+state,Diagnostics:[]diagnostic{},Result:struct{NativeOnly bool `json:"nativeOnly"`;Validation validation.Report `json:"validation"`}{false,checked}}
             for _,detail:=range checked.Diagnostics(){result.Diagnostics=append(result.Diagnostics,diagnostic{Code:detail.Code,Message:detail.Message})}
             if jsonMode{if err:=json.NewEncoder(output).Encode(result);err!=nil{return 2}}else{writer:=output;if state!="valid"{writer=errorOutput};if _,err:=fmt.Fprintln(writer,result.Summary);err!=nil{return 2};for _,detail:=range result.Diagnostics{if _,err:=fmt.Fprintf(writer,"%s: %s\n",detail.Code,detail.Message);err!=nil{return 2}}}
             if state!="valid"{return 1};return 0

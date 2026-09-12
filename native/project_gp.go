@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+	"goforge.dev/refine/analysis"
 	"goforge.dev/refine/language"
 	"goforge.dev/refine/provenance"
 	"goforge.dev/refine/schemajson"
@@ -48,6 +49,8 @@ type Project struct {
 	jsonOrigins           map[string]*provenance.JSONSchema
 	nativeUnitSources     map[string]string
 	nativeUnitsInEditable map[string]bool
+	avroDefaultChecks     []AvroDefaultCheck
+	schemaChecks          analysis.SchemaReport
 }
 
 func (p *Project) Format() Format {
@@ -237,10 +240,14 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 	case JSONSchema:
 		document, err = ParseJSONSchema(input, Options{})
 		if err == nil {
-			doc, _ := schemajson.Parse(input, Options{}.Limits)
-			source, err = projectJSON(doc, options.Root, false)
-			if err == nil && document.ConstraintSource() != "" {
-				source += "\n" + document.ConstraintSource()
+			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
+				source = annotated
+			} else {
+				doc, _ := schemajson.Parse(input, Options{}.Limits)
+				source, err = projectJSON(doc, options.Root, false)
+				if err == nil && document.ConstraintSource() != "" {
+					source += "\n" + document.ConstraintSource()
+				}
 			}
 		}
 	case Avro:
@@ -317,7 +324,7 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 			linked[options.ResourceID] = nativeConstraintUnitsUnchanged(document.jsonProvenance, source)
 		}
 	}
-	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: []Resource{{URI: options.ResourceID, Source: document.Original()}}, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked}, nil
+	return validateProject(&Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: []Resource{{URI: options.ResourceID, Source: document.Original()}}, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked})
 }
 
 func copyStringMap(in map[string]string) map[string]string {
@@ -431,7 +438,7 @@ func (p *Project) WithEditedSource(source string) (*Project, error) {
 	copy.resources = append([]Resource(nil), p.resources...)
 	copy.nativeUnitSources = p.editedUnitSources(source)
 	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
-	return &copy, nil
+	return validateProject(&copy)
 }
 
 // WithEditedSources resolves imports only from the supplied map through the
@@ -460,7 +467,7 @@ func (p *Project) WithEditedSources(entry string, sources map[string]string) (*P
 	copy.resources = append([]Resource(nil), p.resources...)
 	copy.nativeUnitSources = p.editedUnitSources(copy.source)
 	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
-	return &copy, nil
+	return validateProject(&copy)
 }
 
 func (p *Project) WithMetadata(metadata WireMetadata) (*Project, error) {
@@ -475,7 +482,7 @@ func (p *Project) WithMetadata(metadata WireMetadata) (*Project, error) {
 	copy.resources = append([]Resource(nil), p.resources...)
 	copy.nativeUnitSources = copyStringMap(p.nativeUnitSources)
 	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
-	return &copy, nil
+	return validateProject(&copy)
 }
 
 // ValidateJSON performs native-only validation at a JSON Schema or supported

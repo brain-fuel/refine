@@ -39,6 +39,17 @@ type JSONDiscriminator struct {
 	Values    map[string]string
 	Arguments map[string][]string
 }
+
+// JSONCodecLimits are generation-time maxima. Emitted Java constructors may
+// tighten them, but cannot relax them. Zero fields select bounded defaults.
+type JSONCodecLimits struct {
+	Bytes        int
+	Depth        int
+	Nodes        int
+	NumberLength int
+	StringLength int
+	NameLength   int
+}
 type JSONSerdeOptions struct {
 	Root                   string
 	PreserveExtraFields    bool
@@ -49,7 +60,28 @@ type JSONSerdeOptions struct {
 	Integers               JSONIntegerEncoding
 	Reals                  JSONRealEncoding
 	Timestamps             JSONTimestampEncoding
+	CodecLimits            JSONCodecLimits
 	nativeValidator        string
+	nativeRegex            bool
+}
+
+func normalizeJSONCodecLimits(input JSONCodecLimits) (JSONCodecLimits, error) {
+	defaults := JSONCodecLimits{Bytes: 1 << 20, Depth: 128, Nodes: 10000, NumberLength: 10000, StringLength: 1 << 20, NameLength: 10000}
+	limits := []struct {
+		name     string
+		value    *int
+		fallback int
+		maximum  int
+	}{{"bytes", &input.Bytes, defaults.Bytes, 16 << 20}, {"depth", &input.Depth, defaults.Depth, 128}, {"nodes", &input.Nodes, defaults.Nodes, 1000000}, {"number length", &input.NumberLength, defaults.NumberLength, 1000000}, {"string length", &input.StringLength, defaults.StringLength, 16 << 20}, {"name length", &input.NameLength, defaults.NameLength, 1000000}}
+	for _, limit := range limits {
+		if *limit.value == 0 {
+			*limit.value = limit.fallback
+		}
+		if *limit.value < 1 || *limit.value > limit.maximum {
+			return JSONCodecLimits{}, &GenerationError{Message: "JSON codec " + limit.name + " limit is outside its safe range"}
+		}
+	}
+	return input, nil
 }
 
 // JSONSerdeOptionsFromMetadata is the single checked conversion from native
@@ -121,11 +153,19 @@ func GenerateProjectJSONSerde(project *native.Project, contractName, moduleName 
 	if err != nil {
 		return nil, err
 	}
+	if options.Reals == JSONRealUnspecified {
+		options.Reals = JSONRealExactDecimal
+	} // Native JSON numbers determine exact finite-decimal wire representability without rounding.
 	validatorName, err := JSONNativeValidatorName(program, contractName, moduleName)
 	if err != nil {
 		return nil, err
 	}
 	options.nativeValidator = validatorName
+	regexLocations, err := project.JSONSchemaKeywordLocations("pattern", "patternProperties")
+	if err != nil {
+		return nil, err
+	}
+	options.nativeRegex = len(regexLocations) > 0
 	files, err := GenerateJSONSerde(program, metadata.PublicationNamespace, contractName, moduleName, options)
 	if err != nil {
 		return nil, err
@@ -197,6 +237,10 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	if numericExpansion < 1 || numericExpansion > 1000000 {
 		unsupported(language.Span{}, "JSON numeric expansion limit must be between 1 and 1000000")
 	}
+	codecLimits, err := normalizeJSONCodecLimits(options.CodecLimits)
+	if err != nil {
+		unsupported(language.Span{}, err.Error())
+	}
 	root, ok := decls[options.Root]
 	if !ok {
 		unsupported(language.Span{}, "unknown JSON serde root "+options.Root)
@@ -227,22 +271,26 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	if jsonGenericRoot(root, decls) {
 		construct = "new " + options.Root + "." + modelFactoryNameFor(decls, contractName) + "().fromData(raw)"
 	}
-	constructor := "public " + moduleName + "(){this(input->{});}private " + moduleName + "(NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate));}"
+	constructor := "public " + moduleName + "(){this(CodecLimits.defaults());}public " + moduleName + "(CodecLimits limits){this(limits,input->{});}private " + moduleName + "(CodecLimits limits,NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.codecLimits=CodecLimits.tighten(limits);this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate,this.codecLimits));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate,this.codecLimits));}"
 	if options.nativeValidator != "" {
-		constructor = "public " + moduleName + "(){this(" + options.nativeValidator + ".Limits.defaults());}public " + moduleName + "(" + options.nativeValidator + ".Limits limits){this(new " + options.nativeValidator + "(limits)::validate);}private " + moduleName + "(NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate));}"
+		constructor = "public " + moduleName + "(){this(CodecLimits.defaults()," + options.nativeValidator + ".Limits.defaults());}public " + moduleName + "(" + options.nativeValidator + ".Limits limits){this(CodecLimits.defaults(),limits);}public " + moduleName + "(CodecLimits codecLimits," + options.nativeValidator + ".Limits nativeLimits){this(codecLimits,new " + options.nativeValidator + "(nativeLimits)::validate);}private " + moduleName + "(CodecLimits limits,NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.codecLimits=CodecLimits.tighten(limits);this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate,this.codecLimits));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate,this.codecLimits));}"
+		if options.nativeRegex {
+			constructor = "public " + moduleName + "(){this(CodecLimits.defaults()," + options.nativeValidator + ".Limits.defaults()," + options.nativeValidator + ".RegexLimits.defaults());}public " + moduleName + "(" + options.nativeValidator + ".Limits limits){this(CodecLimits.defaults(),limits," + options.nativeValidator + ".RegexLimits.defaults());}public " + moduleName + "(CodecLimits codecLimits," + options.nativeValidator + ".Limits nativeLimits){this(codecLimits,nativeLimits," + options.nativeValidator + ".RegexLimits.defaults());}public " + moduleName + "(" + options.nativeValidator + ".Limits nativeLimits," + options.nativeValidator + ".RegexLimits regexLimits){this(CodecLimits.defaults(),nativeLimits,regexLimits);}public " + moduleName + "(CodecLimits codecLimits," + options.nativeValidator + ".Limits nativeLimits," + options.nativeValidator + ".RegexLimits regexLimits){this(codecLimits,new " + options.nativeValidator + "(nativeLimits,regexLimits)::validate);}private " + moduleName + "(CodecLimits limits,NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.codecLimits=CodecLimits.tighten(limits);this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate,this.codecLimits));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate,this.codecLimits));}"
+		}
 		constructor += fmt.Sprintf(`
     /** Candidate filtering for native rules only; this never validates Refine predicates. */
     public boolean acceptsNativeCandidate(Data raw){
         J wire;
-        try { wire=toWire(ROOT,raw,0); }
+        try { wire=toWire(ROOT,raw,0,new WireGuard(codecLimits)); }
         catch(ArithmeticException unrepresentable){return false;}
         catch(ValidationException failure){if(failure.outcome().state()==Validation.State.INVALID && failure.outcome().diagnostics().stream().allMatch(d->d.code().equals("validation.structure")))return false;throw failure;}
-        try { nativeCandidateGate.validate(nativeBytes(wire));return true; }
+        try { nativeCandidateGate.validate(nativeBytes(wire,codecLimits));return true; }
         catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}
     }
 `, options.nativeValidator)
 	}
-	source := fmt.Sprintf(jsonSerdeJava, moduleName, shape, definitions, options.Integers == JSONIntegerString, options.Reals == JSONRealRationalString, numericExpansion, constructor, options.Root, options.Root, options.Root, options.Root, options.Root, construct)
+	constructor += strictJSONMapperJava(moduleName)
+	source := fmt.Sprintf(jsonSerdeJava, moduleName, shape, definitions, options.Integers == JSONIntegerString, options.Reals == JSONRealRationalString, codecLimits.Bytes, codecLimits.Depth, codecLimits.Nodes, codecLimits.NumberLength, codecLimits.StringLength, codecLimits.NameLength, numericExpansion, constructor, options.Root, options.Root, options.Root, options.Root, options.Root, construct)
 	header := "// Generated by Refine: validated Jackson 3 JSON serde. MIT licensed.\n"
 	if namespace != "" {
 		header += "package " + namespace + ";\n"
@@ -250,6 +298,13 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	prefix := strings.ReplaceAll(namespace, ".", "/")
 	files = append(files, File{Path: path.Join(prefix, moduleName+".java"), Source: header + source})
 	return files, nil
+}
+
+func strictJSONMapperJava(moduleName string) string {
+	return `
+    public static tools.jackson.databind.json.JsonMapper strictMapper(){return strictMapper(new ` + moduleName + `());}
+    public static tools.jackson.databind.json.JsonMapper strictMapper(` + moduleName + ` module){java.util.Objects.requireNonNull(module);var limits=module.codecLimits;var read=tools.jackson.core.StreamReadConstraints.builder().maxDocumentLength(limits.maxBytes()).maxNestingDepth(limits.maxDepth()).maxTokenCount(limits.maxNodes()).maxNumberLength(limits.maxNumberLength()).maxStringLength(limits.maxStringLength()).maxNameLength(limits.maxNameLength()).build();var write=tools.jackson.core.StreamWriteConstraints.builder().maxNestingDepth(limits.maxDepth()).build();var factory=tools.jackson.core.json.JsonFactory.builder().streamReadConstraints(read).streamWriteConstraints(write).enable(tools.jackson.core.StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();return tools.jackson.databind.json.JsonMapper.builder(factory).enable(tools.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).addModule(module).build();}
+`
 }
 
 func modelFactoryNameFor(decls map[string]language.TypeDecl, contract string) string {
@@ -607,63 +662,81 @@ public final class %s extends tools.jackson.databind.module.SimpleModule {
     private static final S ROOT=%s;
     private static final java.util.Map<String,S> DEFINITIONS=%s;
     private static final boolean INTEGER_STRING=%t,REAL_STRING=%t;
-    private static final int NUMERIC_EXPANSION=%d;
+    public record CodecLimits(int maxBytes,int maxDepth,int maxNodes,int maxNumberLength,int maxStringLength,int maxNameLength,int maxNumericExpansion)implements java.io.Serializable{
+        @java.io.Serial private static final long serialVersionUID=1L;
+        private static final CodecLimits MAXIMUM=new CodecLimits(%d,%d,%d,%d,%d,%d,%d,false);
+        private CodecLimits(int bytes,int depth,int nodes,int number,int string,int name,int numeric,boolean checked){this(bytes,depth,nodes,number,string,name,numeric);}
+        public CodecLimits{if(maxBytes<1||maxDepth<1||maxNodes<1||maxNumberLength<1||maxStringLength<1||maxNameLength<1||maxNumericExpansion<1)throw new IllegalArgumentException("JSON codec limits must be positive.");}
+        public static CodecLimits defaults(){return MAXIMUM;}private static CodecLimits tighten(CodecLimits value){java.util.Objects.requireNonNull(value);if(value.maxBytes()>MAXIMUM.maxBytes()||value.maxDepth()>MAXIMUM.maxDepth()||value.maxNodes()>MAXIMUM.maxNodes()||value.maxNumberLength()>MAXIMUM.maxNumberLength()||value.maxStringLength()>MAXIMUM.maxStringLength()||value.maxNameLength()>MAXIMUM.maxNameLength()||value.maxNumericExpansion()>MAXIMUM.maxNumericExpansion())throw new IllegalArgumentException("JSON codec limits may only tighten generated maxima.");return value;}
+    }
     private static final class NumericBudget {
-        private long remaining=NUMERIC_EXPANSION;
+        private long remaining;NumericBudget(int limit){remaining=limit;}
         void charge(String raw){long cost=raw.length();if(cost>remaining)throw numericLimit();int exponentAt=Math.max(raw.indexOf('e'),raw.indexOf('E'));if(exponentAt>=0){long exponent=0;for(int i=exponentAt+1;i<raw.length();i++){char c=raw.charAt(i);if(i==exponentAt+1&&(c=='+'||c=='-'))continue;if(c<'0'||c>'9')throw structure("Invalid number exponent.");int digit=c-'0';if(exponent>(remaining-digit)/10)throw numericLimit();exponent=exponent*10+digit;}cost+=exponent;}if(cost>remaining)throw numericLimit();remaining-=cost;}
     }
+    private static class ReadGuard{final CodecLimits limits;long nodes;ReadGuard(CodecLimits limits){this.limits=limits;}void enter(int depth){if(depth>limits.maxDepth()||++nodes>limits.maxNodes())throw limit("JSON value traversal limit exceeded.");}String text(String value,boolean name){int maximum=name?limits.maxNameLength():limits.maxStringLength();if(value.length()>maximum)throw limit(name?"JSON name length limit exceeded.":"JSON string length limit exceeded.");exactUnicode(value);return value;}String number(String value){if(value.length()>limits.maxNumberLength())throw limit("JSON number length limit exceeded.");return value;}}
+    private static final class WireGuard extends ReadGuard{final NumericBudget numeric;WireGuard(CodecLimits limits){super(limits);numeric=new NumericBudget(limits.maxNumericExpansion());}String numeric(String value){number(value);numeric.charge(value);return value;}}
     private static ValidationException numericLimit(){return new ValidationException(new Validation.Indeterminate(java.util.List.of(new Validation.Diagnostic("validation.limit",java.util.List.of(""),"","JSON numeric expansion budget exhausted."))));}
+    private static ValidationException limit(String message){return new ValidationException(new Validation.Indeterminate(java.util.List.of(new Validation.Diagnostic("validation.limit",java.util.List.of(""),"",message))));}
+    private static void exactUnicode(String value){for(int i=0;i<value.length();i++){char unit=value.charAt(i);if(Character.isHighSurrogate(unit)){if(++i>=value.length()||!Character.isLowSurrogate(value.charAt(i)))throw structure("JSON strings cannot preserve an unpaired UTF-16 surrogate.");}else if(Character.isLowSurrogate(unit))throw structure("JSON strings cannot preserve an unpaired UTF-16 surrogate.");}}
     private interface NativeGate {void validate(byte[] input);}
     // Jackson modules are runtime configuration, not Java object-stream state.
     // Keep the gate intact; transient would silently remove native validation.
     @SuppressWarnings("serial") private final NativeGate nativeCandidateGate;
+    private final CodecLimits codecLimits;
     %s
     private static final class Serializer extends tools.jackson.databind.ValueSerializer<%s>{
-        private final NativeGate nativeGate;private Serializer(NativeGate nativeGate){this.nativeGate=nativeGate;}
+        private final NativeGate nativeGate;private final CodecLimits limits;private Serializer(NativeGate nativeGate,CodecLimits limits){this.nativeGate=nativeGate;this.limits=limits;}
         @Override public void serialize(%s value,tools.jackson.core.JsonGenerator output,tools.jackson.databind.SerializationContext context)throws tools.jackson.core.JacksonException{
-            ModelSupport.nonNull(value,"");value.validate().orThrow();J wire;try{wire=toWire(ROOT,value.rawData(),0);}catch(ArithmeticException failure){throw structure("Value cannot be represented exactly by the configured JSON encoding.");}nativeGate.validate(nativeBytes(wire));write(wire,output);
+            ModelSupport.nonNull(value,"");value.validate().orThrow();J wire;try{wire=toWire(ROOT,value.rawData(),0,new WireGuard(limits));}catch(ArithmeticException failure){throw structure("Value cannot be represented exactly by the configured JSON encoding.");}nativeGate.validate(nativeBytes(wire,limits));write(wire,output,new ReadGuard(limits));
         }
     }
     private static final class Deserializer extends tools.jackson.databind.ValueDeserializer<%s>{
-        private final NativeGate nativeGate;private Deserializer(NativeGate nativeGate){this.nativeGate=nativeGate;}
+        private final NativeGate nativeGate;private final CodecLimits limits;private Deserializer(NativeGate nativeGate,CodecLimits limits){this.nativeGate=nativeGate;this.limits=limits;}
         @Override public %s getNullValue(tools.jackson.databind.DeserializationContext context){throw structure("Java null is not a language value.");}
         @Override public %s deserialize(tools.jackson.core.JsonParser input,tools.jackson.databind.DeserializationContext context)throws tools.jackson.core.JacksonException{
-            J wire=read(input,new java.util.ArrayDeque<>());nativeGate.validate(nativeBytes(wire));Data raw=fromWire(ROOT,wire,0,new NumericBudget());return %s;
+            J wire=read(input,new ReadGuard(limits));nativeGate.validate(nativeBytes(wire,limits));Data raw=fromWire(ROOT,wire,0,new NumericBudget(limits.maxNumericExpansion()),limits);return %s;
         }
     }
     private static S resolve(S shape){var current=shape;var seen=new java.util.HashSet<String>();while(current.kind().equals("ref")){if(!seen.add(current.reference()))throw structure("Cyclic JSON shape reference without a record boundary.");current=DEFINITIONS.get(current.reference());if(current==null)throw new AssertionError("missing checked JSON shape");}return current;}
-    private static J recordToWire(S shape,Data raw,int depth){var struct=(Data.Struct)raw;var out=new java.util.ArrayList<E>();var declared=new java.util.HashSet<String>();for(F field:shape.fields()){declared.add(field.name());Data value=null;for(var candidate:struct.fields())if(candidate.name().equals(field.name())){value=candidate.value();break;}if(value==null)continue;S fieldShape=resolve(field.shape());if(fieldShape.kind().equals("maybe")&&value instanceof Data.Variant v&&v.name().equals("Nothing"))continue;if(fieldShape.kind().equals("maybe"))value=((Data.Variant)value).values().getFirst();out.add(new E(field.name(),toWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1)));}if(shape.preserveExtras())for(var field:struct.fields())if(!declared.contains(field.name()))out.add(new E(field.name(),extraToWire(field.value(),depth+1)));return new O(out);}
-    private static Data wireToRecord(S shape,J wire,int depth,NumericBudget budget){if(!(wire instanceof O object))throw structure("Expected JSON object.");var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolve(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,budget);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.preserveExtras())for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1,budget)));return new Data.Struct(out);}
-    private static J toWire(S unresolved,Data data,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
-        case "integer-number"->new N(((Data.Number)data).value().numerator().toString());
-        case "integer-string"->new T(((Data.Number)data).value().numerator().toString());
-        case "float-number"->new N(((Data.Number)data).value().decimal());
-        case "rational-record"->{var number=((Data.Number)data).value();yield new O(java.util.List.of(new E("numerator",new N(number.numerator().toString())),new E("denominator",new N(number.denominator().toString()))));}
-        case "integer"->INTEGER_STRING?new T(((Data.Number)data).value().numerator().toString()):new N(((Data.Number)data).value().numerator().toString());
-        case "real"->REAL_STRING?new T(((Data.Number)data).value().toString()):new N(((Data.Number)data).value().decimal());
-        case "text"->new T(((Data.Text)data).value());case "timestamp"->new T(((Data.Text)data).value());case "bool"->new B(((Data.Bool)data).value());
-        case "record"->recordToWire(shape,data,depth);case "union"->unionToWire(shape.union(),data,depth);case "list"->{var values=new java.util.ArrayList<J>();for(Data item:((Data.Sequence)data).values())values.add(toWire(shape.argument(),item,depth+1));yield new A(values);}
-        case "nullable"->{var value=(Data.Variant)data;yield value.name().equals("Null")?new Z():toWire(shape.argument(),value.values().getFirst(),depth+1);}
+    private static J recordToWire(S shape,Data raw,int depth,WireGuard guard){var struct=(Data.Struct)raw;var out=new java.util.ArrayList<E>();var declared=new java.util.HashSet<String>();for(F field:shape.fields()){guard.text(field.name(),true);declared.add(field.name());Data value=null;for(var candidate:struct.fields())if(candidate.name().equals(field.name())){value=candidate.value();break;}if(value==null)continue;S fieldShape=resolve(field.shape());if(fieldShape.kind().equals("maybe")&&value instanceof Data.Variant v&&v.name().equals("Nothing"))continue;if(fieldShape.kind().equals("maybe"))value=((Data.Variant)value).values().getFirst();out.add(new E(field.name(),toWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,guard)));}if(shape.preserveExtras())for(var field:struct.fields())if(!declared.contains(field.name()))out.add(new E(guard.text(field.name(),true),extraToWire(field.value(),depth+1,guard)));return new O(out);}
+    private static Data wireToRecord(S shape,J wire,int depth,NumericBudget budget,CodecLimits limits){if(!(wire instanceof O object))throw structure("Expected JSON object.");var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolve(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,budget,limits);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.preserveExtras())for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1,budget,limits)));return new Data.Struct(out);}
+    private static String integerText(java.math.BigInteger value,WireGuard guard){if(value.bitLength()>(long)guard.limits.maxNumberLength()*4L)throw limit("JSON number length limit exceeded.");return guard.numeric(value.toString());}
+    private static String rationalText(Rational value,boolean fraction,WireGuard guard){if(value.numerator().bitLength()>(long)guard.limits.maxNumberLength()*4L||value.denominator().bitLength()>(long)guard.limits.maxNumberLength()*4L)throw limit("JSON number expansion limit exceeded.");String result=fraction?value.toString():value.decimal();return guard.numeric(result);}
+    private static J toWire(S unresolved,Data data,int depth,WireGuard guard){S shape=resolve(unresolved);if(shape.kind().equals("nullable")){var value=(Data.Variant)data;if(!value.name().equals("Null"))return toWire(shape.argument(),value.values().getFirst(),depth,guard);guard.enter(depth);return new Z();}guard.enter(depth);return switch(shape.kind()){
+        case "integer-number"->new N(integerText(((Data.Number)data).value().numerator(),guard));
+        case "integer-string"->{String value=integerText(((Data.Number)data).value().numerator(),guard);guard.text(value,false);yield new T(value);}
+        case "float-number"->new N(rationalText(((Data.Number)data).value(),false,guard));
+        case "rational-record"->{var number=((Data.Number)data).value();guard.enter(depth+1);String numerator=integerText(number.numerator(),guard);guard.enter(depth+1);String denominator=integerText(number.denominator(),guard);yield new O(java.util.List.of(new E("numerator",new N(numerator)),new E("denominator",new N(denominator))));}
+        case "integer"->{String value=integerText(((Data.Number)data).value().numerator(),guard);if(INTEGER_STRING)guard.text(value,false);yield INTEGER_STRING?new T(value):new N(value);}
+        case "real"->{String value=rationalText(((Data.Number)data).value(),REAL_STRING,guard);if(REAL_STRING)guard.text(value,false);yield REAL_STRING?new T(value):new N(value);}
+        case "text"->{String value=guard.text(((Data.Text)data).value(),false);yield new T(value);}case "timestamp"->{String value=guard.text(((Data.Text)data).value(),false);yield new T(value);}case "bool"->new B(((Data.Bool)data).value());
+        case "record"->recordToWire(shape,data,depth,guard);case "union"->unionToWire(shape.union(),data,depth,guard);case "list"->{var values=new java.util.ArrayList<J>();for(Data item:((Data.Sequence)data).values())values.add(toWire(shape.argument(),item,depth+1,guard));yield new A(values);}
         default->throw new AssertionError("unsupported checked JSON shape");};}
-    private static Data fromWire(S unresolved,J wire,int depth,NumericBudget budget){if(depth>512)throw structure("JSON value nesting limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
+    private static Data fromWire(S unresolved,J wire,int depth,NumericBudget budget,CodecLimits limits){if(depth>limits.maxDepth())throw limit("JSON value traversal limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
         case "integer-number"->integer(wire,false,budget);case "integer-string"->integer(wire,true,budget);case "rational-record"->rationalRecord(wire,budget);
         case "float-number"->{String raw=number(wire);budget.charge(raw);yield new Data.Number(Rational.parse(raw));}
         case "integer"->integer(wire,INTEGER_STRING,budget);case "real"->real(wire,budget);
         case "text"->new Data.Text(text(wire));case "timestamp"->new Data.Text(text(wire));case "bool"->{if(!(wire instanceof B value))throw structure("Expected JSON Boolean.");yield new Data.Bool(value.value());}
-        case "record"->wireToRecord(shape,wire,depth,budget);case "union"->wireToUnion(shape.union(),wire,depth,budget);case "list"->{if(!(wire instanceof A array))throw structure("Expected JSON array.");var values=new java.util.ArrayList<Data>();for(J item:array.values())values.add(fromWire(shape.argument(),item,depth+1,budget));yield new Data.Sequence(values);}
-        case "nullable"->wire instanceof Z?new Data.Variant("Null",java.util.List.of()):new Data.Variant("NonNull",java.util.List.of(fromWire(shape.argument(),wire,depth+1,budget)));
+        case "record"->wireToRecord(shape,wire,depth,budget,limits);case "union"->wireToUnion(shape.union(),wire,depth,budget,limits);case "list"->{if(!(wire instanceof A array))throw structure("Expected JSON array.");var values=new java.util.ArrayList<Data>();for(J item:array.values())values.add(fromWire(shape.argument(),item,depth+1,budget,limits));yield new Data.Sequence(values);}
+        case "nullable"->wire instanceof Z?new Data.Variant("Null",java.util.List.of()):new Data.Variant("NonNull",java.util.List.of(fromWire(shape.argument(),wire,depth+1,budget,limits)));
         default->throw new AssertionError("unsupported checked JSON shape");};}
-    private static J unionToWire(U shape,Data data,int depth){var value=(Data.Variant)data;V selected=null;for(var variant:shape.variants())if(variant.constructor().equals(value.name())){selected=variant;break;}if(selected==null||value.values().size()!=selected.shapes().size())throw structure("Unknown or malformed union constructor.");var fields=new java.util.ArrayList<E>();fields.add(new E(shape.discriminator(),new T(selected.tag())));for(int i=0;i<selected.shapes().size();i++)fields.add(new E(selected.names().get(i),toWire(selected.shapes().get(i),value.values().get(i),depth+1)));return new O(fields);}
-    private static Data wireToUnion(U shape,J wire,int depth,NumericBudget budget){if(!(wire instanceof O object))throw structure("Expected JSON object for tagged union.");var source=new java.util.LinkedHashMap<String,J>();for(var field:object.fields())source.put(field.name(),field.value());J tagWire=source.remove(shape.discriminator());if(tagWire==null)throw structure("Missing union discriminator: "+shape.discriminator());String tag=text(tagWire);V selected=null;for(var variant:shape.variants())if(variant.tag().equals(tag)){selected=variant;break;}if(selected==null)throw structure("Unknown union discriminator value.");var values=new java.util.ArrayList<Data>();for(int i=0;i<selected.shapes().size();i++){J argument=source.remove(selected.names().get(i));if(argument==null)throw structure("Missing union argument: "+selected.names().get(i));values.add(fromWire(selected.shapes().get(i),argument,depth+1,budget));}return new Data.Variant(selected.constructor(),values);}
+    private static J unionToWire(U shape,Data data,int depth,WireGuard guard){var value=(Data.Variant)data;V selected=null;for(var variant:shape.variants())if(variant.constructor().equals(value.name())){selected=variant;break;}if(selected==null||value.values().size()!=selected.shapes().size())throw structure("Unknown or malformed union constructor.");var fields=new java.util.ArrayList<E>();guard.text(shape.discriminator(),true);guard.enter(depth+1);guard.text(selected.tag(),false);fields.add(new E(shape.discriminator(),new T(selected.tag())));for(int i=0;i<selected.shapes().size();i++){guard.text(selected.names().get(i),true);fields.add(new E(selected.names().get(i),toWire(selected.shapes().get(i),value.values().get(i),depth+1,guard)));}return new O(fields);}
+    private static Data wireToUnion(U shape,J wire,int depth,NumericBudget budget,CodecLimits limits){if(!(wire instanceof O object))throw structure("Expected JSON object for tagged union.");var source=new java.util.LinkedHashMap<String,J>();for(var field:object.fields())source.put(field.name(),field.value());J tagWire=source.remove(shape.discriminator());if(tagWire==null)throw structure("Missing union discriminator: "+shape.discriminator());String tag=text(tagWire);V selected=null;for(var variant:shape.variants())if(variant.tag().equals(tag)){selected=variant;break;}if(selected==null)throw structure("Unknown union discriminator value.");var values=new java.util.ArrayList<Data>();for(int i=0;i<selected.shapes().size();i++){J argument=source.remove(selected.names().get(i));if(argument==null)throw structure("Missing union argument: "+selected.names().get(i));values.add(fromWire(selected.shapes().get(i),argument,depth+1,budget,limits));}return new Data.Variant(selected.constructor(),values);}
     private static String text(J wire){if(!(wire instanceof T value))throw structure("Expected JSON string.");return value.value();}private static String number(J wire){if(!(wire instanceof N value))throw structure("Expected JSON number.");return value.value();}
     private static Data integer(J wire,boolean stringEncoded,NumericBudget budget){try{String raw=stringEncoded?text(wire):number(wire);budget.charge(raw);java.math.BigInteger exact;if(stringEncoded){if(!raw.matches("-?(0|[1-9][0-9]*)")||raw.equals("-0"))throw new NumberFormatException();exact=new java.math.BigInteger(raw);}else exact=new java.math.BigDecimal(raw).toBigIntegerExact();return new Data.Number(Rational.of(exact));}catch(NumberFormatException|ArithmeticException failure){throw structure("Invalid integer wire value.");}}
     private static Data rationalRecord(J wire,NumericBudget budget){if(!(wire instanceof O object)||object.fields().size()!=2)throw structure("Expected numerator and denominator JSON object.");J numerator=null,denominator=null;for(var field:object.fields()){switch(field.name()){case "numerator"->numerator=field.value();case "denominator"->denominator=field.value();default->throw structure("Unexpected rational JSON member.");}}if(numerator==null||denominator==null)throw structure("Missing rational JSON member.");var n=((Data.Number)integer(numerator,false,budget)).value().numerator();var d=((Data.Number)integer(denominator,false,budget)).value().numerator();if(d.signum()<=0)throw structure("Rational denominator must be positive.");return new Data.Number(new Rational(n,d));}
     private static Data real(J wire,NumericBudget budget){try{String raw=REAL_STRING?text(wire):number(wire);budget.charge(raw);return new Data.Number(Rational.parse(raw));}catch(IllegalArgumentException failure){throw structure("Invalid exact real wire value.");}}
-    private static J extraToWire(Data data,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");return switch(data){case Data.Struct object->{var fields=new java.util.ArrayList<E>();var seen=new java.util.HashSet<String>();for(var field:object.fields()){if(!seen.add(field.name()))throw structure("Duplicate preserved object key: "+field.name());fields.add(new E(field.name(),extraToWire(field.value(),depth+1)));}yield new O(fields);}case Data.Sequence array->{var values=new java.util.ArrayList<J>();for(var item:array.values())values.add(extraToWire(item,depth+1));yield new A(values);}case Data.Number number->new N(number.value().decimal());case Data.Text value->new T(value.value());case Data.Bool value->new B(value.value());case Data.Variant value->{if(!value.name().equals("Null")||!value.values().isEmpty())throw structure("Preserved JSON extras cannot encode a language constructor.");yield new Z();}};}
-    private static Data extraFromWire(J wire,int depth,NumericBudget budget){if(depth>512)throw structure("JSON value nesting limit exceeded.");return switch(wire){case O object->{var fields=new java.util.ArrayList<Data.Field>();for(var field:object.fields())fields.add(new Data.Field(field.name(),extraFromWire(field.value(),depth+1,budget)));yield new Data.Struct(fields);}case A array->{var values=new java.util.ArrayList<Data>();for(var item:array.values())values.add(extraFromWire(item,depth+1,budget));yield new Data.Sequence(values);}case N number->{try{budget.charge(number.value());yield new Data.Number(Rational.parse(number.value()));}catch(IllegalArgumentException failure){throw structure("Invalid preserved JSON number.");}}case T value->new Data.Text(value.value());case B value->new Data.Bool(value.value());case Z ignored->new Data.Variant("Null",java.util.List.of());};}
-    private static J read(tools.jackson.core.JsonParser input,java.util.ArrayDeque<String> path)throws tools.jackson.core.JacksonException{var token=input.currentToken();if(token==null)token=input.nextToken();return switch(token){case START_OBJECT->{var fields=new java.util.ArrayList<E>();var seen=new java.util.HashSet<String>();while(input.nextToken()!=tools.jackson.core.JsonToken.END_OBJECT){String name=input.currentName();if(!seen.add(name))throw structure("Duplicate JSON object key: "+name);input.nextToken();fields.add(new E(name,read(input,path)));}yield new O(fields);}case START_ARRAY->{var values=new java.util.ArrayList<J>();while(input.nextToken()!=tools.jackson.core.JsonToken.END_ARRAY)values.add(read(input,path));yield new A(values);}case VALUE_STRING->new T(input.getString());case VALUE_NUMBER_INT,VALUE_NUMBER_FLOAT->new N(input.getString());case VALUE_TRUE->new B(true);case VALUE_FALSE->new B(false);case VALUE_NULL->new Z();default->throw structure("Expected a JSON value.");};}
-    private static void write(J value,tools.jackson.core.JsonGenerator output)throws tools.jackson.core.JacksonException{switch(value){case O object->{output.writeStartObject();for(E field:object.fields()){output.writeName(field.name());write(field.value(),output);}output.writeEndObject();}case A array->{output.writeStartArray();for(J item:array.values())write(item,output);output.writeEndArray();}case N number->output.writeNumber(number.value());case T text->output.writeString(text.value());case B bool->output.writeBoolean(bool.value());case Z ignored->output.writeNull();}}
-    private static byte[] nativeBytes(J value)throws tools.jackson.core.JacksonException{var sink=new java.io.ByteArrayOutputStream();try(var output=tools.jackson.core.json.JsonFactory.builder().build().createGenerator(tools.jackson.core.ObjectWriteContext.empty(),sink)){write(value,output);}return sink.toByteArray();}
+    private static J extraToWire(Data data,int depth,WireGuard guard){guard.enter(depth);return switch(data){case Data.Struct object->{var fields=new java.util.ArrayList<E>();var seen=new java.util.HashSet<String>();for(var field:object.fields()){if(!seen.add(field.name()))throw structure("Duplicate preserved object key: "+field.name());fields.add(new E(guard.text(field.name(),true),extraToWire(field.value(),depth+1,guard)));}yield new O(fields);}case Data.Sequence array->{var values=new java.util.ArrayList<J>();for(var item:array.values())values.add(extraToWire(item,depth+1,guard));yield new A(values);}case Data.Number number->new N(rationalText(number.value(),false,guard));case Data.Text value->new T(guard.text(value.value(),false));case Data.Bool value->new B(value.value());case Data.Variant value->{if(!value.name().equals("Null")||!value.values().isEmpty())throw structure("Preserved JSON extras cannot encode a language constructor.");yield new Z();}};}
+    private static Data extraFromWire(J wire,int depth,NumericBudget budget,CodecLimits limits){if(depth>limits.maxDepth())throw limit("JSON value traversal limit exceeded.");return switch(wire){case O object->{var fields=new java.util.ArrayList<Data.Field>();for(var field:object.fields())fields.add(new Data.Field(field.name(),extraFromWire(field.value(),depth+1,budget,limits)));yield new Data.Struct(fields);}case A array->{var values=new java.util.ArrayList<Data>();for(var item:array.values())values.add(extraFromWire(item,depth+1,budget,limits));yield new Data.Sequence(values);}case N number->{try{budget.charge(number.value());yield new Data.Number(Rational.parse(number.value()));}catch(IllegalArgumentException failure){throw structure("Invalid preserved JSON number.");}}case T value->new Data.Text(value.value());case B value->new Data.Bool(value.value());case Z ignored->new Data.Variant("Null",java.util.List.of());};}
+    private sealed interface ReadFrame permits ObjectFrame,ArrayFrame{void add(J value);J finish();}
+    private static final class ObjectFrame implements ReadFrame{final java.util.ArrayList<E> fields=new java.util.ArrayList<>();final java.util.HashSet<String> seen=new java.util.HashSet<>();String name;void name(String value){if(name!=null||!seen.add(value))throw structure("Duplicate JSON object key: "+value);name=value;}public void add(J value){if(name==null)throw structure("Expected a JSON object key.");fields.add(new E(name,value));name=null;}public J finish(){if(name!=null)throw structure("Expected a JSON object value.");return new O(fields);}}
+    private static final class ArrayFrame implements ReadFrame{final java.util.ArrayList<J> values=new java.util.ArrayList<>();public void add(J value){values.add(value);}public J finish(){return new A(values);}}
+    private static J read(tools.jackson.core.JsonParser input,ReadGuard guard)throws tools.jackson.core.JacksonException{var frames=new java.util.ArrayDeque<ReadFrame>();var token=input.currentToken();if(token==null)token=input.nextToken();for(;;){if(token==null)throw structure("Expected a complete JSON value.");switch(token){case PROPERTY_NAME->{if(frames.isEmpty()||!(frames.peek() instanceof ObjectFrame object))throw structure("Unexpected JSON object key.");object.name(guard.text(input.currentName(),true));token=input.nextToken();}case START_OBJECT->{guard.enter(frames.size());frames.push(new ObjectFrame());token=input.nextToken();}case START_ARRAY->{guard.enter(frames.size());frames.push(new ArrayFrame());token=input.nextToken();}case END_OBJECT,END_ARRAY->{if(frames.isEmpty()||token==tools.jackson.core.JsonToken.END_OBJECT&&!(frames.peek() instanceof ObjectFrame)||token==tools.jackson.core.JsonToken.END_ARRAY&&!(frames.peek() instanceof ArrayFrame))throw structure("Mismatched JSON container.");J value=frames.pop().finish();if(frames.isEmpty())return value;frames.peek().add(value);token=input.nextToken();}case VALUE_STRING,VALUE_NUMBER_INT,VALUE_NUMBER_FLOAT,VALUE_TRUE,VALUE_FALSE,VALUE_NULL->{guard.enter(frames.size());J value=switch(token){case VALUE_STRING->new T(guard.text(input.getString(),false));case VALUE_NUMBER_INT,VALUE_NUMBER_FLOAT->new N(guard.number(input.getString()));case VALUE_TRUE->new B(true);case VALUE_FALSE->new B(false);case VALUE_NULL->new Z();default->throw new AssertionError();};if(frames.isEmpty())return value;frames.peek().add(value);token=input.nextToken();}default->throw structure("Expected a JSON value.");}}}
+    private sealed interface WriteTask permits ValueTask,NameTask,EndObjectTask,EndArrayTask{}
+    private record ValueTask(J value,int depth)implements WriteTask{}private record NameTask(String name)implements WriteTask{}private record EndObjectTask()implements WriteTask{}private record EndArrayTask()implements WriteTask{}
+    private static void write(J value,tools.jackson.core.JsonGenerator output,ReadGuard guard)throws tools.jackson.core.JacksonException{var tasks=new java.util.ArrayDeque<WriteTask>();tasks.push(new ValueTask(value,0));while(!tasks.isEmpty()){switch(tasks.pop()){case NameTask name->output.writeName(guard.text(name.name(),true));case EndObjectTask ignored->output.writeEndObject();case EndArrayTask ignored->output.writeEndArray();case ValueTask item->{guard.enter(item.depth());switch(item.value()){case O object->{output.writeStartObject();tasks.push(new EndObjectTask());for(int i=object.fields().size()-1;i>=0;i--){E field=object.fields().get(i);tasks.push(new ValueTask(field.value(),item.depth()+1));tasks.push(new NameTask(field.name()));}}case A array->{output.writeStartArray();tasks.push(new EndArrayTask());for(int i=array.values().size()-1;i>=0;i--)tasks.push(new ValueTask(array.values().get(i),item.depth()+1));}case N number->output.writeNumber(guard.number(number.value()));case T text->output.writeString(guard.text(text.value(),false));case B bool->output.writeBoolean(bool.value());case Z ignored->output.writeNull();}}}}}
+    private static final class CappedOutput extends java.io.OutputStream{final java.io.ByteArrayOutputStream sink;final int maximum;long written;CappedOutput(java.io.ByteArrayOutputStream sink,int maximum){this.sink=sink;this.maximum=maximum;}private void charge(int size){if(size<0||size>maximum-written)throw limit("JSON output byte limit exceeded.");written+=size;}@Override public void write(int value){charge(1);sink.write(value);}@Override public void write(byte[] value,int offset,int length){java.util.Objects.checkFromIndexSize(offset,length,value.length);charge(length);sink.write(value,offset,length);}}
+    private static byte[] nativeBytes(J value,CodecLimits limits)throws tools.jackson.core.JacksonException{var sink=new java.io.ByteArrayOutputStream(Math.min(limits.maxBytes(),8192));var target=new CappedOutput(sink,limits.maxBytes());var constraints=tools.jackson.core.StreamWriteConstraints.builder().maxNestingDepth(limits.maxDepth()).build();try(var output=tools.jackson.core.json.JsonFactory.builder().streamWriteConstraints(constraints).build().createGenerator(tools.jackson.core.ObjectWriteContext.empty(),target)){write(value,output,new ReadGuard(limits));}return sink.toByteArray();}
     private static ValidationException structure(String message){return new ValidationException(new Validation.Invalid(java.util.List.of(new Validation.Diagnostic("validation.structure",java.util.List.of(""),"",message)),false));}
 }
 `

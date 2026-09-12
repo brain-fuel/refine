@@ -54,12 +54,13 @@ func Generate(input GenerateInput)(Bundle,error){
     for _,contract:=range contracts{
         var normalizeErr error;contract,normalizeErr=normalizeContract(contract);if normalizeErr!=nil{return Bundle{},normalizeErr}
         if !validFamilyProject(contract.Family)||contract.Program==nil||contract.RootType==""{return Bundle{},fmt.Errorf("project.contract: family, checked program, and root type are required")};if contract.Version!=nil&&!contract.Version.Valid(){return Bundle{},fmt.Errorf("project.version: invalid version")}
+        schemaAnalysis,err:=checkContractSchema(contract);if err!=nil{return Bundle{},err}
         identity:=contract.Family+"\x00"+contractSuffix(contract.Version);if seen[identity]{return Bundle{},fmt.Errorf("project.contract: duplicate %s",contract.Family)};seen[identity]=true
         namespace:=packageFor(contract,input.BaseJavaPackage)
         formats:=append([]native.Format(nil),contract.Formats...);if len(formats)==0{formats=[]native.Format{native.JSONSchema,native.Avro,native.OpenAPI}};sort.Slice(formats,func(i,j int)bool{return formats[i]<formats[j]})
         if !contract.NoCodegen{
             jsonWire:=false;for _,format:=range formats{if format==native.JSONSchema||format==native.OpenAPI{jsonWire=true}}
-            generated,err:=contractSerde(contract,namespace,class,formats);if err!=nil{return Bundle{},err}
+            generated,err:=contractJavaSources(contract,namespace,class,formats);if err!=nil{return Bundle{},err}
             for _,item:=range generated{relative:=path.Join(layout.SourceDir,item.Path);if layout.Flat{relative=path.Join(layout.SourceDir,path.Base(item.Path))};if err=addFile(all,relative,[]byte(item.Source));err!=nil{return Bundle{},err}}
             properties:=contract.PropertyTests
             if len(properties.Targets)==0{properties.Targets=[]java.PropertyTarget{{Name:contract.RootType}}}
@@ -71,8 +72,9 @@ func Generate(input GenerateInput)(Bundle,error){
             testClasses=append(testClasses,namespace+"."+class+"GeneratedProperties")
         }
         payload,err:=contract.Program.PayloadType(contract.RootType);if err!=nil{return Bundle{},err}
-        doc,err:=explain.GeneratePayload(payload);if err!=nil{return Bundle{},err};docJSON,err:=json.MarshalIndent(doc,"","  ");if err!=nil{return Bundle{},err};docJSON=append(docJSON,'\n')
+        var doc explain.Document;if contract.Wire.OpenAPI!=nil{doc,err=explain.Generate(contract.Program)}else{doc,err=explain.GeneratePayload(payload)};if err!=nil{return Bundle{},err};docJSON,err:=json.MarshalIndent(doc,"","  ");if err!=nil{return Bundle{},err};docJSON=append(docJSON,'\n')
         resourceBase:=path.Join(layout.ResourceDir,"refine",contract.Family,contractSuffix(contract.Version));module:=contract.Program.Syntax()
+        if err=addFile(all,path.Join(resourceBase,"schema-analysis.json"),schemaAnalysis);err!=nil{return Bundle{},err}
         if err=addFile(all,path.Join(resourceBase,"contract.refine"),[]byte(module.Source));err!=nil{return Bundle{},err};if err=addFile(all,path.Join(resourceBase,"explanation.md"),[]byte(doc.Markdown()));err!=nil{return Bundle{},err};if err=addFile(all,path.Join(resourceBase,"explanation.json"),docJSON);err!=nil{return Bundle{},err}
         if contract.NativeProject!=nil{if err=addNativeResources(all,resourceBase,contract.NativeProject,formats);err!=nil{return Bundle{},err}}else{
             for _,format:=range formats{ext:=string(format)+".json";for _,mode:=range []native.ExportMode{native.Ordinary,native.Refined}{export,err:=native.LowerPayloadWithMetadata(format,payload,contract.Wire,native.LowerOptions{Mode:mode,AllowDocumentedLoss:true});if err!=nil{return Bundle{},err};if err=addFile(all,path.Join(resourceBase,string(mode)+"-"+ext),export.Bytes());err!=nil{return Bundle{},err};if mode==native.Ordinary&&export.CompanionMarkdown()!=""{if err=addFile(all,path.Join(resourceBase,"ordinary-"+string(format)+"-companion.md"),[]byte(export.CompanionMarkdown()));err!=nil{return Bundle{},err}}}}

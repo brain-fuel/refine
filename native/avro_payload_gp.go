@@ -86,7 +86,7 @@ func (p *Project) avroWriterSchema() (avro.Schema, error) {
 	cache := &avro.SchemaCache{}
 	var selected avro.Schema
 	for _, resource := range p.resources {
-		schema, err := avro.ParseBytesWithCache([]byte(resource.Source), "", cache)
+		schema, err := parseAvroStructure([]byte(resource.Source), cache)
 		if err != nil {
 			return nil, wrap(Avro, "native.structure", resource.URI, err)
 		}

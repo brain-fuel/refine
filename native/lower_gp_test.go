@@ -145,8 +145,19 @@ func TestLowerOpenAPIAndRecursiveReferences(t *testing.T) {
 	if _, err := ParseOpenAPI(export.Bytes(), Options{}); err != nil {
 		t.Fatal(err)
 	}
+	patch, err := LowerPayload(OpenAPI, typ, LowerOptions{OpenAPIVersion: "3.2.1"})
+	if err != nil || patch.Version() != "3.2.1" || !strings.Contains(patch.String(), `"openapi": "3.2.1"`) {
+		t.Fatalf("published 3.2.1 lowering failed: %v %s", err, patch.String())
+	}
+	defaulted, err := LowerPayload(OpenAPI, typ, LowerOptions{})
+	if err != nil || defaulted.Version() != "3.2.0" {
+		t.Fatalf("compatibility default changed: %v %s", err, defaulted.Version())
+	}
 	if _, err := LowerPayload(OpenAPI, typ, LowerOptions{OpenAPIVersion: "3.0.4"}); problemCode(err) != "native.unrepresentable" {
 		t.Fatalf("unsupported 3.0 lowering not explicit: %v", err)
+	}
+	if _, err := LowerPayload(OpenAPI, typ, LowerOptions{OpenAPIVersion: "3.2.99"}); problemCode(err) != "native.unrepresentable" {
+		t.Fatalf("invented patch lowering accepted: %v", err)
 	}
 }
 

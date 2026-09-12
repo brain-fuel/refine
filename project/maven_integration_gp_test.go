@@ -50,8 +50,8 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// One native bundle exercises the independent native oracle and candidate
-	// filter in the same four lifecycle builds, not a second Maven campaign.
+	// Native bundles exercise exact numeric and ECMA oracles in the same four
+	// lifecycle builds, not separate Maven campaigns for each adapter.
 	nativeProject, err := native.IngestProject(native.JSONSchema, []byte(`{"type":"integer","multipleOf":3}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Multiple"}})
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,35 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(nativeDir, "SNAPSHOT.refined.json"), nativeBundle, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]}}}`), 0600); err != nil {
+	patternProject, err := native.IngestProject(native.JSONSchema, []byte(`{"type":"string","pattern":"^[a-z]+$"}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Code"}, Metadata: native.WireMetadata{PublicationNamespace: "example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patternBundle, err := patternProject.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	patternDir := filepath.Join(root, "schemata", "code")
+	if err = os.MkdirAll(patternDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(patternDir, "SNAPSHOT.refined.json"), patternBundle, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]},"code":{"formats":["json-schema"]}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fragment := exec.Command(executable, "project", "maven", "--root", root, "--executable", executable)
+	fragment.Dir = root
+	detected, err := fragment.Output()
+	if err != nil {
+		t.Fatal("Maven dependency detection", err)
+	}
+	if !strings.Contains(string(detected), "org.graalvm.polyglot") {
+		t.Fatal("native regex dependency was not inferred")
+	}
+	pom = `<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example.test</groupId><artifactId>refine-fixture</artifactId><version>0.0.1</version>` + string(detected) + `</project>`
+	if err = os.WriteFile(filepath.Join(root, "pom.xml"), []byte(pom), 0600); err != nil {
 		t.Fatal(err)
 	}
 	run := func() {

@@ -1,0 +1,30 @@
+package analysis
+
+import (
+    "errors"
+    "reflect"
+    "testing"
+    "goforge.dev/refine/validation"
+)
+
+func TestCheckSchemaRejectsProofAndRetainsUnknownInOrder(t *testing.T){
+    program:=compile(t,"type Positive = Int where it > 0\ntype Empty = Positive where it < 1\ntype Box a = {item :: a}\ntype Collection = [Int]\n")
+    report,err:=CheckSchema(program,validation.Limits{});var proof *SchemaError;if !errors.As(err,&proof)||proof.Type!="Empty"{t.Fatal("proven contradiction not rejected",err)}
+    if len(report.Findings)!=4{t.Fatal(report)};for i,want:=range []Outcome{Yes,No,Unknown,Unknown}{if report.Findings[i].Finding.Outcome!=want{t.Fatal("changed proof classification/order",i,report)}}
+    again,err:=CheckSchema(program,validation.Limits{});if err==nil||!reflect.DeepEqual(report,again){t.Fatal("schema checks are not deterministic")}
+}
+
+func TestCheckSchemaUnknownDoesNotRejectOrLeakWitness(t *testing.T){
+    program:=compile(t,"loop :: Int -> Bool\nloop n = loop n\ntype T = Int where loop it\ntype Huge = Real where it >= 1e1000000000\n")
+    report,err:=CheckSchema(program,validation.Limits{Total:20,Clause:10});if err!=nil{t.Fatal(err)};for _,item:=range report.Findings{if item.Finding.Outcome!=Unknown{t.Fatal("bounded unknown became proof",item)}}
+    if _,err:=CheckSchema(nil,validation.Limits{});err==nil{t.Fatal("nil checked program accepted")}
+}
+
+func TestCheckSchemaRootsRejectsOnlySelectedClosedEntrypoints(t *testing.T){
+    program:=compile(t,"type Empty = Int where it > 0 && it < 1\ntype Optional = {value :: Maybe Empty}\ntype Root = Int\ntype Box a = a\n")
+    report,err:=CheckSchemaRoots(program,[]string{"Root","Root"},validation.Limits{});if err!=nil{t.Fatal(err)};if !reflect.DeepEqual(report.Roots,[]string{"Root"}){t.Fatalf("roots are not canonical: %+v",report.Roots)};if report.Findings[0].Finding.Outcome!=No||report.Findings[1].Finding.Outcome!=Unknown||report.Findings[3].Finding.Outcome!=Unknown{t.Fatalf("declaration evidence was hidden: %+v",report)}
+    optional,err:=CheckSchemaRoots(program,[]string{"Optional"},validation.Limits{});if err!=nil||optional.Findings[1].Finding.Outcome!=Unknown{t.Fatalf("optional impossible field was treated as an empty record: %+v %v",optional,err)}
+    report,err=CheckSchemaRoots(program,[]string{"Empty"},validation.Limits{});var proof *SchemaError;if !errors.As(err,&proof)||proof.Type!="Empty"||!reflect.DeepEqual(report.Roots,[]string{"Empty"}){t.Fatalf("selected empty root was accepted: %+v %v",report,err)}
+    invalidRoots:=[][]string{nil,[]string{"Missing"},[]string{"Box"}};for _,roots:=range invalidRoots{if _,err:=CheckSchemaRoots(program,roots,validation.Limits{});err==nil{t.Fatalf("invalid roots accepted: %+v",roots)}}
+    _,first:=CheckSchemaRoots(program,[]string{"Zed","Alpha"},validation.Limits{});_,second:=CheckSchemaRoots(program,[]string{"Alpha","Zed"},validation.Limits{});if first==nil||second==nil||first.Error()!=second.Error(){t.Fatalf("root validation depends on caller order: %v / %v",first,second)}
+}

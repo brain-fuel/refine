@@ -1,0 +1,35 @@
+package native
+
+import (
+    "crypto/sha256"
+    "encoding/json"
+    "fmt"
+    "strings"
+)
+
+// Flatten generated definitions into collision-free OpenAPI components. The
+// native OpenAPI oracle resolves component pointers, not a nested JSON $id's
+// local definition scope. Only generated schema references are rewritten;
+// native schemas and literal example/const/default payloads remain untouched.
+func projectOpenAPIAddition(document any,addition map[string]any)error{
+    root,ok:=document.(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI root must be an object")}
+    components,ok:=root["components"].(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI components must be an object")}
+    schemas,ok:=components["schemas"].(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI component schemas must be an object")}
+    definitions,ok:=addition["$defs"].(map[string]any);if !ok&&addition["$defs"]!=nil{return fmt.Errorf("native.export: generated definitions must be an object")}
+    raw,err:=json.Marshal(addition);if err!=nil{return err};digest:=sha256.Sum256(raw);prefix:=fmt.Sprintf("RefineSnapshot_%x_",digest[:8])
+    for{collision:=false;for name:=range definitions{if _,exists:=schemas[prefix+name];exists{collision=true;break}};if !collision{break};prefix+="_"}
+    names:=map[string]string{};for name:=range definitions{names["#/$defs/"+escapePointer(name)]="#/components/schemas/"+escapePointer(prefix+name)}
+    // Definitions are visited before removal, through schema positions only.
+    work:=0;if err:=rewriteProjectSchemaRefs(addition,names,0,&work);err!=nil{return err}
+    for name,definition:=range definitions{schemas[prefix+name]=definition};delete(addition,"$defs");delete(addition,"$schema");delete(addition,"$id");return nil
+}
+
+func rewriteProjectSchemaRefs(node any,names map[string]string,depth int,work *int)error{
+    *work++;if depth>512||*work>100000{return fmt.Errorf("native.export: generated schema reference rewrite limit exceeded")}
+    schema,ok:=node.(map[string]any);if !ok{return nil}
+    if reference,ok:=schema["$ref"].(string);ok{if replacement,found:=names[reference];found{schema["$ref"]=replacement}else if strings.HasPrefix(reference,"#/$defs/"){return fmt.Errorf("native.export: generated reference has no local definition")}}
+    for _,key:=range []string{"$defs","definitions","properties","patternProperties","dependentSchemas"}{if entries,ok:=schema[key].(map[string]any);ok{for _,child:=range entries{if err:=rewriteProjectSchemaRefs(child,names,depth+1,work);err!=nil{return err}}}}
+    for _,key:=range []string{"items","additionalItems","additionalProperties","contains","unevaluatedItems","unevaluatedProperties","propertyNames","if","then","else","not","contentSchema"}{if child,ok:=schema[key];ok{if err:=rewriteProjectSchemaRefs(child,names,depth+1,work);err!=nil{return err}}}
+    for _,key:=range []string{"allOf","anyOf","oneOf","prefixItems"}{if children,ok:=schema[key].([]any);ok{for _,child:=range children{if err:=rewriteProjectSchemaRefs(child,names,depth+1,work);err!=nil{return err}}}}
+    return nil
+}

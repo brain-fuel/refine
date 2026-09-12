@@ -131,6 +131,139 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   hardening, bounded ECMA native regex execution, complete generators/examples,
   full specification audit and eventual versioned release. No product release
   tag or Maven deployment is implied by this integration checkpoint.
+- Source checkpoint `d504826` was pushed with authored GoPlus and generated Go
+  together. A fresh external module fetched public pseudo-version
+  `v0.0.0-20260912173240-d504826cffaf` with `GOWORK=off` and no replacements.
+  Its anchored race test passed in 2.814s, checking native/refined Go outcomes,
+  project output generation, Java 25 warnings-as-errors compilation, and Jackson
+  read/write validation with no emitted bytes on invalid writes at `-Xss256k`.
+  The harness selected the seven exact native JSON dependency filenames; an
+  initial fixture-only dependency-directory count assumption was corrected
+  before the passing run. No production correction was needed for this consumer.
+
+## Post-checkpoint focused work (2026-09-12)
+
+The scopes below extend `d504826`; they do not mark the full release gates done.
+
+- `Program.ReadDataWithoutRefinements` and the closed `PayloadType` equivalent
+  provide the structural-only canonical-text reader needed by invalid examples.
+  They skip `where` execution while preserving literal-only parsing, structural
+  and fixed-width/finite-float/timestamp validation, budgets and failure-value
+  isolation. They do not mutate the program or weaken subsequent validating
+  reads. The nine-test reader selection passed except a new fixture whose UInt8
+  predicate used an unconverted Int literal; correcting that fixture to `False`
+  required only its exact test rerun (0.334s). The new seeded property covers
+  1,000 integer round trips. No extra parser fuzz campaign is needed for this
+  dispatch-only change; the integration suite replays its existing seeds.
+- Generated native JSON regexes use conditional, pinned GraalJS 25.0.1 with
+  isolated contexts, tighten-only limits and cancellation. The warmed adversarial
+  backreference/concurrent-cancellation gate passed in 1.423s; the no-Graal
+  non-pattern compile/run passed in 0.857s. The composed Jackson regex-limit
+  read/write gate passed in 2.448s, including zero output on rejected writes.
+- The JSON codec limit selection in TESTING.md passed under race in 10.127s.
+  Generated property tests now use the bounded `strictMapper()`; their two
+  affected anchored tests passed under race in 2.753s. Imported native JSON and
+  OpenAPI numbers select exact decimal wire encoding without extra configuration;
+  one Java invocation covered scalar/nested values, large decimals, preserved
+  native minima, and rejection of nonterminating rational writes (2.449s).
+  Standalone language-only generation still requires an explicit Real policy.
+- `TestMavenInfersOnlyRequiredNativeRegexDependency` and
+  `TestMavenSnippetAndNoCodegenPlan` passed in 0.222s. The updated real Maven
+  four-build campaign passed in 82.692s with automatic Polyglot compile-time API
+  and GraalJS runtime selection from a native regex schema. The same campaign
+  covers plain JSON/Avro contracts and an exact native numeric bundle. Reuse this
+  result on unchanged fixture/generator/dependency inputs instead of rebuilding
+  Maven for unrelated changes.
+- OpenAPI operation-context Go/Java focused race gates passed: immutable checked
+  bindings, exact/class/default response selection, preserved invalid plus
+  incomplete outcomes when request context is absent, and shared cross-context
+  rules. The Java conformance/rejection selection took 2.881s. Native bundle and
+  project integration is subsequent work, not evidence supplied by these tests.
+- Subsequent native metadata/project integration passed its focused Go/Java
+  gates, retaining immutable operation bindings, native-bundle authority, release
+  identity and merged Java facade/runtime sources. Native ordinary export now
+  removes recognized Refine schema annotations without changing literal payload
+  keys, and validates the native resource closure without trying to re-type-check
+  declarations intentionally absent from ordinary output. Numeric/recursive
+  OpenAPI export regression selection passed in 0.256s after fixing generated
+  definition references to use collision-free OpenAPI components.
+  This is metadata retention plus pure Refine context validation, not native
+  operation reconciliation: imported path/parameter/header/body/response schema
+  locations are not yet composed into that facade. The full-document native
+  operation boundary remains a required implementation gap.
+- Native Avro validation now includes a full bounded binary-to-Refine bridge and
+  compilation checks for refined field defaults. Original raw defaults remain
+  authoritative: fractional/overflowing integer defaults are rejected and Avro
+  1.12 first-matching union defaults work even when the matching branch is not
+  first. The private hamba structural input omits field defaults without reordering
+  unions; scoped tests cover exact original bytes, named/dependency references,
+  nested omissions, cycles, and no synthesis of absent writer bytes.
+- `analysis.CheckSchema` checks closed declarations as independent entrypoints;
+  `CheckSchemaRoots` instead limits rejection to explicitly selected roots while
+  retaining evidence for every declaration. Native and generated projects select
+  the payload plus bound OpenAPI request/response/context types. An impossible
+  unused declaration or optional child is not itself proof that a selected root
+  is empty. Unknown/generic results remain explicit, returned root/findings
+  slices are defensively copied, and bundle reload recomputes the report.
+  `check-schema` exposes the all-declaration phase in human/JSON form without
+  changing the narrower `typecheck` command. Project generation rejects a proven
+  selected-root contradiction before returning any files, including no-codegen
+  cases, and emits scoped `schema-analysis.json`. Focused proof,
+  native, CLI and project tests passed. One new project numeric fixture expected
+  the wrong root-resource filename; only that fixture's assertion was fixed,
+  and its exact anchored rerun passed in 0.252s.
+- Subsequent Java regex hardening replaces the shared scheduled cancellation
+  worker with request-owned Java 25 virtual watchdogs. They inherit neither
+  thread-local values nor a context classloader, cancel independently, and stop
+  on request cleanup. Cleanup failures are sanitized enforcement outcomes;
+  malformed number tokens are invalid, not numeric-resource exhaustion. The
+  actual Java 25 regex/native-validator selection passed in 2.046s with pinned
+  dependencies. Shared engine initialization failures remain fatal deployment
+  configuration errors, not payload outcomes.
+- Checkpoint CI `34708563276` passed generation, full race tests (including Maven),
+  vet and CLI smoke on Linux and macOS, then the macOS typed-read fuzz target hit
+  a context deadline; the fail-fast policy cancelled Linux fuzzing. A scoped
+  local 10-second `FuzzTypedReadShow` campaign with bounded 1000-execution
+  minimization passed 4,747,217 executions. CI now bounds that minimization and
+  keeps platform jobs independent. This is not a green CI claim for the dirty
+  worktree, nor proof of the original timeout's cause.
+
+## Bounded validation integration checkpoint (2026-09-12)
+
+- Frozen authored/generated sources passed `go tool goplus gen --check ./...`
+  and `go vet ./...`. One `go test -race ./...` invocation required Java and
+  Maven, with the pinned environment listed above and the NetworkNT/GraalJS
+  dependency directories enabled. Every package passed except two integration
+  fixtures in CLI and Java; the Java package took 178.889s, native 34.688s,
+  language 7.261s, and project 28.458s. The passing project package includes the
+  real four-build Maven lifecycle, not a skipped or mocked Maven check.
+- The CLI fixture expected `where False` to compile. It now uses the inhabitable
+  `where it < 3`, retaining rejection of its payload `3`, the custom message,
+  native-only scope, privacy and original-byte assertions. Its exact race rerun
+  `go test -race ./cli -run '^TestNativeArtifactWorkflow$'` passed in 1.476s.
+- The native-regex fixture deliberately tests `patternProperties`, now rejected
+  by automatic typed-map projection instead of silently becoming an empty
+  record. Its native-only intent is made explicit with a checked root annotation;
+  all original regex/map assertions remain. JSON ingestion now honors that
+  selected annotation before automatic projection, just as OpenAPI ingestion
+  does. Native schema validation still runs first. Bad source/root/proof checks
+  remain atomic, and unannotated maps still fail. The four new native annotation/
+  projection regressions passed in 0.249s. The exact Java race rerun
+  `TestGeneratedNativeRegexECMA262AndBudgets` passed in 2.754s.
+- Seven affected existing native annotation/provenance/bundle/export regressions
+  passed under race in 1.451s; exact selections are in TESTING.md. Scoped
+  generation consistency and vet passed after the corrections. The whole race
+  suite was not repeated. Maven evidence remains applicable: its unchanged
+  ordinary native fixtures take the same projection path, and its generated
+  refined resources already had projectable shapes and identical annotated
+  source. No Maven generator, dependency, or lifecycle fixture changed after
+  that successful campaign.
+- This checkpoint also includes the public 514-alias Avro default traversal
+  regression: a reachable depth limit now emits `native.limit` rather than an
+  empty check list. Rational-record component defaults reject conclusive bad
+  encodings/refinements; encoding-valid contextual defaults stay explicitly
+  unknown. These are bounded checks, not a claim that arbitrary predicates can
+  be proved or that the full specification is complete.
 
 ## Historical evidence (2026-09-11 foundation checkpoint)
 

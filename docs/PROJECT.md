@@ -115,7 +115,7 @@ promotion.
 - supplies a fixed ZIP-compatible `project.build.outputTimestamp` for reproducible
   archive timestamps, overridable by the project's build policy.
 
-It also adds Jackson databind 3.2.0, Apache Avro 1.12.0,
+It also adds Jackson databind 3.2.1, networknt 3.0.7, Apache Avro 1.12.0,
 test-scoped `org.jetbrains:jetCheck:0.3.0`,
 and runs the generated
 `refine.generated.RefineGeneratedTests` launcher during Maven's `test` phase.
@@ -200,6 +200,14 @@ registers source/resource/test directories, pins the Java 25 compiler plugin,
 and sets a reproducible ZIP-compatible output timestamp. The example timestamp
 can be overridden by the user's reproducible-build policy. Plugin versions are
 Maven Compiler 3.15.0, Exec 3.6.3, and Build Helper 3.6.1.
+
+Inside a Maven project, the command inspects its schema catalog (`--root` and
+`--config` override discovery). Native JSON/OpenAPI schema `pattern` or
+`patternProperties` positions automatically add the pinned GraalJS runtime and
+its compile-time Polyglot API; example payloads and `no-codegen` entries do not.
+Outside a project, `--native-regex` opts into that dependency in a bootstrap
+fragment. It is omitted for projects that do not need native regex execution.
+Generated JSON property tests use the module's bounded `strictMapper()`.
 
 The integration test uses SHA-512-pinned Maven 3.9.16 to build an unsigned fixture
 artifact with released and snapshot schema packages and an imported native JSON

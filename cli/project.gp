@@ -41,8 +41,14 @@ func projectCommand(args []string,output,errorOutput io.Writer)int{
     command:=args[0];flags:=flag.NewFlagSet("project "+command,flag.ContinueOnError);flags.SetOutput(errorOutput)
     if command=="maven"{
         executable:=flags.String("executable","refine","Refine executable invoked during generate-sources")
+        rootFlag:=flags.String("root","","inspect this Maven project for optional runtime dependencies")
+        configFlag:=flags.String("config","refine.project.json","project-relative configuration path")
+        regexFlag:=flags.Bool("native-regex",false,"include the bounded native ECMA-262 runtime before schemas exist")
         if err:=flags.Parse(args[1:]);err!=nil||len(flags.Args())!=0{return 2}
-        if _,err:=io.WriteString(output,project.MavenSnippet(project.MavenOptions{CLIExecutable:*executable}));err!=nil{return 2};return 0
+        options:=project.MavenOptions{CLIExecutable:*executable,NativeRegex:*regexFlag};snippet:=project.MavenSnippet(options);root:=*rootFlag
+        if root==""{if cwd,err:=os.Getwd();err==nil{if detected,err:=project.DetectRoot(cwd);err==nil{root=detected}}}
+        if root!=""{absolute,err:=filepath.Abs(root);if err!=nil{fmt.Fprintln(errorOutput,"cannot resolve project root");return 1};input,err:=loadProject(absolute,*configFlag,"");if err!=nil{fmt.Fprintln(errorOutput,err);return 1};snippet,err=project.MavenSnippetForProject(input,options);if err!=nil{fmt.Fprintln(errorOutput,err);return 1}}
+        if _,err:=io.WriteString(output,snippet);err!=nil{return 2};return 0
     }
     if command!="generate"{fmt.Fprintln(errorOutput,"unknown project command");return 2}
     rootFlag:=flags.String("root","","project root; defaults to nearest Maven project")
@@ -88,7 +94,7 @@ func schemaSourceName(name string)(string,schemaSourceKind,bool){
     if strings.HasSuffix(name,".refine"){return strings.TrimSuffix(name,".refine"),refineSchema,true}
     return "",0,false
 }
-func emptyWireMetadata(metadata native.WireMetadata)bool{return len(metadata.ExtraFields)==0&&len(metadata.Scalars)==0&&len(metadata.Discriminators)==0&&metadata.PublicationNamespace==""&&metadata.NumericExpansion==0}
+func emptyWireMetadata(metadata native.WireMetadata)bool{return len(metadata.ExtraFields)==0&&len(metadata.Scalars)==0&&len(metadata.Discriminators)==0&&metadata.PublicationNamespace==""&&metadata.NumericExpansion==0&&metadata.OpenAPI==nil}
 
 func loadProject(rootPath,configPath,packageOverride string)(project.GenerateInput,error){
     root,err:=os.OpenRoot(rootPath);if err!=nil{return project.GenerateInput{},err};defer root.Close()

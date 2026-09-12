@@ -35,6 +35,7 @@ func TestStrictStructureVersionsAndOfflineRefs(t *testing.T){
         {Avro,`{"type":"record","name":"Bad","fields":[],"fields":[]}`,"native.syntax"},
         {OpenAPI,"openapi: 2.0.0\ninfo: {title: T, version: '1'}\npaths: {}\n","native.version"},
         {OpenAPI,"openapi: 3.3.0\ninfo: {title: T, version: '1'}\npaths: {}\n","native.version"},
+        {OpenAPI,"openapi: 3.2.99\ninfo: {title: T, version: '1'}\npaths: {}\n","native.version"},
         {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, title: Again, version: '1'}\npaths: {}\n","native.syntax"},
         {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths:\n  /x:\n    get:\n      responses: {}\n","native.structure"},
         {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    X: {$ref: 'other.yaml#/X'}\n","native.structure"},
@@ -69,7 +70,7 @@ func TestJSONSchemaProvenanceDelegation(t *testing.T){
 }
 
 func TestOpenAPIVersionTable(t *testing.T){
-    versions:=[]string{"3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0"}
+    versions:=[]string{"3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0","3.2.1"}
     for _,version:=range versions{source:=`{"openapi":"`+version+`","info":{"title":"T","version":"1"},"paths":{}}`;doc,err:=ParseOpenAPI([]byte(source),Options{});if err!=nil||doc.Version()!=version{t.Errorf("%s: %v",version,err)}}
 }
 

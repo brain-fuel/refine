@@ -1,0 +1,49 @@
+package native
+
+import (
+    "encoding/binary"
+    "math"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+)
+
+func TestDecodeAndValidateAvroComposesNativeAndRefinements(t *testing.T){
+    schema:=`{"type":"record","name":"Envelope","fields":[{"name":"count","type":"int"},{"name":"tags","type":{"type":"array","items":"string"}},{"name":"note","type":["null","string"]},{"name":"color","type":{"type":"enum","name":"Color","symbols":["red","green"]}},{"name":"choice","type":["int","string"]}]}`
+    project:=avroProject(t,schema);source:=project.EditableSource();edited:=strings.Replace(source,"type Datum = Envelope","type Datum = Envelope where fromInt32 it.count > 0 @code \"positive-count\"",1);if edited==source{t.Fatal("root projection was not found")};var err error;project,err=project.WithEditedSource(edited);if err!=nil{t.Fatal(err)}
+    valid:=[]byte{8,4,2,'a',2,'b',0,2,4,'o','k',2,0,14};data,report,err:=project.DecodeAndValidateAvro(valid,AvroPayloadLimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("valid datum: %v %+v",err,report)};count,ok:=data.Lookup("count");number,numberOK:=count.Number();if !ok||!numberOK||number.Show()!="4"{t.Fatal("exact count was not decoded")};note,_:=data.Lookup("note");if name,_:=note.Constructor();name!="NonNull"{t.Fatalf("nullable branch lost: %s",name)};color,_:=data.Lookup("color");if name,_:=color.Constructor();name!="Native_green"{t.Fatalf("enum symbol mapping lost: %s",name)};choice,_:=data.Lookup("choice");if name,_:=choice.Constructor();!strings.HasSuffix(name,"Branch1"){t.Fatalf("union branch mapping lost: %s",name)}
+    invalid:=append([]byte(nil),valid...);invalid[0]=3;if _,report,err=project.DecodeAndValidateAvro(invalid,AvroPayloadLimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="invalid"{t.Fatalf("refinement did not reject: %v %+v",err,report)}
+    if _,_,err=project.DecodeAndValidateAvro(valid[:len(valid)-1],AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("native framing was not enforced first: %v",err)}
+    if _,_,err=project.DecodeAndValidateAvro(valid,AvroPayloadLimits{Values:3},validation.Limits{});problemCode(err)!="native.limit"{t.Fatalf("native decode budget was not enforced: %v",err)}
+}
+
+func TestDecodeAndValidateAvroFailsClosedOnStructuralEditsAndNonFinite(t *testing.T){
+    record:=avroProject(t,`{"type":"record","name":"Message","fields":[{"name":"text","type":"string"},{"name":"code","type":"int"}]}`);changed,err:=record.WithEditedSource(strings.Replace(record.EditableSource(),"text :: String","text :: Int",1));if err!=nil{t.Fatal(err)};payload:=avroDatum(t,record,map[string]any{"text":"hello","code":int(7)});if _,_,err=changed.DecodeAndValidateAvro(payload,AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.decode"{t.Fatalf("incompatible structural edit was not gated: %v",err)};reordered,err:=record.WithEditedSource(strings.Replace(record.EditableSource(),"text :: String, code :: Int32","code :: Int32, text :: String",1));if err!=nil{t.Fatal(err)};if _,report,err:=reordered.DecodeAndValidateAvro(payload,AvroPayloadLimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("semantically unordered record edit was rejected: %v",err)}
+    floating:=avroProject(t,`"float"`);floating,err=floating.WithEditedSource("type Datum = Float32\n");if err!=nil{t.Fatal(err)};finite:=make([]byte,4);binary.LittleEndian.PutUint32(finite,math.Float32bits(0.5));if _,report,err:=floating.DecodeAndValidateAvro(finite,AvroPayloadLimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("finite exact float rejected: %v",err)};nonfinite:=make([]byte,4);binary.LittleEndian.PutUint32(nonfinite,math.Float32bits(float32(math.Inf(1))));if err:=floating.ValidateAvroBinary(nonfinite,AvroPayloadLimits{});err!=nil{t.Fatalf("native-only Avro must accept infinity: %v",err)};if _,_,err:=floating.DecodeAndValidateAvro(nonfinite,AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.decode"{t.Fatalf("refined non-finite boundary was not fail-closed: %v",err)}
+}
+
+func TestDecodeAndValidateAvroRecursiveDependencyGraph(t *testing.T){
+    recursive:=avroProject(t,`{"type":"record","name":"Node","fields":[{"name":"value","type":"long"},{"name":"next","type":["null","Node"]}]}`);data,report,err:=recursive.DecodeAndValidateAvro([]byte{2,2,4,0},AvroPayloadLimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("recursive datum rejected: %v",err)};next,_:=data.Lookup("next");nested:=next.Elements()[0];numberData,_:=nested.Lookup("value");number,_:=numberData.Number();if number.Show()!="2"{t.Fatal("recursive datum was decoded incorrectly")}
+    resources:=[]Resource{{URI:"urn:avro:address",Source:`{"type":"record","name":"Address","fields":[{"name":"line","type":"string"}]}`},{URI:"urn:avro:person",Source:`{"type":"record","name":"Person","fields":[{"name":"address","type":"Address"}]}`}};project,err:=IngestProjectResources(Avro,resources,ProjectOptions{Root:ResourceSelector{Resource:"urn:avro:person",TypeName:"PersonDatum"}});if err!=nil{t.Fatal(err)};wire:=avroDatum(t,project,map[string]any{"address":map[string]any{"line":"Main"}});if _,report,err=project.DecodeAndValidateAvro(wire,AvroPayloadLimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("dependency-backed datum rejected: %v",err)}
+}
+
+func TestDecodeAndValidateAvroExactScalarMetadata(t *testing.T){
+    cases:=[]struct{name,source string;metadata WireMetadata;wire []byte;want string}{
+        {"decimal string","type Exact = Int\ntype Datum = Exact\n",WireMetadata{Scalars:map[string]ScalarEncoding{"Exact":{Kind:DecimalString}}},[]byte{6,'1','2','3'},"123"},
+        {"rational record","type Exact = Real\ntype Datum = Exact\n",WireMetadata{Scalars:map[string]ScalarEncoding{"Exact":{Kind:RationalRecord}}},[]byte{2,1,2,2},"1/2"},
+        {"Avro decimal","type Exact = Real\ntype Datum = Exact\n",WireMetadata{Scalars:map[string]ScalarEncoding{"Exact":{Kind:AvroBytesDecimal,Precision:4,Scale:2}}},[]byte{2,123},"123/100"},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){program,err:=language.Compile(tc.source);if err!=nil{t.Fatal(err)};target,err:=program.PayloadType("Datum");if err!=nil{t.Fatal(err)};exported,err:=LowerPayloadWithMetadata(Avro,target,tc.metadata,LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};project,err:=IngestProject(Avro,exported.Bytes(),ProjectOptions{Root:ResourceSelector{TypeName:"Datum"},Metadata:tc.metadata});if err!=nil{t.Fatal(err)};data,report,err:=project.DecodeAndValidateAvro(tc.wire,AvroPayloadLimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("exact scalar rejected: %v",err)};number,ok:=data.Number();if !ok||number.Show()!=tc.want{t.Fatalf("got %v, want %s",data,tc.want)}})}
+    rational:=refinedAvroScalar(t,"type Exact = Real\ntype Datum = Exact\n",WireMetadata{Scalars:map[string]ScalarEncoding{"Exact":{Kind:RationalRecord}}});if _,_,err:=rational.DecodeAndValidateAvro([]byte{2,2,2,4},AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.decode"{t.Fatalf("non-reduced rational encoding accepted: %v",err)}
+    limited:=refinedAvroScalar(t,"type Exact = Real\ntype Datum = Exact\n",WireMetadata{NumericExpansion:5,Scalars:map[string]ScalarEncoding{"Exact":{Kind:RationalRecord}}});if _,_,err:=limited.DecodeAndValidateAvro([]byte{8,1,2,3,4,2,1},AvroPayloadLimits{},validation.Limits{});problemCode(err)!="native.limit"{t.Fatalf("exact number expansion was not bounded: %v",err)}
+}
+
+func refinedAvroScalar(t *testing.T,source string,metadata WireMetadata)*Project{t.Helper();program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};target,err:=program.PayloadType("Datum");if err!=nil{t.Fatal(err)};exported,err:=LowerPayloadWithMetadata(Avro,target,metadata,LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};project,err:=IngestProject(Avro,exported.Bytes(),ProjectOptions{Root:ResourceSelector{TypeName:"Datum"},Metadata:metadata});if err!=nil{t.Fatal(err)};return project}
+
+func TestDecodeAndValidateAvroTimestampAndByteListBudgets(t *testing.T){timestamp:=refinedAvroScalar(t,"type Moment = Timestamp\ntype Datum = Moment\n",WireMetadata{Scalars:map[string]ScalarEncoding{"Moment":{Kind:TimestampString}}});raw:="2026-09-12T10:11:12-07:00";wire:=append([]byte{byte(len(raw)*2)},[]byte(raw)...);data,report,err:=timestamp.DecodeAndValidateAvro(wire,AvroPayloadLimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("timestamp rejected: %v",err)};text,ok:=data.Text();encoded,textErr:=text.UTF8();if !ok||textErr!=nil||encoded!=raw{t.Fatal("timestamp spelling was not preserved")}
+    bytesProject:=avroProject(t,`"bytes"`);payload:=[]byte{8,1,2,3,4};if err:=bytesProject.ValidateAvroBinary(payload,AvroPayloadLimits{Values:3});err!=nil{t.Fatalf("native-only bytes unexpectedly count decoded Data nodes: %v",err)};if _,_,err:=bytesProject.DecodeAndValidateAvro(payload,AvroPayloadLimits{Values:3},validation.Limits{});problemCode(err)!="native.limit"{t.Fatalf("decoded byte list allocation was not bounded: %v",err)}
+}
+
+func FuzzDecodeAndValidateAvro(f *testing.F){project,err:=IngestProject(Avro,[]byte(`{"type":"record","name":"Node","fields":[{"name":"value","type":"long"},{"name":"next","type":["null","Node"]}]}`),ProjectOptions{Root:ResourceSelector{TypeName:"Node"}});if err!=nil{f.Fatal(err)};for _,seed:=range [][]byte{{0,0},{2,2,0,0},{0},{2,2}}{f.Add(seed)};f.Fuzz(func(t *testing.T,input []byte){if len(input)>65536{t.Skip()};_,_,_ = project.DecodeAndValidateAvro(input,AvroPayloadLimits{Bytes:65536,Depth:32,Values:10000,StringBytes:8192},validation.Limits{Total:100000,Clause:10000})})}

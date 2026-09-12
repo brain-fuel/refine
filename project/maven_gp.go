@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"goforge.dev/refine/native"
 	"goforge.dev/refine/release"
 )
 
@@ -16,6 +17,26 @@ type MavenOptions struct {
 	SourceDir     string
 	ResourceDir   string
 	TestDir       string
+	NativeRegex   bool
+}
+
+// MavenSnippetForProject infers the optional ECMA runtime from the actual
+// checked native schema positions, not keyword lookalikes in example payloads.
+func MavenSnippetForProject(input GenerateInput, options MavenOptions) (string, error) {
+	for _, contract := range input.Contracts {
+		p := contract.NativeProject
+		if contract.NoCodegen || p == nil || p.Format() == native.Avro {
+			continue
+		}
+		locations, err := p.JSONSchemaKeywordLocations("pattern", "patternProperties")
+		if err != nil {
+			return "", err
+		}
+		if len(locations) > 0 {
+			options.NativeRegex = true
+		}
+	}
+	return MavenSnippet(options), nil
 }
 
 // MavenSnippet returns an opt-in POM fragment. It neither edits pom.xml nor
@@ -36,6 +57,10 @@ func MavenSnippet(options MavenOptions) string {
 		argumentXML.WriteString("<argument>" + xml(argument) + "</argument>")
 	}
 	argumentXML.WriteString("</arguments>")
+	regexDependency := ""
+	if options.NativeRegex {
+		regexDependency = "  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>polyglot</artifactId><version>25.0.1</version></dependency>\n  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>js</artifactId><version>25.0.1</version><type>pom</type><scope>runtime</scope></dependency>\n"
+	}
 	return fmt.Sprintf(`<properties>
   <maven.compiler.release>25</maven.compiler.release>
   <project.build.outputTimestamp>1980-01-01T00:00:02Z</project.build.outputTimestamp>
@@ -45,7 +70,7 @@ func MavenSnippet(options MavenOptions) string {
   <dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><version>3.0.7</version></dependency>
   <dependency><groupId>org.apache.avro</groupId><artifactId>avro</artifactId><version>1.12.0</version></dependency>
   <dependency><groupId>org.jetbrains</groupId><artifactId>jetCheck</artifactId><version>0.3.0</version><scope>test</scope></dependency>
-</dependencies>
+%s</dependencies>
 <build>
   <plugins>
     <plugin>
@@ -72,7 +97,7 @@ func MavenSnippet(options MavenOptions) string {
     </plugin>
   </plugins>
 </build>
-`, xml(executable), argumentXML.String(), xml(layout.SourceDir), xml(layout.ResourceDir), xml(layout.TestDir))
+`, regexDependency, xml(executable), argumentXML.String(), xml(layout.SourceDir), xml(layout.ResourceDir), xml(layout.TestDir))
 }
 func xml(text string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&apos;")

@@ -31,11 +31,14 @@ release gate.
   Refine separately retains the exact source and rejects YAML constructs whose
   expansion it does not yet preserve. Upstream license:
   [MIT](https://github.com/getkin/kin-openapi/blob/v0.149.0/LICENSE).
-- `github.com/hamba/avro/v2 v2.31.0`: production Avro 1.12.0 schema parser and
-  structure/default/name validation oracle. Its compiled schema graph also
-  drives Refine's separately implemented bounded binary validator; hamba's
-  generic decoder is not treated as complete logical-type enforcement. Each
-  ingestion gets a private schema cache. The project was archived in 2026, which is a maintenance/replacement
+- `github.com/hamba/avro/v2 v2.31.0`: production Avro 1.12.0 structure/name
+  parser. Its compiled schema graph also drives Refine's separately implemented
+  bounded binary validator; hamba's generic decoder is not treated as complete
+  logical-type enforcement. Hamba implements the obsolete union-default branch
+  zero rule, so Refine removes record-field defaults only from the private
+  parser input and validates the unchanged original source with its exact,
+  ordered first-matching Avro 1.12 default checker. Each ingestion gets a
+  private schema cache. The project was archived in 2026, which is a maintenance/replacement
   risk and makes independent Apache conformance coverage especially important.
   Upstream license: [MIT](https://github.com/hamba/avro/blob/v2.31.0/LICENSE).
 - `github.com/dlclark/regexp2 v1.12.0`: production ECMAScript-mode syntax engine
@@ -51,11 +54,28 @@ release gate.
   supplies an exact `BigDecimal` node factory, a resource loader that cannot
   fall back to classpath/files/network, strict duplicate/trailing-token parsing,
   and caller limits, including a whole-request numeric-expansion preflight
-  before either Jackson or networknt can expand a compact exponent. The current bounded profile rejects `pattern` and
-  `patternProperties` until a bounded ECMA-262 Java engine is integrated.
+  before either Jackson or networknt can expand a compact exponent. Schemas
+  without `pattern` or `patternProperties` do not link or load GraalJS.
   Runtime tests pin this artifact and its Jackson 3.2.1, ITU 1.14.0, and SLF4J
   2.0.17 dependencies by SHA-256. Upstream license:
   [Apache-2.0](https://github.com/networknt/json-schema-validator/blob/3.0.7/LICENSE).
+- `org.graalvm.polyglot:js:25.0.1` (Community): conditionally supplies the
+  GraalJS `RegExp` implementation configured for ECMA-262 2020 for generated
+  Java validators whose native schemas contain `pattern` or
+  `patternProperties`. Refine does not use
+  networknt's process-wide Graal context. Each validation gets a locked-down
+  context, deterministic aggregate evaluation/work/UTF-16-unit limits, and a
+  watchdog deadline that cancels guest execution. Patterns and subjects cross
+  the host boundary only as values to a fixed generated program; host classes,
+  IO, environment, processes, native access, polyglot access, and guest-created
+  threads are disabled. Resource exhaustion remains indeterminate and is never
+  converted into a non-match inside `not`, `anyOf`, or `patternProperties`.
+  The runtime closure consists of the 25.0.1 `js-language`, `regex`, `polyglot`,
+  `truffle-api`, `truffle-runtime`, `truffle-compiler`, `collections`,
+  `jniutils`, `nativeimage`, `word`, and shadowed `icu4j`/`xz` jars. Java tests
+  verify SHA-256 for every jar before execution. Upstream licenses are
+  [UPL-1.0 and MIT](https://github.com/oracle/graaljs/blob/vm-25.0.1/LICENSE);
+  the shadowed ICU data retains its upstream Unicode/ICU notices.
 - `golang.org/x/text v0.14.0`: a transitive dependency, under Go's BSD-style
   license. Other `golang.org/x/*` entries support the pinned GoPlus module tool;
   see `go.mod`/`go.sum` for the exact graph. `kin-openapi` and `hamba/avro` also
@@ -72,6 +92,8 @@ release gate.
   establishing its SHA-256 pin; jetCheck publishes its SHA-256 directly.
 
 Dependency declarations are not evidence that an upstream component supplies
-the full Refine contract. In particular, complete native regex semantic
-conformance, deterministic payload budgeting, translation bijections, and Java
-conformance still require Refine-owned implementation and verification.
+the full Refine contract. In particular, native ingestion's regexp2 syntax
+oracle does not yet admit every valid ECMA-262 2020 Unicode-property spelling,
+even when GraalJS would execute it. Complete regex-language parity, translation
+bijections, and Java conformance still require Refine-owned implementation and
+verification.

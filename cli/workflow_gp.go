@@ -24,7 +24,7 @@ func workflow(args []string, input io.Reader, output, errorOutput io.Writer) int
 	flags.SetOutput(errorOutput)
 	jsonMode := flags.Bool("json", false, "emit machine-readable diagnostics")
 	var total, clause uint64
-	if command == "validate" {
+	if command == "validate" || command == "check-schema" {
 		flags.Uint64Var(&total, "total-steps", 0, "tighten total logical step limit")
 		flags.Uint64Var(&clause, "clause-steps", 0, "tighten clause logical step limit")
 	}
@@ -82,6 +82,7 @@ func workflow(args []string, input io.Reader, output, errorOutput io.Writer) int
 			detail := diagnostic{Code: "refine.error", Message: "The requested phase failed."}
 			var langError *language.Error
 			var nativeError *native.Error
+			var schemaError *analysis.SchemaError
 			if errors.As(err, &langError) {
 				detail = diagnostic{Code: langError.Code, Message: langError.Message, Line: langError.At.Start.Line, Column: langError.At.Start.Column, Offset: langError.At.Start.Offset}
 				if langError.Code == "language.limit" {
@@ -93,6 +94,9 @@ func workflow(args []string, input io.Reader, output, errorOutput io.Writer) int
 				if nativeError.Code == "native.limit" {
 					result.State = "indeterminate"
 				}
+			}
+			if errors.As(err, &schemaError) {
+				detail = diagnostic{Code: "schema.unsatisfiable", Path: schemaError.Type, Message: schemaError.Finding.Explanation}
 			}
 			result.Diagnostics = append(result.Diagnostics, detail)
 		}
@@ -138,6 +142,19 @@ func workflow(args []string, input io.Reader, output, errorOutput io.Writer) int
 		return finish(err)
 	}
 	switch command {
+	case "check-schema":
+		checked, err := analysis.CheckSchema(program, validation.Limits{Total: total, Clause: clause})
+		result.Result = checked
+		result.Summary = "Refine declaration satisfiability checked; native schema and wire semantics require separate validation."
+		for _, item := range checked.Findings {
+			if item.Finding.Outcome == analysis.Unknown {
+				result.State = "unknown"
+				result.Diagnostics = append(result.Diagnostics, diagnostic{Code: item.Finding.Code, Path: item.Type, Message: item.Finding.Explanation})
+			}
+		}
+		if err != nil {
+			return finish(err)
+		}
 	case "explain":
 		document, err := explain.Generate(program)
 		if err != nil {

@@ -102,27 +102,33 @@ func ParseAvro(input []byte,options Options)(*Document,error){
         return nil,&Error{Code:"native.structure",Format:Avro,Message:"an Avro schema must be a JSON string, object, or array"}
     }
     // A private cache prevents schemas from one document affecting another.
-    if _,err:=avro.ParseBytesWithCache(input,"",&avro.SchemaCache{});err!=nil{return nil,wrap(Avro,"native.structure","",err)}
+    schema,err:=parseAvroStructure(input,&avro.SchemaCache{});if err!=nil{return nil,wrap(Avro,"native.structure","",err)}
+    if err:=auditAvroDefaults(doc.Root(),schema,"");err!=nil{return nil,err}
     annotations,err:=avroAnnotations(doc.Root());if err!=nil{return nil,err}
     return &Document{format:Avro,version:"1.12.0",raw:doc.Raw(),annotations:annotations},nil
 }
 
 var openAPIVersion=regexp.MustCompile(`^3\.(0|1|2)\.\d+$`)
 func supportedOpenAPI(version string)bool{
-    switch version {case "3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0":return true};return false
+    switch version {case "3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0","3.2.1":return true};return false
 }
+
+func declaredOpenAPIVersion(root *yaml.Node)(string,bool){if root==nil||root.Kind!=yaml.MappingNode{return "",false};for i:=0;i<len(root.Content);i+=2{if root.Content[i].Value=="openapi"{value:=root.Content[i+1];return value.Value,value.Kind==yaml.ScalarNode}};return "",false}
+
+// kin-openapi v0.149.0 recognizes the 3.2 feature set only for the then-current
+// 3.2.0 patch string. OAS patch releases clarify/fix the specification without
+// changing that feature set. Normalize only the private oracle input to 3.2.0;
+// the accepted 3.2.1 source and reported version remain untouched.
+func openAPIOracleInput(input []byte,root *yaml.Node,version string)([]byte,error){if version!="3.2.1"{return input,nil};for i:=0;i<len(root.Content);i+=2{if root.Content[i].Value=="openapi"{value:=root.Content[i+1];original:=value.Value;value.Value="3.2.0";data,err:=yaml.Marshal(root);value.Value=original;return data,err}};return nil,errors.New("OpenAPI object requires an openapi version")}
 
 func ParseOpenAPI(input []byte,options Options)(document *Document,failure error){defer recoverRegexEvaluation(OpenAPI,&failure)
     l,err:=limits(options);if err!=nil{return nil,wrap(OpenAPI,"native.limit","",err)}
     if len(input)>l.Bytes{return nil,&Error{Code:"native.limit",Format:OpenAPI,Message:"document byte limit exceeded"}}
     if strings.HasPrefix(strings.TrimSpace(string(input)),"{"){jsonDoc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(OpenAPI,"native.syntax","",err)};if err:=scalarJSON(jsonDoc.Root(),"");err!=nil{return nil,wrap(OpenAPI,"native.encoding","",err)}}
     yamlRoot,err:=parseYAML(input,l);if err!=nil{return nil,wrap(OpenAPI,"native.syntax","",err)}
-    loader:=openapi3.NewLoader();loader.IsExternalRefsAllowed=false
-    parsed,err:=loader.LoadFromData(input);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
-    version:=parsed.OpenAPI
-    if !openAPIVersion.MatchString(version)||!supportedOpenAPI(version){
-        return nil,&Error{Code:"native.version",Format:OpenAPI,Pointer:"/openapi",Message:"supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0"}
-    }
+    version,ok:=declaredOpenAPIVersion(yamlRoot);if !ok||!openAPIVersion.MatchString(version)||!supportedOpenAPI(version){return nil,&Error{Code:"native.version",Format:OpenAPI,Pointer:"/openapi",Message:"supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0-3.2.1"}}
+    oracleInput,err:=openAPIOracleInput(input,yamlRoot,version);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)};loader:=openapi3.NewLoader();loader.IsExternalRefsAllowed=false
+    parsed,err:=loader.LoadFromData(oracleInput);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
     if err:=parsed.Validate(context.Background(),openapi3.SetRegexCompiler(openAPIRegexp));err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
     annotations,err:=yamlRootAnnotation(yamlRoot);if err!=nil{return nil,err}
     return &Document{format:OpenAPI,version:version,raw:string(append([]byte(nil),input...)),annotations:annotations},nil

@@ -1,0 +1,73 @@
+package openapi
+
+import (
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+const contextContract=`
+type Params = { id :: Int } where it.id > 0 @code "request.id"
+type RequestHeaders = { trace :: Maybe String }
+type EmptyBody = {}
+type GetRequest = { parameters :: Params, headers :: RequestHeaders, body :: EmptyBody }
+type ResultBody = { id :: Int } where it.id > 0 @code "response.id"
+type ResponseHeaders = { etag :: String }
+type GetResponse = { headers :: ResponseHeaders, body :: ResultBody }
+type GetContext = { request :: GetRequest, response :: GetResponse }
+  where it.response.body.id == it.request.parameters.id @code "response.request.id"
+type GetContextAlias = GetContext
+type ErrorBody = { message :: String }
+type ErrorResponse = { headers :: RequestHeaders, body :: ErrorBody }
+type WrongContext = { request :: GetRequest, response :: ErrorResponse }
+`
+
+func record(fields ...value.DataField)value.Data{data,err:=value.Record(fields);if err!=nil{panic(err)};return data}
+func text(s string)value.Data{v,err:=value.TextFromUTF8(s);if err!=nil{panic(err)};return value.OfText(v)}
+func number(n int64)value.Data{return value.OfNumber(value.Integer(n))}
+func empty()value.Data{return record()}
+func headers()value.Data{return record(value.DataField{Name:"trace",Value:mustVariant("Nothing")})}
+func responseHeaders()value.Data{return record(value.DataField{Name:"etag",Value:text("v1")})}
+func mustVariant(name string,args ...value.Data)value.Data{v,err:=value.Variant(name,args);if err!=nil{panic(err)};return v}
+func request(id int64)Request{return Request{Parameters:record(value.DataField{Name:"id",Value:number(id)}),Headers:headers(),Body:empty()}}
+func response(id int64)Response{return Response{Headers:responseHeaders(),Body:record(value.DataField{Name:"id",Value:number(id)})}}
+func errorResponse()Response{return Response{Headers:headers(),Body:record(value.DataField{Name:"message",Value:text("missing")})}}
+func contextSchema()Schema{return Schema{Version:SchemaVersion,Operations:[]OperationBinding{{OperationID:"getWidget",Method:"GET",Path:"/widgets/{id}",RequestType:"GetRequest",Responses:[]ResponseBinding{{Status:"200",ResponseType:"GetResponse",ContextType:"GetContextAlias"},{Status:"2XX",ResponseType:"GetResponse"},{Status:"default",ResponseType:"ErrorResponse"}}}}}}
+
+func TestOperationContextValidation(t *testing.T){
+    program,err:=language.Compile(contextContract);if err!=nil{t.Fatal(err)};schema:=contextSchema();contract,err:=Compile(program,&schema);if err!=nil{t.Fatal(err)}
+    assert:=func(want string,report validation.Report,err error){t.Helper();if err!=nil||validation.StateName(report.State())!=want{t.Fatalf("got %s/%v, want %s",validation.StateName(report.State()),err,want)}}
+    report,err:=contract.ValidateRequest("getWidget",request(7),validation.Limits{});assert("valid",report,err)
+    report,err=contract.ValidateRequest("getWidget",request(0),validation.Limits{});assert("invalid",report,err)
+    original:=request(7);report,err=contract.ValidateResponse("getWidget","200",response(7),&original,validation.Limits{});assert("valid",report,err)
+    report,err=contract.ValidateResponse("getWidget","200",response(8),&original,validation.Limits{});assert("invalid",report,err)
+    report,err=contract.ValidateResponse("getWidget","200",response(7),nil,validation.Limits{});assert("indeterminate",report,err);if report.Diagnostics()[0].Code!="openapi.request_context.missing"{t.Fatal(report.Diagnostics())}
+    report,err=contract.ValidateResponse("getWidget","200",response(0),nil,validation.Limits{});assert("invalid",report,err);if !report.Incomplete()||len(report.Diagnostics())!=2{t.Fatalf("known invalid did not retain missing context: %+v",report)}
+    report,err=contract.ValidateResponse("getWidget","201",response(9),nil,validation.Limits{});assert("valid",report,err)
+    report,err=contract.ValidateResponse("getWidget","404",errorResponse(),nil,validation.Limits{});assert("valid",report,err)
+    report,err=contract.ValidateResponse("getWidget","200",response(7),&original,validation.Limits{Total:1});assert("indeterminate",report,err)
+    if _,err:=contract.ValidateResponse("getWidget","099",response(1),nil,validation.Limits{});err==nil{t.Fatal("invalid runtime status accepted")};if _,err:=contract.ValidateRequest("missing",request(1),validation.Limits{});err==nil{t.Fatal("unknown operation accepted")}
+    schema.Operations[0].Method="POST";schema.Operations[0].Responses[0].ResponseType="ErrorResponse";snapshot:=contract.Schema();if snapshot.Operations[0].Method!="GET"||snapshot.Operations[0].Responses[0].ResponseType!="GetResponse"{t.Fatal("checked metadata retained caller backing")};snapshot.Operations[0].Path="changed";if contract.Schema().Operations[0].Path!="/widgets/{id}"{t.Fatal("metadata snapshot escaped")}
+}
+
+func TestOperationMetadataRejectsAmbiguousOrIncompatibleBindings(t *testing.T){
+    program,err:=language.Compile(contextContract);if err!=nil{t.Fatal(err)};base:=contextSchema()
+    cases:=[]func(*Schema){
+        func(s *Schema){s.Version="future"},
+        func(s *Schema){s.Operations[0].Method="GET bad"},
+        func(s *Schema){s.Operations[0].Path="widgets/{id}"},
+        func(s *Schema){s.Operations[0].Path="/widgets/{id}/{id}"},
+        func(s *Schema){s.Operations[0].RequestType="Params"},
+        func(s *Schema){s.Operations[0].Responses[0].Status="600"},
+        func(s *Schema){s.Operations[0].Responses[0].ResponseType="ResultBody"},
+        func(s *Schema){s.Operations[0].Responses[0].ContextType="WrongContext"},
+        func(s *Schema){s.Operations[0].Responses[0].ContextType="GetResponse"},
+        func(s *Schema){s.Operations[0].Responses=append(s.Operations[0].Responses,s.Operations[0].Responses[0])},
+        func(s *Schema){s.Operations=append(s.Operations,s.Operations[0])},
+        func(s *Schema){duplicate:=s.Operations[0];duplicate.OperationID="other";s.Operations=append(s.Operations,duplicate)},
+    }
+    for i,change:=range cases{candidate:=copySchema(base);change(&candidate);if contract,err:=Compile(program,&candidate);err==nil||contract!=nil{t.Fatalf("case %d accepted",i)}}
+    if contract,err:=Compile(nil,&base);err==nil||contract!=nil{t.Fatal("nil program accepted")};if contract,err:=Compile(program,nil);err==nil||contract!=nil{t.Fatal("nil metadata accepted")}
+}

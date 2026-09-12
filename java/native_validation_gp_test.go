@@ -43,15 +43,24 @@ func networkntClasspath(t *testing.T) string {
 	return strings.Join(parts, string(os.PathListSeparator))
 }
 
-func TestProjectJSONSerdeGatesUnsupportedNativeComposition(t *testing.T) {
+func TestProjectJSONSerdeIncludesNativeRegexComposition(t *testing.T) {
 	schema := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string","pattern":"^[a-z]+$"}`
-	project, err := native.IngestProject(native.JSONSchema, []byte(schema), native.ProjectOptions{})
+	project, err := native.IngestProject(native.JSONSchema, []byte(schema), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Value"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	files, err := GenerateProjectJSONSerde(project, "Contract", "Module")
-	if err == nil || files != nil || !strings.Contains(err.Error(), "ECMA-262") {
-		t.Fatalf("partial project serde escaped: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, file := range files {
+		if strings.Contains(file.Source, "regularExpressionFactory(new BoundedRegexFactory())") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("project JSON serde omitted its native ECMA-262 adapter")
 	}
 }
 
@@ -81,15 +90,15 @@ func TestJSONSerdeOptionsFromMetadataIsCopiedAndFailClosed(t *testing.T) {
 	}
 }
 
-func TestNativeJSONGeneratorGatesPatternsAndUnsupportedFormats(t *testing.T) {
+func TestNativeJSONGeneratorHandlesPatternsAndGatesUnsupportedFormats(t *testing.T) {
 	pattern := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string","pattern":"^[a-z]+$"}`
 	project, err := native.IngestProject(native.JSONSchema, []byte(pattern), native.ProjectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	files, err := GenerateProjectNativeJSONValidator(project, "NativeCheck")
-	if err == nil || files != nil || !strings.Contains(err.Error(), "ECMA-262") {
-		t.Fatalf("pattern was silently generated: %v", err)
+	if err != nil || len(files) != 1 || !strings.Contains(files[0].Source, "BoundedRegexFactory") {
+		t.Fatalf("bounded pattern adapter was not generated: %v", err)
 	}
 	innocent := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"pattern":{"type":"string"},"patternProperties":{"type":"string"}},"examples":[{"pattern":"not a keyword","patternProperties":{"also":"data"}}]}`
 	project, err = native.IngestProject(native.JSONSchema, []byte(innocent), native.ProjectOptions{})
@@ -139,6 +148,15 @@ func TestGeneratedNativeJSONValidatorExactOfflineAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	unicodeProject, err := native.IngestProject(native.JSONSchema, []byte(`{"type":"object","additionalProperties":true}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "UnicodeRoot"}, Metadata: native.WireMetadata{PublicationNamespace: "example.nativecheck"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unicodeFiles, err := GenerateProjectNativeJSONValidator(unicodeProject, "UnicodeCheck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, unicodeFiles...)
 	dir := t.TempDir()
 	sources := []string{}
 	for _, file := range files {
@@ -219,11 +237,12 @@ func TestGeneratedProjectJSONSerdeComposesNativeAndRefinements(t *testing.T) {
 }
 
 const nativeValidationHarnessJava = `
-import example.nativecheck.NativeCheck;
+import example.nativecheck.*;
 public final class NativeHarness {
  static void invalid(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(NativeCheck.NativeValidationException expected){if(expected.getCause()!=null||expected.isResourceLimit()||expected.isIndeterminate()||expected.code()!=NativeCheck.Code.INVALID)throw new AssertionError("invalid classification");}}
+ static void unicode(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(UnicodeCheck.NativeValidationException expected){if(expected.getCause()!=null||expected.isIndeterminate())throw new AssertionError("escaped unpaired Unicode classification");}}
  static void resource(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(NativeCheck.NativeValidationException expected){if(expected.getCause()!=null||!expected.isResourceLimit()||!expected.isIndeterminate()||expected.code()!=NativeCheck.Code.RESOURCE_LIMIT)throw new AssertionError("resource classification");}}
- public static void main(String[] args){var check=new NativeCheck();check.validate("99999999999999999999999999999999999999999999999999");invalid(()->check.validate("99999999999999999999999999999999999999999999999998"));invalid(()->check.validate("{\"n\":3,\"n\":3}"));invalid(()->check.validate("3 null"));resource(()->check.validate("1e1000000000"));invalid(()->check.validate("\ud800"));var tiny=new NativeCheck(new NativeCheck.Limits(100,2,10,10,10,10,8));resource(()->tiny.validate("[[[0]]]"));resource(()->tiny.validate("[1e2,1e2]"));}
+ public static void main(String[] args){var check=new NativeCheck();check.validate("99999999999999999999999999999999999999999999999999");invalid(()->check.validate("99999999999999999999999999999999999999999999999998"));invalid(()->check.validate("{\"n\":3,\"n\":3}"));invalid(()->check.validate("3 null"));invalid(()->check.validate("-".repeat(70000)));invalid(()->check.validate("1e+"));resource(()->check.validate("1e1000000000"));invalid(()->check.validate("\ud800"));var unicode=new UnicodeCheck();unicode(()->unicode.validate("{\"\\ud800\":3}"));unicode(()->unicode.validate("{\"value\":\"\\ud800\"}"));var tiny=new NativeCheck(new NativeCheck.Limits(100,2,10,10,10,10,8));resource(()->tiny.validate("[[[0]]]"));resource(()->tiny.validate("[1e2,1e2]"));try{new NativeCheck(new NativeCheck.Limits((1<<20)+1,128,10000,10000,1<<20,10000,65536));throw new AssertionError("relaxed hard limit accepted");}catch(IllegalArgumentException expected){}try{new NativeCheck(new NativeCheck.Limits(1<<20,128,10000,10000,1<<20,10000,65537));throw new AssertionError("relaxed generated numeric limit accepted");}catch(IllegalArgumentException expected){}}
 }
 `
 
