@@ -1047,3 +1047,13 @@ native formats and project workflows. The full checklist remains the release gat
   type parameters and unconstrained generic equality; those were kept as separate
   language work rather than silently accepted by model generation. No product tag
   or Maven deployment is made.
+- A fresh external module fetched public pseudo-version
+  `v0.0.0-20260912130134-4cdee1963b60` with `GOWORK=off` and no replacements.
+  Its race-tested harness compiled Java 25 with warnings-as-errors and ran at
+  `-Xss256k`, verifying exact Go-derived nested validation/update budgets,
+  retained inline predicates after bypass, canonical read enforcement, typed-read
+  scope isolation between `Age` and `Int`, and refined union-argument access.
+- Source checkpoint `4cdee19` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34695271103), including
+  generation, race, vet, CLI and all fifteen fuzz gates. Authored GoPlus and
+  generated Go were pushed together. No product tag or Maven deployment occurred.
