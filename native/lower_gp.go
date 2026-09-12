@@ -356,6 +356,19 @@ func (l *lowerer) typ(t *language.Type, field bool) (any, error) {
 		if ok, _ := unwrap(t, "Maybe"); ok {
 			return nil, &Error{Code: "native.unrepresentable", Format: l.format, Message: "Maybe represents field absence and is supported only directly on record fields"}
 		}
+		if name, args, ok := genericApplication(t); ok && name == "Map" && len(args) == 2 {
+			if language.FormatType(args[0]) != "String" {
+				return nil, l.unrepresentable(language.FormatType(args[0]), "native map keys must be exactly String")
+			}
+			value, err := l.typ(args[1], false)
+			if err != nil {
+				return nil, atLower(err, "map value")
+			}
+			if l.format == Avro {
+				return map[string]any{"type": "map", "values": value}, nil
+			}
+			return map[string]any{"type": "object", "additionalProperties": value}, nil
+		}
 		return l.generic(t)
 	case language.RefinedType:
 		base := __gp_m0.Base

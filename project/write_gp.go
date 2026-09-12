@@ -209,6 +209,12 @@ func PlanOwnedAddition(rootPath string, bundle Bundle, manifestPath string) (Own
 // manifest. All new bytes are staged before any output changes. Returned install
 // failures restore backups; process-crash atomicity is not promised.
 func WriteOwned(rootPath string, bundle Bundle, manifestPath string) error {
+	return WriteOwnedChecked(rootPath, bundle, manifestPath, nil)
+}
+
+// WriteOwnedChecked rechecks content-bound planning inputs after acquiring the
+// shared project/release lock and before staging or deleting owned outputs.
+func WriteOwnedChecked(rootPath string, bundle Bundle, manifestPath string, preconditions []release.FilePrecondition) error {
 	root, err := filepath.Abs(rootPath)
 	if err != nil {
 		return err
@@ -233,6 +239,23 @@ func WriteOwned(rootPath string, bundle Bundle, manifestPath string) error {
 	}
 	if err = noSymlink(root, manifestPath, true); err != nil {
 		return err
+	}
+	for _, condition := range preconditions {
+		relative, e := safeRelative(filepath.FromSlash(condition.Path))
+		if e != nil || !condition.Content.Valid() {
+			return fmt.Errorf("project.precondition: invalid content-bound input %s", condition.Path)
+		}
+		if e = noSymlink(root, relative, true); e != nil {
+			return e
+		}
+		info, e := os.Lstat(filepath.Join(root, relative))
+		if e != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("project.precondition: %s changed after planning", condition.Path)
+		}
+		data, e := os.ReadFile(filepath.Join(root, relative))
+		if e != nil || release.Digest(data) != condition.Content {
+			return fmt.Errorf("project.precondition: %s changed after planning", condition.Path)
+		}
 	}
 	old, err := readManifest(root, manifestPath)
 	if err != nil {

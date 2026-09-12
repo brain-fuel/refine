@@ -90,6 +90,13 @@ func shapeExpr(e *language.Expr) readShape {
 			s.names = append(s.names, field.Name)
 			s.children = append(s.children, shapeExpr(field.Value))
 		}
+	case language.MapLiteral:
+		entries := __gp_m0.Entries
+		s.kind = "map"
+		for _, entry := range entries {
+			s.names = append(s.names, entry.Key)
+			s.children = append(s.children, shapeExpr(entry.Value))
+		}
 	case language.Case:
 		subject := __gp_m0.Value
 		arms := __gp_m0.Arms

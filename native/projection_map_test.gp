@@ -9,13 +9,23 @@ import (
 
 const annotatedJSONMap=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":{"type":"integer"},"x-refine":{"source":"type MapRoot = {}","root":"MapRoot"}}`
 
-func TestJSONTypedMapProjectionFailsWithoutWeakeningNativeSchema(t *testing.T){
-    cases:=[]struct{name,source,valid,invalid,pointer string}{
-        {"additional properties map",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":{"type":"integer"}}`,`{"key":1}`,`{"key":"wrong"}`,"/additionalProperties"},
-        {"mixed record and map",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"}},"additionalProperties":{"type":"integer"}}`,`{"name":"ok","extra":1}`,`{"name":"ok","extra":"wrong"}`,"/additionalProperties"},
-        {"pattern-only map",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^x":{"type":"integer"}},"additionalProperties":false}`,`{"x":1}`,`{"x":"wrong"}`,"/patternProperties"},
+func TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema(t *testing.T){
+    cases:=[]struct{name,source,valid,invalid string}{
+        {"additional properties map",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":{"type":"integer"}}`,`{"key":1}`,`{"key":"wrong"}`},
+        {"pattern-only map",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^x":{"type":"integer"}},"additionalProperties":false}`,`{"x":1}`,`{"x":"wrong"}`},
+        {"uniform named and additional values",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"known":{"type":"integer"}},"additionalProperties":{"type":"integer"}}`,`{"known":1,"extra":2}`,`{"known":1,"extra":"wrong"}`},
     }
-    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){uri:="urn:refine:map-test";selector:=ResourceSelector{Resource:uri,TypeName:"MapRoot"};document,err:=validateJSONResources(map[string][]byte{uri:[]byte(tc.source)},selector);if err!=nil{t.Fatalf("native schema oracle rejected fixture: %v",err)};if document.Original()!=tc.source{t.Fatal("native parser changed original map schema bytes")};nativeOnly:=&Project{document:document,root:selector,resources:[]Resource{{URI:uri,Source:tc.source}}};if err=nativeOnly.ValidateJSON([]byte(tc.valid));err!=nil{t.Fatalf("native oracle rejected valid map payload: %v",err)};if err=nativeOnly.ValidateJSON([]byte(tc.invalid));problemCode(err)!="native.payload"{t.Fatalf("native oracle accepted invalid map payload: %v",err)};project,err:=IngestProject(JSONSchema,[]byte(tc.source),ProjectOptions{ResourceID:uri,Root:selector});if project!=nil||problemCode(err)!="native.projection"{t.Fatalf("typed map produced an editable projection: %v",err)};if !strings.Contains(err.Error(),tc.pointer)||!strings.Contains(err.Error(),"language map type"){t.Fatalf("map projection error is not actionable: %v",err)}})}
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){uri:="urn:refine:map-test";selector:=ResourceSelector{Resource:uri,TypeName:"MapRoot"};project,err:=IngestProject(JSONSchema,[]byte(tc.source),ProjectOptions{ResourceID:uri,Root:selector});if err!=nil{t.Fatalf("typed map projection failed: %v",err)};if project.NativeDocument().Original()!=tc.source{t.Fatal("native parser changed original map schema bytes")};if !strings.Contains(project.EditableSource(),"type MapRoot = Map String (Int)"){t.Fatalf("map projection is not typed: %s",project.EditableSource())};data,report,err:=project.DecodeAndValidateJSON([]byte(tc.valid),validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"||len(data.Entries())==0{t.Fatalf("checked map decode failed: %v %+v",err,report)};if err=project.ValidateJSON([]byte(tc.invalid));problemCode(err)!="native.payload"{t.Fatalf("native oracle accepted invalid map payload: %v",err)}})}
+}
+
+func TestJSONMapProjectionRejectsHeterogeneousOrOpenValueDomains(t *testing.T){
+    cases:=[]struct{name,source,want string}{
+        {"mixed named values",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"}},"additionalProperties":{"type":"integer"}}`,"heterogeneous"},
+        {"mixed patterns",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"},"^s":{"type":"string"}},"additionalProperties":false}`,"heterogeneous"},
+        {"untyped unmatched keys",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"}}}`,"untyped value domain"},
+        {"unevaluated applicator domain",`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","unevaluatedProperties":{"type":"integer"}}`,"unevaluatedProperties"},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){project,err:=IngestProject(JSONSchema,[]byte(tc.source),ProjectOptions{Root:ResourceSelector{TypeName:"MapRoot"}});if project!=nil||problemCode(err)!="native.projection"||!strings.Contains(err.Error(),tc.want){t.Fatalf("unsafe map domain was not rejected: %v",err)}})}
 }
 
 func TestJSONOrdinaryExtraFieldPoliciesRemainProjectable(t *testing.T){

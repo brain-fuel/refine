@@ -8,6 +8,7 @@ import (
     "testing"
 
     "goforge.dev/refine/native"
+    "goforge.dev/refine/release"
 )
 
 func nativeBundleFixture(t *testing.T,namespace string)string{
@@ -43,6 +44,7 @@ func TestProjectCLIConfigNoCodegenAndOverrides(t *testing.T){
     root:=projectFixture(t)
     config:=`{"families":{"foo":{"noCodegen":["v0.1.0"]}}}`
     if err:=os.WriteFile(filepath.Join(root,"refine.project.json"),[]byte(config),0600);err!=nil{t.Fatal(err)}
+    writePublicationRecord(t,root,"foo","0.1.0",release.PublicationUnpublished,nil)
     var out,stderr bytes.Buffer
     if Run([]string{"project","generate","--root",root,"--package","org.override","--output","generated","--flat"},nil,&out,&stderr)!=0{t.Fatal(out.String(),stderr.String())}
     data,err:=os.ReadFile(filepath.Join(root,"generated","Thing.java"));if err!=nil||!strings.Contains(string(data),"package org.override.foo.snapshot;"){t.Fatal("package/layout override ignored",err)}

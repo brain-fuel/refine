@@ -64,7 +64,7 @@ start :: Int
 start = 1
 type Direct = Int where positive it @message (reason it)
 type Sum = Int where sum [it, 1, -1] == it
-type Map = Int where map (add it) [1, 2] == [it + 1, it + 2]
+type Mapped = Int where map (add it) [1, 2] == [it + 1, it + 2]
 type Filter = Int where filter positive [it, -1] == (if it > 0 then [it] else [])
 type Fold = Int where foldl add it [1, 2] == it + 3
 type Higher = Int where (id positive) it
@@ -156,7 +156,7 @@ func TestGeneratedFunctionExecution(t *testing.T) {
 			vectors = append(vectors, vector{fmt.Sprintf("%s\t%s\t%d\t%d\t%v", name, n, total, clause, bypass), reportLine(report)})
 		}
 	}
-	names := []string{"Direct", "Sum", "Map", "Filter", "Fold", "Higher", "Partial", "Choice", "Constructors", "Patterns", "Literals", "CaseList", "All", "Any", "Nested", "Exactly", "AtLeast", "Nontermination", "SurvivesDepth", "PolymorphicRecursion", "PolyRecovery", "Eager", "Membership", "Unique", "Reverse", "TextLength", "Whole", "Negation", "Constant", "Concrete", "RecordArgument", "EagerFailure", "PartialConstructor", "Annotated", "BuiltinShadow"}
+	names := []string{"Direct", "Sum", "Mapped", "Filter", "Fold", "Higher", "Partial", "Choice", "Constructors", "Patterns", "Literals", "CaseList", "All", "Any", "Nested", "Exactly", "AtLeast", "Nontermination", "SurvivesDepth", "PolymorphicRecursion", "PolyRecovery", "Eager", "Membership", "Unique", "Reverse", "TextLength", "Whole", "Negation", "Constant", "Concrete", "RecordArgument", "EagerFailure", "PartialConstructor", "Annotated", "BuiltinShadow"}
 	names = append(names, inlineNames...)
 	for _, name := range names {
 		for _, n := range []string{"-1", "0", "1"} {

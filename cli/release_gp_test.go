@@ -14,6 +14,7 @@ import (
 
 	"goforge.dev/refine/analysis"
 	"goforge.dev/refine/native"
+	"goforge.dev/refine/project"
 	"goforge.dev/refine/release"
 )
 
@@ -335,17 +336,23 @@ func TestReleaseNoCodegenRemovalRequiresAndAppliesMavenArtifactPlan(t *testing.T
 	}
 	comparison := workflow.reports[0].Comparisons[0]
 	override := `"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"reviewed"}]`
-	policy = `{"release":{"maven":{"current":"1.0.0","intended":"1.1.0","previouslyGenerated":[{"family":"foo","version":"1.0.0"}]}},"families":{"foo":{"root":"Foo","noCodegen":["v1.0.0"],"release":{"change":"documentation","intended":"1.0.1",` + override + `}}}}`
+	policy = `{"release":{"maven":{"current":"1.0.0","intended":"1.1.0"}},"families":{"foo":{"root":"Foo","noCodegen":["v1.0.0"],"release":{"change":"documentation","intended":"1.0.1",` + override + `}}}}`
 	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
 	}
+	inventory := generatedSourceInventory(t, root, "target/generated-sources/refine/foo/v1_0_0")
+	writePublicationRecord(t, root, "foo", "1.0.0", release.PublicationPublished, inventory)
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
-	if err != nil || workflow.maven == nil || !workflow.maven.Ready || workflow.maven.RequiredChange != release.ArtifactFeatureChange {
-		t.Fatalf("Maven removal plan: %v %+v", err, workflow.maven)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.effectiveMaven = release.MavenCoordinates{GroupID: "dev.example", ArtifactID: "models", Version: "1.1.0"}
+	if err = checkWorkflowPublication(&workflow, project.OwnedAddition{}); err != nil || workflow.maven == nil || !workflow.maven.Ready || workflow.maven.RequiredChange != release.ArtifactFeatureChange {
+		t.Fatalf("publication Maven removal plan: %v %+v", err, workflow.maven)
 	}
 	out.Reset()
 	stderr.Reset()
-	if code := releaseCommand([]string{"promote", "--root", root, "--json"}, &out, &stderr); code != 0 {
+	if code := releaseCommand([]string{"promote", "--root", root, "--json", "--maven-group-id", "dev.example", "--maven-artifact-id", "models", "--maven-version", "1.1.0"}, &out, &stderr); code != 0 {
 		t.Fatalf("no-codegen promotion: %d %s %s", code, &out, &stderr)
 	}
 	if _, err = os.Stat(oldJava); !os.IsNotExist(err) {
@@ -358,7 +365,7 @@ func TestReleaseNoCodegenRemovalRequiresAndAppliesMavenArtifactPlan(t *testing.T
 
 func TestReleaseNativeBundlePlanningUsesExactBundleIdentity(t *testing.T) {
 	files := map[string]string{"schemata/foo/v1.0.0.refined.json": nativeBundleFixture(t, "published.one"), "schemata/foo/SNAPSHOT.refined.json": nativeBundleFixture(t, "published.two")}
-	config := `{"families":{"foo":{"formats":["json-schema"],"release":{"change":"documentation","intended":"1.0.1"}}}}`
+	config := `{"families":{"foo":{"formats":["json-schema"],"release":{"change":"feature","intended":"1.1.0"}}}}`
 	root := releaseFixture(t, files, config)
 	workflow, err := buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil {
@@ -375,7 +382,7 @@ func TestReleaseNativeBundlePlanningUsesExactBundleIdentity(t *testing.T) {
 	if comparison.Native.Outcome != analysis.Unknown || comparison.JavaABI.Outcome != analysis.Unknown {
 		t.Fatalf("native unknown dimensions not reported: %+v", comparison)
 	}
-	override := `{"families":{"foo":{"formats":["json-schema"],"release":{"change":"documentation","intended":"1.0.1","overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native wire and Java ABI reviewed from the exact bundle"}]}}}}`
+	override := `{"families":{"foo":{"formats":["json-schema"],"release":{"change":"feature","intended":"1.1.0","overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native wire and Java ABI reviewed from the exact bundle"}]}}}}`
 	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(override), 0600); err != nil {
 		t.Fatal(err)
 	}

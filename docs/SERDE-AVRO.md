@@ -22,7 +22,7 @@ evaluating Refine predicates. A structurally unrepresentable candidate returns
 false; codec resource limits and unexpected enforcement failures propagate, so
 bounded or indeterminate checks cannot be mistaken for schema rejection.
 
-The adapter supports records (including recursive records), arrays, `int`,
+The adapter supports records (including recursive records), arrays, maps, `int`,
 `long`, `float`, `double`, `string`, `boolean`, bytes, fixed, enums, two-branch
 nullable unions, and native-projected named unions. Avro floating values become
 their exact binary rational values; non-finite inputs and writes that would need
@@ -30,6 +30,9 @@ rounding are rejected. General union constructors are paired to the reader
 schema by branch order during generation and registered by schema object
 identity at runtime, so branches are not guessed from JSON labels or collapsed
 after decode. Enum constructors are similarly paired with exact wire symbols.
+Avro maps correspond only to `Map String a`. Keys are decoded as exact strings,
+duplicate decoded keys are rejected, semantic maps use canonical UTF-16 key
+order, and binary/JSON writes reject unpaired surrogate keys before output.
 
 Explicit native scalar metadata supports canonical decimal strings for
 arbitrary `Int`, exact RFC 3339 strings for `Timestamp`, reduced rational records
@@ -37,7 +40,15 @@ whose integer components use minimal signed two's-complement bytes, and Avro
 bytes/fixed decimal for `Real`. Decimal writes reject values requiring rounding
 or exceeding precision. Logical UUID, time-of-day, and decimal constraints are
 checked; standard date/timestamp integer logical types retain their exact Avro
-integer representation. Avro `big-decimal` remains fail-closed.
+integer representation. Avro 1.12 `big-decimal` is supported only as its native
+physical `[UInt8]` value: an outer Avro `bytes` datum containing a nested Avro
+`bytes` two's-complement unscaled integer followed by a signed 32-bit Avro
+`int` scale. The nested value must contain exactly those two fields, the
+unscaled byte sequence must be nonempty, and all lengths and varints remain
+bounded. Legal redundant sign-extension bytes and negative scales are preserved
+exactly. This does not imply a fixed scale, precision, canonical byte spelling,
+or a mapping to semantic `Real`; those still require an explicit representable
+wire policy.
 
 Binary input is schema-walked before Apache Avro decoding. This bounds declared
 lengths and collection blocks before allocation, validates UTF-8 and the entire
@@ -55,8 +66,9 @@ pins Avro's Jackson 2.17.2, Commons Compress 1.26.2 dependency closure, and SLF4
 coexist with the separately generated Jackson 3 adapter, whose packages are
 `tools.jackson.*`.
 
-Remaining unsupported representations are Avro maps (the language has no map
-payload type), `big-decimal`, open generic roots, and edited union declarations
+Remaining unsupported representations include semantic `Real` coercion for
+`big-decimal`, open generic roots,
+and edited union declarations
 that do not retain the native projection's one-value-per-branch shape. Unknown
 logical types follow their underlying supported Avro representation, consistent
 with Avro 1.12. This generator does not replace native schema validation;

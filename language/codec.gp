@@ -64,6 +64,8 @@ func (e *evaluator) decodeLiteral(expr *Expr,at Span)evalValue {
     case RecordLiteral(fields):
         e.step(uint64(len(fields)),at);result:=make([]evalField,len(fields));for i,field:=range fields{result[i]=evalField{name:field.Name,value:e.decodeLiteral(field.Value,at)}}
         return evalValue{form:EvalRecord(result)}
+    case MapLiteral(entries):
+        e.step(uint64(len(entries)),at);result:=make([]evalMapEntry,len(entries));for i,entry:=range entries{key,err:=value.ReadText(entry.Key);if err!=nil{readError(at,"invalid map key")};result[i]=evalMapEntry{key:key,value:e.decodeLiteral(entry.Value,at)}};return e.mapValue(result,at)
     case Variable(name):
         if !uppercase(name){readError(at,"functions and variables are not readable values")}
         return evalValue{form:EvalVariant(name,nil)}

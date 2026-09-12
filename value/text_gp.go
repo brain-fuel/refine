@@ -36,6 +36,30 @@ func (t Text) Equal(other Text) bool {
 	}
 	return true
 }
+
+// Compare returns exact UTF-16 code-unit order without allocating or applying
+// Unicode normalization. It is the canonical order for typed map keys.
+func (t Text) Compare(other Text) int {
+	limit := len(t.units)
+	if len(other.units) < limit {
+		limit = len(other.units)
+	}
+	for i := 0; i < limit; i++ {
+		if t.units[i] < other.units[i] {
+			return -1
+		}
+		if t.units[i] > other.units[i] {
+			return 1
+		}
+	}
+	if len(t.units) < len(other.units) {
+		return -1
+	}
+	if len(t.units) > len(other.units) {
+		return 1
+	}
+	return 0
+}
 func (t Text) Concat(other Text) Text {
 	units := make([]uint16, 0, len(t.units)+len(other.units))
 	units = append(units, t.units...)

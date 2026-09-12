@@ -40,6 +40,9 @@ type Member struct { Key value.Text; Value Node }
 
 func (n Node) Kind() Kind { if n.kind == nil { return Null() }; return n.kind }
 func (n Node) Raw() string { if n.raw == "" { return "null" }; return n.raw }
+// MemberCount reports object cardinality without copying the immutable member
+// slice, allowing allocation preflight before Members.
+func (n Node) MemberCount() int { return len(n.members) }
 func (n Node) Members() []Member { return append([]Member(nil), n.members...) }
 func (n Node) Elements() []Node { return append([]Node(nil), n.elements...) }
 func (n Node) Text() (value.Text, bool) { return n.text, KindName(n.Kind()) == "string" }

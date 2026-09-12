@@ -239,6 +239,9 @@ func describeType(t *language.Type) string {
 		constructor := __gp_m0.Constructor
 		arg := __gp_m0.Argument
 
+		if name, args, ok := appliedType(constructor, arg); ok && name == "Map" && len(args) == 2 {
+			return "an immutable exact-string-keyed map whose values each have " + describeType(args[1]) + "; entry order is not semantic and keys are never normalized"
+		}
 		switch __gp_m1 := any(constructor.Form).(type) {
 		case language.NamedType:
 			name := __gp_m1.Name
@@ -257,31 +260,50 @@ func describeType(t *language.Type) string {
 	}
 }
 
+func appliedType(constructor, arg *language.Type) (string, []*language.Type, bool) {
+	root := &language.Type{Form: language.AppliedType{Constructor: constructor, Argument: arg}}
+	args := []*language.Type{}
+	for {
+		switch __gp_m2 := any(root.Form).(type) {
+		case language.AppliedType:
+			fn := __gp_m2.Constructor
+			item := __gp_m2.Argument
+			args = append([]*language.Type{item}, args...)
+			root = fn
+		case language.NamedType:
+			name := __gp_m2.Name
+			return name, args, true
+		default:
+			return "", nil, false
+		}
+	}
+}
+
 func (b *builder) typ(owner, location string, t *language.Type) {
-	switch __gp_m2 := any(t.Form).(type) {
+	switch __gp_m3 := any(t.Form).(type) {
 	case language.NamedType:
 
 	case language.ListType:
-		element := __gp_m2.Element
+		element := __gp_m3.Element
 		b.typ(owner, location+" / each list element", element)
 	case language.AppliedType:
-		constructor := __gp_m2.Constructor
-		arg := __gp_m2.Argument
+		constructor := __gp_m3.Constructor
+		arg := __gp_m3.Argument
 		b.typ(owner, location+" / type constructor", constructor)
 		b.typ(owner, location+" / type argument", arg)
 	case language.ArrowType:
-		arg := __gp_m2.Argument
-		result := __gp_m2.Result
+		arg := __gp_m3.Argument
+		result := __gp_m3.Result
 		b.typ(owner, location+" / function argument", arg)
 		b.typ(owner, location+" / function result", result)
 	case language.RecordType:
-		fields := __gp_m2.Fields
+		fields := __gp_m3.Fields
 		for _, field := range fields {
 			b.typ(owner, location+" / field "+field.Name, field.Type)
 		}
 	case language.RefinedType:
-		base := __gp_m2.Base
-		rules := __gp_m2.Rules
+		base := __gp_m3.Base
+		rules := __gp_m3.Rules
 
 		b.typ(owner, location, base)
 		for _, rule := range rules {
@@ -314,18 +336,18 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 	b.doc.instructions = append(b.doc.instructions, Instruction{ID: id})
 	child := func(value *language.Expr) string { return b.expr(owner, value) }
 	english := ""
-	switch __gp_m3 := any(e.Form).(type) {
+	switch __gp_m4 := any(e.Form).(type) {
 	case language.NumberLiteral:
-		text := __gp_m3.Text
+		text := __gp_m4.Text
 		english = "Return the exact numeric literal " + text + "."
 	case language.TextLiteral:
-		raw := __gp_m3.Quoted
+		raw := __gp_m4.Quoted
 		english = "Return the text literal " + raw + " after decoding its language escapes, without normalization."
 	case language.BoolLiteral:
-		v := __gp_m3.Value
+		v := __gp_m4.Value
 		english = fmt.Sprintf("Return %t.", v)
 	case language.Variable:
-		name := __gp_m3.Name
+		name := __gp_m4.Name
 
 		if b.locals[name] {
 			english = "Use the lexically bound value " + name + "."
@@ -339,7 +361,7 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 			english = "Use the lexically bound value or declared constructor " + name + "."
 		}
 	case language.ListLiteral:
-		items := __gp_m3.Elements
+		items := __gp_m4.Elements
 
 		parts := []string{}
 		for _, item := range items {
@@ -347,24 +369,32 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 		}
 		english = "Evaluate [" + strings.Join(parts, ", ") + "] from left to right and return the resulting ordered list."
 	case language.RecordLiteral:
-		fields := __gp_m3.Fields
+		fields := __gp_m4.Fields
 
 		parts := []string{}
 		for _, field := range fields {
 			parts = append(parts, field.Name+" from "+child(field.Value))
 		}
 		english = "Evaluate and construct a new record with " + strings.Join(parts, "; ") + "."
+	case language.MapLiteral:
+		entries := __gp_m4.Entries
+
+		parts := []string{}
+		for _, entry := range entries {
+			parts = append(parts, entry.Key+" from "+child(entry.Value))
+		}
+		english = "Evaluate and construct an immutable string-keyed map with " + strings.Join(parts, "; ") + ". Entry order is not semantic; decoded UTF-16 keys are exact and are not normalized."
 	case language.Project:
-		record := __gp_m3.Record
-		field := __gp_m3.Field
+		record := __gp_m4.Record
+		field := __gp_m4.Field
 		english = "Evaluate " + child(record) + ", then select its field " + field + "."
 	case language.Apply:
-		fn := __gp_m3.Function
-		arg := __gp_m3.Argument
+		fn := __gp_m4.Function
+		arg := __gp_m4.Argument
 		english = "Evaluate function " + child(fn) + ", then argument " + child(arg) + ", and apply the former to the latter. Arguments are eager even when unused; partial applications retain supplied arguments. Apply any declared argument/result refinements at their corresponding boundary."
 	case language.Unary:
-		op := __gp_m3.Operator
-		operand := __gp_m3.Operand
+		op := __gp_m4.Operator
+		operand := __gp_m4.Operand
 
 		operation := "negate numerically"
 		if op == "!" {
@@ -372,9 +402,9 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 		}
 		english = "Evaluate " + child(operand) + ", then " + operation + "; fixed-width overflow is an evaluation error."
 	case language.Binary:
-		op := __gp_m3.Operator
-		left := __gp_m3.Left
-		right := __gp_m3.Right
+		op := __gp_m4.Operator
+		left := __gp_m4.Left
+		right := __gp_m4.Right
 
 		a, c := child(left), child(right)
 		switch op {
@@ -386,15 +416,15 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 			english = "Evaluate " + a + " and then " + c + "; " + binaryMeaning(op) + "."
 		}
 	case language.Conditional:
-		condition := __gp_m3.Condition
-		yes := __gp_m3.Then
-		no := __gp_m3.Else
+		condition := __gp_m4.Condition
+		yes := __gp_m4.Then
+		no := __gp_m4.Else
 		english = "Evaluate " + child(condition) + ". If true, evaluate and return only " + child(yes) + "; otherwise evaluate and return only " + child(no) + "."
 	case language.Let:
-		name := __gp_m3.Name
-		annotation := __gp_m3.Annotation
-		bound := __gp_m3.Value
-		body := __gp_m3.Body
+		name := __gp_m4.Name
+		annotation := __gp_m4.Annotation
+		bound := __gp_m4.Value
+		body := __gp_m4.Body
 
 		value := child(bound)
 		check := ""
@@ -409,8 +439,8 @@ func (b *builder) expr(owner string, e *language.Expr) string {
 		b.locals = old
 		english = "Evaluate " + value + "." + check + " Bind that value to " + name + " in the body, then evaluate and return " + next + "; the binding does not mutate an existing value."
 	case language.Case:
-		subject := __gp_m3.Value
-		arms := __gp_m3.Arms
+		subject := __gp_m4.Value
+		arms := __gp_m4.Arms
 
 		entry := child(subject)
 		parts := []string{}
@@ -439,23 +469,23 @@ func copyBindings(input map[string]bool) map[string]bool {
 	return out
 }
 func bindPattern(p *language.Pattern, bindings map[string]bool) {
-	switch __gp_m4 := any(p.Form).(type) {
+	switch __gp_m5 := any(p.Form).(type) {
 	case language.BindPattern:
-		name := __gp_m4.Name
+		name := __gp_m5.Name
 		bindings[name] = true
 	case language.ConstructorPattern:
-		args := __gp_m4.Arguments
+		args := __gp_m5.Arguments
 		for _, arg := range args {
 			bindPattern(arg, bindings)
 		}
 	case language.ListPattern:
-		items := __gp_m4.Elements
+		items := __gp_m5.Elements
 		for _, item := range items {
 			bindPattern(item, bindings)
 		}
 	case language.ConsPattern:
-		head := __gp_m4.Head
-		tail := __gp_m4.Tail
+		head := __gp_m5.Head
+		tail := __gp_m5.Tail
 		bindPattern(head, bindings)
 		bindPattern(tail, bindings)
 	case language.WildPattern:
@@ -500,33 +530,33 @@ func binaryMeaning(op string) string {
 }
 
 func describePattern(p *language.Pattern) string {
-	switch __gp_m5 := any(p.Form).(type) {
+	switch __gp_m6 := any(p.Form).(type) {
 	case language.BindPattern:
-		name := __gp_m5.Name
+		name := __gp_m6.Name
 		return "accept any value and bind it as " + name
 	case language.WildPattern:
 		return "accept any value without binding it"
 	case language.LiteralPattern:
-		e := __gp_m5.Value
+		e := __gp_m6.Value
 		return "require equality with literal " + language.FormatExpression(e)
 	case language.ConstructorPattern:
-		name := __gp_m5.Name
-		args := __gp_m5.Arguments
+		name := __gp_m6.Name
+		args := __gp_m6.Arguments
 		parts := []string{}
 		for _, arg := range args {
 			parts = append(parts, describePattern(arg))
 		}
 		return "require constructor " + name + " and match its arguments in order [" + strings.Join(parts, "; ") + "]"
 	case language.ListPattern:
-		items := __gp_m5.Elements
+		items := __gp_m6.Elements
 		parts := []string{}
 		for _, item := range items {
 			parts = append(parts, describePattern(item))
 		}
 		return "require exactly " + fmt.Sprint(len(items)) + " list elements and match them in order [" + strings.Join(parts, "; ") + "]"
 	case language.ConsPattern:
-		head := __gp_m5.Head
-		tail := __gp_m5.Tail
+		head := __gp_m6.Head
+		tail := __gp_m6.Tail
 		return "require a nonempty list; for its first element, " + describePattern(head) + "; for its remaining list, " + describePattern(tail)
 	default:
 		panic("goplus: impossible enum value in match")

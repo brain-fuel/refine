@@ -1,0 +1,29 @@
+package testplan
+
+import (
+    "fmt"
+    "go/parser"
+    "go/token"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "sort"
+    "strconv"
+    "strings"
+)
+
+// IncludeChangedTestImports accounts for initialization in normally imported
+// packages, even when only an unrelated ordinary test references that import.
+// Unchanged import lists do not broaden helper-based target selection. Missing
+// historical files or unreadable evidence conservatively affect every target
+// in the owning package. Called only with a validated, available base revision.
+func IncludeChangedTestImports(root,base string,changed []string,packages []Package)error{
+    if base=="HEAD"||!revision(base){return fmt.Errorf("test import baseline must be a hexadecimal commit ID")}
+    files:=[]string{};for _,file:=range changed{if strings.Contains(file,"/testdata/")||strings.HasPrefix(file,"testdata/"){continue};if strings.HasSuffix(file,"_test.gp"){files=append(files,strings.TrimSuffix(file,"_test.gp")+"_gp_test.go")}else if strings.HasSuffix(file,"_test.go"){files=append(files,file)}}
+    for _,file:=range uniqueSorted(files){for p:=range packages{pkg:=&packages[p];if !contains(pkg.TestFiles,file){continue};command:=exec.Command("git","cat-file","blob",base+":"+file);command.Dir=root;old,oldErr:=command.Output();next,nextErr:=os.ReadFile(filepath.Join(root,filepath.FromSlash(file)));if nextErr!=nil{return fmt.Errorf("read current test import evidence: %w",nextErr)};equal:=false;if oldErr==nil{var err error;equal,err=sameTestImports(old,next);if err!=nil{return err}};if equal{continue};for i:=range pkg.Targets{inputs:=append([]string(nil),pkg.Targets[i].Inputs...);pkg.Targets[i].Inputs=uniqueSorted(append(inputs,file))}}};return nil
+}
+
+func sameTestImports(old,next []byte)(bool,error){
+    imports:=func(source []byte)(string,error){file,err:=parser.ParseFile(token.NewFileSet(),"imports_test.go",source,parser.ImportsOnly);if err!=nil{return "",err};paths:=[]string{};for _,item:=range file.Imports{value,err:=strconv.Unquote(item.Path.Value);if err!=nil{return "",err};paths=append(paths,value)};sort.Strings(paths);return strings.Join(paths,"\x00"),nil}
+    left,err:=imports(old);if err!=nil{return false,err};right,err:=imports(next);if err!=nil{return false,err};return left==right,nil
+}

@@ -47,6 +47,11 @@ type VariantData struct{}
 
 func (VariantData) isDataKind() {}
 
+//goplus:variant (DataKind) MapData
+type MapData struct{}
+
+func (MapData) isDataKind() {}
+
 // DataKindCases selects one handler per DataKind variant for Fold.
 type DataKindCases[R any] struct {
 	NumberData  func() R
@@ -55,6 +60,7 @@ type DataKindCases[R any] struct {
 	ListData    func() R
 	RecordData  func() R
 	VariantData func() R
+	MapData     func() R
 }
 
 // Fold reduces DataKind by one-level case analysis.
@@ -72,6 +78,8 @@ func Fold[R any](d DataKind, cs DataKindCases[R]) R {
 		return cs.RecordData()
 	case VariantData:
 		return cs.VariantData()
+	case MapData:
+		return cs.MapData()
 	default:
 		panic("goplus: impossible enum value in Fold")
 	}
@@ -86,6 +94,7 @@ type DataKindEqOverrides struct {
 	ListData    func(x, y ListData) (eq, handled bool)
 	RecordData  func(x, y RecordData) (eq, handled bool)
 	VariantData func(x, y VariantData) (eq, handled bool)
+	MapData     func(x, y MapData) (eq, handled bool)
 }
 
 // DataKindEqualWith reports structural equality of a and b under ov.
@@ -166,6 +175,18 @@ func DataKindEqualWith(a, b DataKind, ov DataKindEqOverrides) bool {
 		}
 		_ = y
 		return true
+	case MapData:
+		y, ok := any(b).(MapData)
+		if !ok {
+			return false
+		}
+		if ov.MapData != nil {
+			if eq, handled := ov.MapData(x, y); handled {
+				return eq
+			}
+		}
+		_ = y
+		return true
 	}
 	return false
 }
@@ -182,10 +203,15 @@ type dataNode struct {
 	boolean bool
 	items   []Data
 	fields  []DataField
+	entries []MapEntry
 	name    string
 }
 type DataField struct {
 	Name  string
+	Value Data
+}
+type MapEntry struct {
+	Key   Text
 	Value Data
 }
 
@@ -194,6 +220,43 @@ func OfText(t Text) Data     { return Data{node: &dataNode{kind: TextData{}, tex
 func OfBool(b bool) Data     { return Data{node: &dataNode{kind: BoolData{}, boolean: b}} }
 func List(items []Data) Data {
 	return Data{node: &dataNode{kind: ListData{}, items: append([]Data(nil), items...)}}
+}
+
+// Map constructs an immutable string-keyed map. Entry order has no semantic
+// meaning: construction sorts by exact UTF-16 code units. Escape spelling is
+// already decoded by Text, while case and Unicode normalization remain exact.
+func Map(entries []MapEntry) (Data, error) {
+	copied := append([]MapEntry(nil), entries...)
+	sort.Slice(copied, func(i, j int) bool { return compareTextUnits(copied[i].Key, copied[j].Key) < 0 })
+	for i := 1; i < len(copied); i++ {
+		if copied[i-1].Key.Equal(copied[i].Key) {
+			return Data{}, errors.New("duplicate map key")
+		}
+	}
+	return Data{node: &dataNode{kind: MapData{}, entries: copied}}, nil
+}
+
+func compareTextUnits(a, b Text) int {
+	left, right := a.units, b.units
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	for i := 0; i < limit; i++ {
+		if left[i] < right[i] {
+			return -1
+		}
+		if left[i] > right[i] {
+			return 1
+		}
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return 0
 }
 
 // Record field order is retained. Duplicate names are an error, even if their
@@ -260,6 +323,12 @@ func (d Data) Fields() []DataField {
 	}
 	return append([]DataField(nil), d.node.fields...)
 }
+func (d Data) Entries() []MapEntry {
+	if d.node == nil {
+		return nil
+	}
+	return append([]MapEntry(nil), d.node.entries...)
+}
 
 // Size returns the immediate element/argument/field count without allocating.
 func (d Data) Size() int {
@@ -273,6 +342,8 @@ func (d Data) Size() int {
 		return len(d.node.items)
 	case VariantData:
 		return len(d.node.items)
+	case MapData:
+		return len(d.node.entries)
 	default:
 		return 0
 	}
@@ -294,6 +365,27 @@ func (d Data) Lookup(name string) (Data, bool) {
 			if field.Name == name {
 				return field.Value, true
 			}
+		}
+	}
+	return Data{}, false
+}
+func (d Data) LookupKey(key Text) (Data, bool) {
+	if d.node != nil {
+		switch any(d.Kind()).(type) {
+		case MapData:
+			low, high := 0, len(d.node.entries)
+			for low < high {
+				middle := low + (high-low)/2
+				if compareTextUnits(d.node.entries[middle].Key, key) < 0 {
+					low = middle + 1
+				} else {
+					high = middle
+				}
+			}
+			if low < len(d.node.entries) && d.node.entries[low].Key.Equal(key) {
+				return d.node.entries[low].Value, true
+			}
+		default:
 		}
 	}
 	return Data{}, false
@@ -451,6 +543,30 @@ func (d Data) EqualWith(other Data, step func(uint64) error) (bool, error) {
 			sort.Slice(y, func(i, j int) bool { return y[i].Name < y[j].Name })
 			for i := range x {
 				if x[i].Name != y[i].Name {
+					return false, nil
+				}
+				pending = append(pending, pair{x[i].Value, y[i].Value})
+			}
+		case MapData:
+
+			switch any(b.Kind()).(type) {
+			case MapData:
+			default:
+				return false, nil
+			}
+			if a.Size() != b.Size() {
+				return false, nil
+			}
+			x, y := a.node.entries, b.node.entries
+			keys := uint64(0)
+			for i := range x {
+				keys += uint64(x[i].Key.Length() + y[i].Key.Length())
+			}
+			if err := step(uint64(a.Size())*2 + keys); err != nil {
+				return false, err
+			}
+			for i := range x {
+				if !x[i].Key.Equal(y[i].Key) {
 					return false, nil
 				}
 				pending = append(pending, pair{x[i].Value, y[i].Value})

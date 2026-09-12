@@ -35,6 +35,11 @@ func guardExpression(e *Expr, depth int) {
 		for _, field := range fields {
 			guardExpression(field.Value, depth+1)
 		}
+	case MapLiteral:
+		entries := __gp_m0.Entries
+		for _, entry := range entries {
+			guardExpression(entry.Value, depth+1)
+		}
 	case Apply:
 		fn := __gp_m0.Function
 		arg := __gp_m0.Argument

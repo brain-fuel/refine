@@ -27,10 +27,11 @@ func (p *Project) DecodeAndValidateJSON(input []byte,limits validation.Limits)(v
     return data,target.ValidateData(data,limits),nil
 }
 
-type jsonValueDecoder struct{format Format;metadata WireMetadata;declarations map[string]language.TypeDecl;nodes int;maxDepth int;maxNodes int}
+type jsonValueDecoder struct{format Format;metadata WireMetadata;declarations map[string]language.TypeDecl;nodes int;maxDepth int;maxNodes int;mapOrderingUsed uint64}
 
 func (d *jsonValueDecoder) failure(path,message string)error{return &Error{Code:"native.decode",Format:d.format,Pointer:path,Message:message}}
-func (d *jsonValueDecoder) enter(path string,depth int)error{d.nodes++;if depth>d.maxDepth{return d.failure(path,"JSON value nesting exceeds the checked decoder limit")};if d.nodes>d.maxNodes{return d.failure(path,"JSON value node count exceeds the checked decoder limit")};return nil}
+func (d *jsonValueDecoder) limit(path,message string)error{return &Error{Code:"native.limit",Format:d.format,Pointer:path,Message:message}}
+func (d *jsonValueDecoder) enter(path string,depth int)error{d.nodes++;if depth>d.maxDepth{return d.limit(path,"JSON value nesting exceeds the checked decoder limit")};if d.nodes>d.maxNodes{return d.limit(path,"JSON value node count exceeds the checked decoder limit")};return nil}
 func jsonValuePath(path,name string)string{return path+"/"+strings.ReplaceAll(strings.ReplaceAll(name,"~","~0"),"/","~1")}
 
 func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings map[string]*language.Type,path string,depth int,nominal string)(value.Data,error){
@@ -55,11 +56,18 @@ func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings
         name,args,ok:=jsonApplied(t);if !ok{return value.Data{},d.failure(path,"unsupported applied JSON type")}
         if name=="Maybe"&&len(args)==1{decoded,err:=d.decode(args[0],node,bindings,path,depth+1,"");if err!=nil{return value.Data{},err};return value.Variant("Just",[]value.Data{decoded})}
         if name=="Nullable"&&len(args)==1{if schemajson.KindName(node.Kind())=="null"{return value.Variant("Null",nil)};decoded,err:=d.decode(args[0],node,bindings,path,depth+1,"");if err!=nil{return value.Data{},err};return value.Variant("NonNull",[]value.Data{decoded})}
+        if name=="Map"&&len(args)==2{return d.mapping(args[1],node,bindings,path,depth+1)}
         if name=="Result"{return value.Data{},d.failure(path,"Result JSON decoding requires a declared tagged union with explicit discriminator metadata")}
         decl,found:=d.declarations[name];if !found||len(args)!=len(decl.Parameters){return value.Data{},d.failure(path,"unknown or incorrectly applied generic JSON type")};closed:=map[string]*language.Type{};for key,item:=range bindings{closed[key]=item};for i,param:=range decl.Parameters{argument:=args[i];if bindings!=nil{resolved,subErr:=language.SubstituteType(argument,bindings);if subErr!=nil{return value.Data{},d.failure(path,"generic JSON argument cannot be closed")};argument=resolved};closed[param]=argument};if decl.Body!=nil{return d.decode(decl.Body,node,closed,path,depth+1,name)};return d.union(name,decl.Variants,closed,node,path,depth+1)
     case language.ArrowType(_,_):return value.Data{},d.failure(path,"functions are not JSON payload values")
     }
     return value.Data{},d.failure(path,"unsupported checked JSON type")
+}
+
+func (d *jsonValueDecoder) mapping(element *language.Type,node schemajson.Node,bindings map[string]*language.Type,path string,depth int)(value.Data,error){
+    if schemajson.KindName(node.Kind())!="object"{return value.Data{},d.failure(path,"expected a JSON object for Map String values")};count:=node.MemberCount();if count>d.maxNodes-d.nodes{return value.Data{},d.limit(path,"JSON map values exceed the remaining checked decoder node limit")};members:=node.Members();entries:=make([]value.MapEntry,count)
+    for i,member:=range members{raw,err:=member.Key.UTF8();if err!=nil{return value.Data{},d.failure(path,"JSON map key is not Unicode scalar text")};key,err:=value.TextFromUTF8(raw);if err!=nil{return value.Data{},d.failure(path,"JSON map key is not Unicode scalar text")};decoded,err:=d.decode(element,member.Value,bindings,jsonValuePath(path,raw),depth+1,"");if err!=nil{return value.Data{},err};entries[i]=value.MapEntry{Key:key,Value:decoded}}
+    if err:=consumeNativeMapOrdering(d.format,path,entries,&d.mapOrderingUsed,nativeMapOrderingWorkLimit);err!=nil{return value.Data{},err};result,err:=value.Map(entries);if err!=nil{return value.Data{},d.failure(path,"JSON map contains a duplicate decoded key")};return result,nil
 }
 
 func jsonApplied(t *language.Type)(string,[]*language.Type,bool){root:=t;args:=[]*language.Type{};for{match root.Form{case language.AppliedType(fn,arg):args=append([]*language.Type{arg},args...);root=fn;case language.NamedType(name):return name,args,true;case _:return "",nil,false}}}

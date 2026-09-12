@@ -5,7 +5,10 @@ package java
 
 const dataJava = `
 import java.util.List;
+import java.util.Map;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.Objects;
 
 /** Immutable language payloads. These are not JSON or Avro wire encodings. */
@@ -17,6 +20,17 @@ public sealed interface Data {
     record Text(String value) implements Data { public Text { Objects.requireNonNull(value); } }
     record Bool(boolean value) implements Data {}
     record Sequence(List<Data> values) implements Data { public Sequence { values = List.copyOf(values); } }
+    /** String-keyed language maps. Keys are ordered by exact UTF-16 code units. */
+    record Mapping(Map<String, Data> entries) implements Data {
+        public Mapping {
+            Objects.requireNonNull(entries);
+            var ordered = new java.util.ArrayList<>(entries.entrySet());
+            ordered.sort(Map.Entry.comparingByKey());
+            var copy = new LinkedHashMap<String, Data>();
+            for (var entry : ordered) copy.put(Objects.requireNonNull(entry.getKey()), Objects.requireNonNull(entry.getValue()));
+            entries = Collections.unmodifiableMap(copy);
+        }
+    }
     record Field(String name, Data value) {
         public Field { Objects.requireNonNull(name); Objects.requireNonNull(value); if (name.isEmpty()) throw new IllegalArgumentException("empty record field"); }
     }

@@ -125,6 +125,12 @@ func (m *modelEmitter) witness(t *language.Type) string {
 	case language.AppliedType:
 
 		name, args := applied(t)
+		if name == "Map" {
+			if len(args) != 2 {
+				unsupported(t.At, "Map requires String keys and one value type")
+			}
+			return "ModelTypes.mapping(" + m.witness(args[1]) + ")"
+		}
 		parts := []string{}
 		for _, arg := range args {
 			parts = append(parts, m.witness(arg))
@@ -271,6 +277,10 @@ public final class ModelTypes {
     public static <T> ModelType<java.util.List<T>> list(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);
         return ModelType.of(ModelType.list(element.type),(value,where) -> ModelSupport.list(value,element::encode,where),raw -> ModelSupport.list(raw,element::decode),element);
+    }
+    public static <T> ModelType<java.util.Map<String,T>> mapping(ModelType<T> element) {
+        java.util.Objects.requireNonNull(element);
+        return ModelType.of(ModelType.applied(ModelType.applied(ModelType.named("Map"),ModelType.named("String")),element.type),(value,where) -> ModelSupport.mapping(value,element::encode,where),raw -> ModelSupport.mapping(raw,element::decode),element);
     }
     public static <T> ModelType<ModelMaybe<T>> maybe(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);

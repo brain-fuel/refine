@@ -118,7 +118,7 @@ func primitive(name string) bool {
 }
 func (c *checker) arity(name string, at Span) int {
     if primitive(name) { return 0 }
-    switch name { case "Maybe", "Nullable": return 1; case "Result": return 2 }
+    switch name { case "Maybe", "Nullable": return 1; case "Result", "Map": return 2 }
     if decl, ok := c.declarations[name]; ok { return len(decl.Parameters) }
     typeError(at,"unknown type " + name); return 0
 }
@@ -148,6 +148,7 @@ func (c *checker) typ(t *Type, variables map[string]*term, allowNew bool, rigid 
             if !uppercase(name) { typeError(root.At,"higher-kinded type parameters require an explicit supported constructor") }
             if c.arity(name,t.At) != len(arguments) { typeError(t.At,"wrong number of arguments for " + name) }
             args := make([]*term,len(arguments)); for i, arg := range arguments { args[i] = c.typ(arg,variables,allowNew,rigid) }
+            if name=="Map"{c.assign(base("String"),args[0],arguments[0].At);key:=c.underlying(args[0],arguments[0].At);if key.name!="String"||len(key.rules)>0{typeError(arguments[0].At,"Map keys must be exactly String")}}
             return base(name,args...)
         case _: typeError(root.At,"expected a named type constructor")
         }
@@ -203,6 +204,11 @@ var builtinSignatures = map[string]string{
     "foldl":"(a -> b -> a) -> a -> [b] -> a", "reverse":"[a] -> [a]",
     "satisfiesAll":"[a -> Bool] -> a -> Bool", "satisfiesOnlyOneOf":"[a -> Bool] -> a -> Bool",
     "satisfiesOneOf":"[a -> Bool] -> a -> Bool", "satisfiesAtLeastOneOf":"[a -> Bool] -> a -> Bool",
+    "lookup":"String -> Map String a -> Maybe a", "member":"String -> Map String a -> Bool",
+    "keys":"Map String a -> [String]", "values":"Map String a -> [a]", "size":"Map String a -> Int",
+    "insert":"String -> a -> Map String a -> Map String a", "delete":"String -> Map String a -> Map String a",
+    "mapValues":"(a -> b) -> Map String a -> Map String b", "filterValues":"(a -> Bool) -> Map String a -> Map String a",
+    "allValues":"(a -> Bool) -> Map String a -> Bool", "anyValues":"(a -> Bool) -> Map String a -> Bool",
     "matches":"String -> String -> Bool", "search":"String -> String -> Bool",
     "isInteger":"Real -> Bool",
     "toReal":"Int -> Real", "toInteger":"Real -> Result String Int",
@@ -276,6 +282,8 @@ func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
         return base("[]",element)
     case RecordLiteral(fields):
         result := base("{}"); for _, field := range fields { result.fields = append(result.fields,typedField{name:field.Name,typ:c.expression(field.Value,env)}) }; return result
+    case MapLiteral(entries):
+        element:=c.fresh(false);for _,entry:=range entries{c.assign(element,c.expression(entry.Value,env),entry.Value.At)};return base("Map",base("String"),element)
     case Apply(fn, arg):
         function := c.prune(c.expression(fn,env)); argument := c.expression(arg,env)
         if function.variable != 0 && !function.rigid { result := c.fresh(false); c.unify(function,arrow(argument,result),e.At); return result }
@@ -398,7 +406,7 @@ func checkModule(module *Module,payload *Type)*Program {
     module.functionScopes=make(map[string]map[string]string)
     module.declarationScopes=make(map[string]map[string]string)
     for _, declaration := range module.Types {
-        if primitive(declaration.Name) || declaration.Name == "Maybe" || declaration.Name == "Nullable" || declaration.Name == "Result" { typeError(declaration.At,"cannot redefine a built-in type") }
+        if primitive(declaration.Name) || declaration.Name == "Maybe" || declaration.Name == "Nullable" || declaration.Name == "Result" || declaration.Name=="Map" { typeError(declaration.At,"cannot redefine a built-in type") }
         seen := make(map[string]bool)
         for _, parameter := range declaration.Parameters { if seen[parameter] { typeError(declaration.At,"duplicate type parameter") }; seen[parameter] = true }
         c.declarations[declaration.Name] = declaration

@@ -53,7 +53,9 @@ The generator supports booleans, strings, exact rational reals, finite exact
 `Float32`/`Float64`, RFC 3339 timestamps, arbitrary and fixed-width integers
 (through the backend's 65,536-bit resource bound), lists, records, nominal
 aliases, closed applications of generic aliases and tagged unions, refinements,
-and `Maybe`/`Nullable`/`Result` payload constructors. Closed recursive generic
+exact string-keyed maps, and `Maybe`/`Nullable`/`Result` payload constructors.
+Map strategies generate bounded unique canonical keys and recursively use the
+value strategy. Closed recursive generic
 unions and records use a derived finite-base strategy: lists cut to empty,
 optional/nullable values cut to their empty constructor, unions retain finite
 alternatives, and required record fields must themselves have a finite base.

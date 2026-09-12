@@ -150,6 +150,13 @@ func (e *initializer) expr(expr *language.Expr, scope map[string]bool) string {
 			names = append(names, field.Name)
 			args = append(args, child(field.Value))
 		}
+	case language.MapLiteral:
+		entries := __gp_m0.Entries
+		kind = "map"
+		for _, entry := range entries {
+			names = append(names, entry.Key)
+			args = append(args, child(entry.Value))
+		}
 	case language.Apply:
 		fn := __gp_m0.Function
 		arg := __gp_m0.Argument

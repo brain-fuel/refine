@@ -51,6 +51,10 @@ func (m evalMachine) visit(expr *Expr,env map[string]evalValue,types map[string]
         case RecordLiteral(fields):
             expressions:=make([]*Expr,len(fields));for i,field:=range fields{expressions[i]=field.Value}
             m.values(expressions,env,types,expr.At,func(values []evalValue){out:=make([]evalField,len(values));for i,value:=range values{out[i]=evalField{name:fields[i].Name,value:value}};m.work.complete(done,evalValue{form:EvalRecord(out)})})
+        case MapLiteral(entries):
+            e.step(uint64(len(entries)),expr.At)
+            expressions:=make([]*Expr,len(entries));for i,entry:=range entries{expressions[i]=entry.Value}
+            m.valuesCharged(expressions,env,types,expr.At,func(values []evalValue){out:=make([]evalMapEntry,len(values));for i,item:=range values{key,err:=value.ReadText(entries[i].Key);if err!=nil{evalError(entries[i].At,"evaluation.text","invalid map key")};out[i]=evalMapEntry{key:key,value:item}};m.work.complete(done,e.mapValue(out,expr.At))})
         case Apply(fn,arg):m.visit(fn,env,types,func(function evalValue){m.visit(arg,env,types,func(argument evalValue){m.apply(function,argument,types,expr.At,done)})})
         case Project(record,field):m.visit(record,env,types,func(value evalValue){
             match value.form{case EvalRecord(fields):for _,member:=range fields{e.step(1,expr.At);if member.name==field{m.work.complete(done,member.value);return}};evalError(expr.At,"evaluation.field","record field is missing");case _:evalError(expr.At,"evaluation.type","projection requires a record")}
@@ -76,7 +80,11 @@ func (m evalMachine) visit(expr *Expr,env map[string]evalValue,types map[string]
 func readSourceText(raw string)(value.Text,error){return value.ReadText(raw)}
 
 func (m evalMachine) values(expressions []*Expr,env map[string]evalValue,types map[string]typeBinding,at Span,done func([]evalValue)) {
-    m.evaluator.step(uint64(len(expressions)),at);result:=make([]evalValue,0,len(expressions));index:=0;var next func()
+    m.evaluator.step(uint64(len(expressions)),at);m.valuesCharged(expressions,env,types,at,done)
+}
+
+func (m evalMachine) valuesCharged(expressions []*Expr,env map[string]evalValue,types map[string]typeBinding,at Span,done func([]evalValue)) {
+    result:=make([]evalValue,0,len(expressions));index:=0;var next func()
     next=func(){if index==len(expressions){done(result);return};expr:=expressions[index];index++;m.visit(expr,env,types,func(item evalValue){result=append(result,item);m.work.later(next)})};m.work.later(next)
 }
 
@@ -140,6 +148,11 @@ func (m evalMachine) builtin(name string,args []evalValue,types map[string]typeB
     case "map","filter":
         items:=itemsOf(args[1],at);e.step(uint64(len(items)),at);result:=[]evalValue{};index:=0;var next func()
         next=func(){if index==len(items){m.work.complete(done,evalValue{form:EvalList(result)});return};item:=items[index];index++;m.apply(args[0],item,types,at,func(value evalValue){if name=="map"{result=append(result,value)}else if boolean(value,at){result=append(result,item)};m.work.later(next)})};m.work.later(next)
+    case "mapValues","filterValues":
+        entries:=mapEntriesOf(args[1],at);e.step(uint64(len(entries)),at);result:=[]evalMapEntry{};index:=0;var next func()
+        next=func(){if index==len(entries){m.work.complete(done,e.mapValue(result,at));return};entry:=entries[index];index++;m.apply(args[0],entry.value,types,at,func(mapped evalValue){if name=="mapValues"{result=append(result,evalMapEntry{key:entry.key,value:mapped})}else if boolean(mapped,at){result=append(result,entry)};m.work.later(next)})};m.work.later(next)
+    case "allValues","anyValues":
+        entries:=mapEntriesOf(args[1],at);e.step(uint64(len(entries)),at);items:=make([]evalValue,len(entries));for i,entry:=range entries{items[i]=entry.value};mode:="all";if name=="anyValues"{mode="any"};m.combine(mode,[]evalValue{args[0],evalValue{form:EvalList(items)}},types,at,done)
     case "foldl":
         items:=itemsOf(args[2],at);result:=args[1];index:=0;var next func()
         next=func(){if index==len(items){m.work.complete(done,result);return};item:=items[index];index++;e.step(1,at);m.apply(args[0],result,types,at,func(fn evalValue){m.apply(fn,item,types,at,func(value evalValue){result=value;m.work.later(next)})})};m.work.later(next)

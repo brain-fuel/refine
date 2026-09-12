@@ -117,6 +117,8 @@ promotion.
 - adds the generated source, resource, and test-source directories; and
 - supplies a fixed ZIP-compatible `project.build.outputTimestamp` for reproducible
   archive timestamps, overridable by the project's build policy.
+- passes Maven's evaluated `${project.groupId}`, `${project.artifactId}`, and
+  `${project.version}` to generation for publication-sensitive removal checks.
 
 It also adds Jackson databind 3.2.1, networknt 3.0.7, Apache Avro 1.12.0,
 test-scoped `org.jetbrains:jetCheck:0.3.0`,
@@ -137,6 +139,27 @@ schema-family-major removal policy: removing generated classes from a previous
 family major requires a major artifact bump, while removal within the current
 family major requires a minor artifact bump. A newly present `no-codegen` family
 major still establishes the current family major.
+
+Ordinary `project generate` and `release promote` additionally use the same
+`release.PlanPublication` gate before an owned Java source can be deleted. The
+default checked-in ledger is `refine.publications.json`; it can be changed with
+`release.maven.publicationLedger`. A fresh project with no removal and no ledger
+needs no release configuration. Once a released version is excluded by
+`noCodegen`, however, that exact family/version must have either a `published`
+or `unpublished` record. Each record is bound to the immutable schema SHA-256,
+the sorted generated-source path/digest inventory, a reason, and a canonical
+`inventorySha256` computed by `release.PublicationInventoryDigest`. A published
+record must also contain the exact artifact version and SHA-256 plus a sorted,
+nonempty inventory of actual JAR `.class` entry paths and byte digests.
+
+Published removals require the artifact bump selected by `PlanMavenVersion` and
+effective Maven coordinates supplied as `--maven-group-id`,
+`--maven-artifact-id`, and `--maven-version`. The generated Maven snippet passes
+these automatically. Standalone promotion must pass values obtained from the
+Maven effective model; Refine deliberately does not interpret a raw `pom.xml`,
+whose parent properties and active profiles may change all three values.
+Generated files and local builds never imply publication. Missing or stale
+attestations are `unknown` and fail before staging or deletion.
 
 Suggested CLI wiring is:
 

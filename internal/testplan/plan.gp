@@ -1,0 +1,58 @@
+// Package testplan selects CI fuzz campaigns from committed changes. It does
+// not replace the full integration suite or infer correctness from skipped work.
+package testplan
+
+import (
+    "path"
+    "sort"
+    "strings"
+)
+
+type Package struct {ImportPath string;Directory string;Imports []string;TestImports []string;XTestImports []string;TestFiles []string;Targets []Target}
+type Target struct {Package string `json:"package"`;Name string `json:"name"`;File string `json:"file"`;Inputs []string `json:"inputs"`}
+type Selection struct {Target Target `json:"target"`;Reasons []string `json:"reasons"`}
+type Plan struct {Version string `json:"version"`;Full bool `json:"full"`;Changed []string `json:"changed"`;Selections []Selection `json:"selections"`}
+
+// Select conservatively follows production AND test import edges. Changes to
+// test files select their declared fuzz targets, not unrelated campaigns.
+// Corpus edits select exactly the named target. Fixture edits select their
+// owning package and consumers; examples additionally feed Java/native/language.
+// Unknown file ownership and build/tooling changes fall back to all targets.
+func Select(changed []string,packages []Package,forceFull bool)Plan{
+    plan:=Plan{Version:"refine.fuzz-plan/v1",Full:forceFull,Changed:uniqueSorted(changed),Selections:[]Selection{}}
+    byName:=map[string]Package{};reverse:=map[string][]string{};for _,pkg:=range packages{byName[pkg.ImportPath]=pkg;imports:=append(append(append([]string(nil),pkg.Imports...),pkg.TestImports...),pkg.XTestImports...);for _,dependency:=range imports{reverse[dependency]=append(reverse[dependency],pkg.ImportPath)}}
+    reasons:=map[string]map[string]bool{};direct:=map[string]map[string]bool{};fullReasons:=map[string]bool{};if forceFull{fullReasons["explicit full selection or unavailable baseline"]=true}
+    addPackage:=func(name,reason string){if reasons[name]==nil{reasons[name]=map[string]bool{}};reasons[name][reason]=true}
+    for _,file:=range plan.Changed{
+        if file=="go.mod"||file=="go.sum"||strings.HasPrefix(file,".github/")||strings.HasPrefix(file,"internal/testplan/")||strings.HasPrefix(file,"cmd/refine-testplan/"){plan.Full=true;fullReasons["build or selection policy changed: "+file]=true;continue}
+        fixture:=strings.Contains(file,"/testdata/")||strings.HasPrefix(file,"testdata/")||strings.HasPrefix(file,"examples/")
+        if !fixture&&(strings.HasSuffix(file,".md")||file=="LICENSE"||file==".gitignore"){continue}
+        owner:="";longest:=-1;for _,pkg:=range packages{dir:=pkg.Directory;if dir=="."{dir=""};if (dir==""||strings.HasPrefix(file,dir+"/"))&&len(dir)>longest{owner=pkg.ImportPath;longest=len(dir)}}
+        if owner==""{plan.Full=true;fullReasons["unrecognized changed path: "+file]=true;continue};pkg:=byName[owner]
+        if index:=strings.Index(file,"testdata/fuzz/");index>=0&&(index==0||file[index-1]=='/'){remaining:=file[index+len("testdata/fuzz/"):];name:=strings.Split(remaining,"/")[0];found:=false;for _,target:=range pkg.Targets{if target.Name==name{key:=targetKey(target);if direct[key]==nil{direct[key]=map[string]bool{}};direct[key]["changed corpus: "+file]=true;found=true}};if !found{plan.Full=true;fullReasons["unrecognized fuzz corpus: "+file]=true};continue}
+        if fixture{
+            consumers,known:=fixtureConsumers(file);if !known{plan.Full=true;fullReasons["fixture has no reviewed consumer inventory: "+file]=true;continue}
+            addPackage(owner,"changed fixture: "+file);for _,consumer:=range packages{if contains(consumers,consumer.Directory){addPackage(consumer.ImportPath,"explicit shared fixture consumer: "+file)}};continue
+        }
+        if strings.HasSuffix(file,"_test.gp")||strings.HasSuffix(file,"_test.go"){
+            generated:=file;if strings.HasSuffix(file,"_test.gp"){generated=strings.TrimSuffix(file,"_test.gp")+"_gp_test.go"};known:=contains(pkg.TestFiles,generated);for _,target:=range pkg.Targets{if !known||target.File==generated||contains(target.Inputs,generated){key:=targetKey(target);if direct[key]==nil{direct[key]=map[string]bool{}};direct[key]["changed fuzz declaration, helper, initialization or seeds: "+file]=true}};continue
+        }
+        extension:=path.Ext(file)
+        if (extension==".go"||extension==".gp")&&!fixture&&path.Dir(file)!=pkg.Directory{plan.Full=true;fullReasons["source package was removed or is not build-selected: "+file]=true;continue}
+        if extension!=".go"&&extension!=".gp"&&!fixture{plan.Full=true;fullReasons["unclassified changed file: "+file]=true;continue}
+        addPackage(owner,"changed package input: "+file)
+    }
+    // Each seed reason is propagated separately, so output explains all routes
+    // and never depends on map traversal order.
+    seeds:=map[string][]string{};for name,items:=range reasons{for reason:=range items{seeds[name]=append(seeds[name],reason)}}
+    for start,items:=range seeds{seen:=map[string]bool{};pending:=[]string{start};for len(pending)>0{name:=pending[len(pending)-1];pending=pending[:len(pending)-1];if seen[name]{continue};seen[name]=true;for _,reason:=range items{addPackage(name,reason)};pending=append(pending,reverse[name]...)}}
+    for _,pkg:=range packages{for _,target:=range pkg.Targets{items:=map[string]bool{};for reason:=range reasons[pkg.ImportPath]{items[reason]=true};for reason:=range direct[targetKey(target)]{items[reason]=true};if plan.Full{for reason:=range fullReasons{items[reason]=true}};if len(items)==0{continue};selection:=Selection{Target:target,Reasons:[]string{}};for reason:=range items{selection.Reasons=append(selection.Reasons,reason)};sort.Strings(selection.Reasons);plan.Selections=append(plan.Selections,selection)}}
+    sort.Slice(plan.Selections,func(i,j int)bool{return targetKey(plan.Selections[i].Target)<targetKey(plan.Selections[j].Target)});return plan
+}
+
+func targetKey(target Target)string{return target.Package+"\x00"+target.Name}
+// This reviewed inventory captures filesystem consumers not necessarily
+// represented by Go imports. New fixture roots fail closed until reviewed.
+func fixtureConsumers(file string)([]string,bool){for prefix,consumers:=range map[string][]string{"value/testdata/":{"value","java"},"language/testdata/":{"language","explain","cli"},"examples/":{"examples","language","native","java"}}{if strings.HasPrefix(file,prefix){return consumers,true}};return nil,false}
+func contains(values []string,want string)bool{for _,value:=range values{if value==want{return true}};return false}
+func uniqueSorted(values []string)[]string{seen:=map[string]bool{};for _,value:=range values{seen[value]=true};out:=make([]string,0,len(seen));for value:=range seen{out=append(out,value)};sort.Strings(out);return out}

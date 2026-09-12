@@ -14,6 +14,7 @@ func guardExpression(e *Expr, depth int) {
     case Variable(_):
     case ListLiteral(items): for _, item := range items { guardExpression(item,depth+1) }
     case RecordLiteral(fields): for _, field := range fields { guardExpression(field.Value,depth+1) }
+    case MapLiteral(entries):for _,entry:=range entries{guardExpression(entry.Value,depth+1)}
     case Apply(fn, arg): guardExpression(fn,depth+1); guardExpression(arg,depth+1)
     case Project(record, _): guardExpression(record,depth+1)
     case Unary(_, operand): guardExpression(operand,depth+1)

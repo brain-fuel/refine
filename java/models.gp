@@ -68,6 +68,7 @@ func (m *modelEmitter) javaType(t *language.Type)string{
     case language.ListType(element):return "java.util.List<"+m.javaType(element)+">"
     case language.AppliedType(_,_):
         name,args:=applied(t);javaName:=""
+        if name=="Map"{if len(args)!=2{unsupported(t.At,"Map requires String keys and one value type")};return "java.util.Map<java.lang.String, "+m.javaType(args[1])+">"}
         switch name{case "Maybe":javaName="ModelMaybe";case "Nullable":javaName="ModelNullable";case "Result":javaName="ModelResult";default:if _,found:=m.declarations[name];!found{unsupported(t.At,"unknown parameterized domain model")};javaName=m.qualified(name)}
         types:=[]string{};for _,arg:=range args{types=append(types,m.javaType(arg))};return javaName+"<"+strings.Join(types,", ")+">"
     case language.RecordType(_):if name:=m.anonymous[t];name!=""{decl:=m.declarations[name];types:=[]string{};for _,parameter:=range decl.Parameters{if typ:=m.parameters[parameter];typ!=""{types=append(types,typ)}else{unsupported(t.At,"anonymous record is outside its generic owner scope")}};return m.qualified(name)+genericSuffix(types)};unsupported(t.At,"anonymous record model location is missing")
@@ -87,6 +88,7 @@ func (m *modelEmitter) encode(t *language.Type,input,location string)string{
         item,where:=m.fresh(),m.fresh();return "ModelSupport.list("+input+",("+item+","+where+") -> "+m.encode(element,item,where)+","+location+")"
     case language.AppliedType(_,_):
         name,args:=applied(t);m.javaType(t);method:=strings.ToLower(name)
+        if name=="Map"{item,where:=m.fresh(),m.fresh();return "ModelSupport.mapping("+input+",("+item+","+where+") -> "+m.encode(args[1],item,where)+","+location+")"}
         if _,found:=m.declarations[name];found{return "ModelSupport.nonNull("+input+","+location+").rawData()"}
         pieces:=[]string{input};for _,arg:=range args{item,where:=m.fresh(),m.fresh();pieces=append(pieces,"("+item+","+where+") -> "+m.encode(arg,item,where))};pieces=append(pieces,location)
         return "ModelSupport."+method+"("+strings.Join(pieces,",")+")"
@@ -105,6 +107,7 @@ func (m *modelEmitter) decode(t *language.Type,input string)string{
     case language.ListType(element):item:=m.fresh();return "ModelSupport.list("+input+","+item+" -> "+m.decode(element,item)+")"
     case language.AppliedType(_,_):
         name,args:=applied(t);m.javaType(t);pieces:=[]string{input};for _,arg:=range args{item:=m.fresh();pieces=append(pieces,item+" -> "+m.decode(arg,item))}
+        if name=="Map"{item:=m.fresh();return "ModelSupport.mapping("+input+","+item+" -> "+m.decode(args[1],item)+")"}
         if _,found:=m.declarations[name];found{return m.witness(t)+".decode("+input+")"}
         return "ModelSupport."+strings.ToLower(name)+"("+strings.Join(pieces,",")+")"
     case language.RecordType(_):name:=m.anonymous[t];if name==""{unsupported(t.At,"anonymous record model location is missing")};decl:=m.declarations[name];if len(decl.Parameters)==0{return m.qualified(name)+".fromDataWithoutValidation("+input+")"};arguments:=[]string{};for _,parameter:=range decl.Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"anonymous record is outside its generic owner scope")};arguments=append(arguments,witness)};return m.factoryInstance(decl,arguments)+".fromDataWithoutValidation("+input+")"

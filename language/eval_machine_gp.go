@@ -117,6 +117,25 @@ func (m evalMachine) visit(expr *Expr, env map[string]evalValue, types map[strin
 				}
 				m.work.complete(done, evalValue{form: evalRecord{fields: out}})
 			})
+		case MapLiteral:
+			entries := __gp_m0.Entries
+
+			e.step(uint64(len(entries)), expr.At)
+			expressions := make([]*Expr, len(entries))
+			for i, entry := range entries {
+				expressions[i] = entry.Value
+			}
+			m.valuesCharged(expressions, env, types, expr.At, func(values []evalValue) {
+				out := make([]evalMapEntry, len(values))
+				for i, item := range values {
+					key, err := value.ReadText(entries[i].Key)
+					if err != nil {
+						evalError(entries[i].At, "evaluation.text", "invalid map key")
+					}
+					out[i] = evalMapEntry{key: key, value: item}
+				}
+				m.work.complete(done, e.mapValue(out, expr.At))
+			})
 		case Apply:
 			fn := __gp_m0.Function
 			arg := __gp_m0.Argument
@@ -219,6 +238,10 @@ func readSourceText(raw string) (value.Text, error) { return value.ReadText(raw)
 
 func (m evalMachine) values(expressions []*Expr, env map[string]evalValue, types map[string]typeBinding, at Span, done func([]evalValue)) {
 	m.evaluator.step(uint64(len(expressions)), at)
+	m.valuesCharged(expressions, env, types, at, done)
+}
+
+func (m evalMachine) valuesCharged(expressions []*Expr, env map[string]evalValue, types map[string]typeBinding, at Span, done func([]evalValue)) {
 	result := make([]evalValue, 0, len(expressions))
 	index := 0
 	var next func()
@@ -383,6 +406,41 @@ func (m evalMachine) builtin(name string, args []evalValue, types map[string]typ
 			})
 		}
 		m.work.later(next)
+	case "mapValues", "filterValues":
+		entries := mapEntriesOf(args[1], at)
+		e.step(uint64(len(entries)), at)
+		result := []evalMapEntry{}
+		index := 0
+		var next func()
+		next = func() {
+			if index == len(entries) {
+				m.work.complete(done, e.mapValue(result, at))
+				return
+			}
+			entry := entries[index]
+			index++
+			m.apply(args[0], entry.value, types, at, func(mapped evalValue) {
+				if name == "mapValues" {
+					result = append(result, evalMapEntry{key: entry.key, value: mapped})
+				} else if boolean(mapped, at) {
+					result = append(result, entry)
+				}
+				m.work.later(next)
+			})
+		}
+		m.work.later(next)
+	case "allValues", "anyValues":
+		entries := mapEntriesOf(args[1], at)
+		e.step(uint64(len(entries)), at)
+		items := make([]evalValue, len(entries))
+		for i, entry := range entries {
+			items[i] = entry.value
+		}
+		mode := "all"
+		if name == "anyValues" {
+			mode = "any"
+		}
+		m.combine(mode, []evalValue{args[0], evalValue{form: evalList{items: items}}}, types, at, done)
 	case "foldl":
 		items := itemsOf(args[2], at)
 		result := args[1]

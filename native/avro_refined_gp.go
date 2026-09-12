@@ -61,10 +61,11 @@ func (p *Project) DecodeAndValidateAvro(input []byte, payloadLimits AvroPayloadL
 }
 
 type avroValueDecoder struct {
-	cursor       avroBinaryCursor
-	metadata     WireMetadata
-	declarations map[string]language.TypeDecl
-	numericUsed  int
+	cursor          avroBinaryCursor
+	metadata        WireMetadata
+	declarations    map[string]language.TypeDecl
+	numericUsed     int
+	mapOrderingUsed uint64
 }
 
 func (d *avroValueDecoder) failure(path, message string) error {
@@ -146,6 +147,9 @@ func (d *avroValueDecoder) decode(t *language.Type, schema avro.Schema, bindings
 		if name == "Nullable" && len(args) == 1 {
 			return d.nullable(args[0], schema, bindings, path, depth)
 		}
+		if name == "Map" && len(args) == 2 {
+			return d.mapping(args[1], schema, bindings, path, depth)
+		}
 		decl, found := d.declarations[name]
 		if !found || len(args) != len(decl.Parameters) {
 			return value.Data{}, d.failure(path, "unknown or incorrectly applied generic Avro type")
@@ -173,6 +177,72 @@ func (d *avroValueDecoder) decode(t *language.Type, schema avro.Schema, bindings
 		return value.Data{}, d.failure(path, "functions are not Avro payload values")
 	}
 	return value.Data{}, d.failure(path, "unsupported checked Avro type")
+}
+
+func (d *avroValueDecoder) mapping(element *language.Type, schema avro.Schema, bindings map[string]*language.Type, path string, depth int) (value.Data, error) {
+	schema = avroDereference(schema)
+	if schema.Type() != avro.Map {
+		return value.Data{}, d.failure(path, "checked map does not match an Avro map")
+	}
+	if err := d.charge(path, depth); err != nil {
+		return value.Data{}, err
+	}
+	valueSchema := schema.(*avro.MapSchema).Values()
+	entries := []value.MapEntry{}
+	seen := map[string]bool{}
+	for block := 0; ; block++ {
+		count, err := d.cursor.long(path)
+		if err != nil {
+			return value.Data{}, err
+		}
+		if count == 0 {
+			if orderErr := consumeNativeMapOrdering(Avro, path, entries, &d.mapOrderingUsed, nativeMapOrderingWorkLimit); orderErr != nil {
+				return value.Data{}, orderErr
+			}
+			result, mapErr := value.Map(entries)
+			if mapErr != nil {
+				return value.Data{}, d.failure(path, "Avro map contains a duplicate key")
+			}
+			return result, nil
+		}
+		blockBytes := int64(-1)
+		if count < 0 {
+			if count == math.MinInt64 {
+				return value.Data{}, d.failure(path, "Avro map block count overflows")
+			}
+			count = -count
+			blockBytes, err = d.cursor.long(path)
+			if err != nil {
+				return value.Data{}, err
+			}
+			if blockBytes < 0 || blockBytes > int64(len(d.cursor.input)-d.cursor.offset) {
+				return value.Data{}, d.failure(path, "invalid Avro map block byte size")
+			}
+		}
+		if count > int64(d.cursor.limits.Values-d.cursor.nodes) {
+			return value.Data{}, d.cursor.limit(path, "payload value count exceeds limit")
+		}
+		start := d.cursor.offset
+		for i := int64(0); i < count; i++ {
+			raw, keyErr := d.cursor.text(path + "{key}")
+			if keyErr != nil {
+				return value.Data{}, keyErr
+			}
+			if seen[raw] {
+				return value.Data{}, d.failure(path, "duplicate Avro map key")
+			}
+			seen[raw] = true
+			key, _ := value.TextFromUTF8(raw)
+			decoded, decodeErr := d.decode(element, valueSchema, bindings, fmt.Sprintf("%s{%d}", path, len(entries)), depth+1, "")
+			if decodeErr != nil {
+				return value.Data{}, decodeErr
+			}
+			entries = append(entries, value.MapEntry{Key: key, Value: decoded})
+		}
+		if blockBytes >= 0 && int64(d.cursor.offset-start) != blockBytes {
+			return value.Data{}, d.failure(path, "Avro map block byte size does not match its contents")
+		}
+	}
 }
 
 func (d *avroValueDecoder) charge(path string, depth int) error { return d.cursor.charge(depth, path) }

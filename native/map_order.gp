@@ -1,0 +1,13 @@
+package native
+
+import "goforge.dev/refine/value"
+
+// Native map ordering is separate from schema node/value limits: those count
+// structure, not string-comparison CPU. This fixed implementation cap bounds
+// canonical UTF-16 sorting without changing the public meanings of those limits.
+const nativeMapOrderingWorkLimit uint64=64<<20
+
+func consumeNativeMapOrdering(format Format,path string,entries []value.MapEntry,used *uint64,limit uint64)error{
+    count:=uint64(len(entries));if count==0{return nil};failure:=func()error{return &Error{Code:"native.limit",Format:format,Pointer:path,Message:"aggregate native map ordering exceeds the deterministic UTF-16 comparison-work limit"}};if used==nil||*used>limit{return failure()};remaining:=limit-*used;if remaining==0{return failure()};levels:=uint64(1);for n:=len(entries);n>1;n>>=1{levels++};maximum:=uint64(0);for _,entry:=range entries{length:=uint64(entry.Key.Length());if length>maximum{maximum=length}}
+    if count>remaining||levels>remaining||maximum>(remaining-1)/2{return failure()};per:=maximum*2+1;if count>remaining/levels{return failure()};base:=count*levels;if base>(remaining-count)/per{return failure()};*used+=base*per+count;return nil
+}

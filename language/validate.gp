@@ -153,6 +153,10 @@ func (v *payloadValidator) named(name string,args []*Type,input evalValue,env ma
             return v.wrong(path,"Constructor does not match the declared optional, nullable, or result type.")
         case _:return v.wrong(path,"Expected an explicit optional, nullable, or result constructor.")
         }
+    case "Map":
+        if len(args)!=2{return v.wrong(path,"Map requires String keys and one value type.")};match input.form{case EvalMap(entries):
+            v.structure.step(uint64(len(entries)),at);result:=make([]evalMapEntry,len(entries));all:=true;for i,entry:=range entries{checked,ok:=v.check(args[1],entry.value,env,pointerField(path,strconv.Itoa(i)));all=all&&ok;result[i]=evalMapEntry{key:entry.key,value:checked}};return v.structure.mapValue(result,at),all
+        case _:return v.wrong(path,"Expected a map.")}
     }
     if primitive(name) {
         match input.form {

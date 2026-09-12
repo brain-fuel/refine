@@ -133,6 +133,7 @@ func (l *lowerer) typ(t *language.Type,field bool)(any,error){
     case language.AppliedType(_, _):
         if ok,inner:=unwrap(t,"Nullable");ok{value,err:=l.typ(inner,field);if err!=nil{return nil,err};if l.format==Avro{return []any{"null",value},nil};return map[string]any{"anyOf":[]any{map[string]any{"type":"null"},value}},nil}
         if ok,_:=unwrap(t,"Maybe");ok{return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"Maybe represents field absence and is supported only directly on record fields"}}
+        if name,args,ok:=genericApplication(t);ok&&name=="Map"&&len(args)==2{if language.FormatType(args[0])!="String"{return nil,l.unrepresentable(language.FormatType(args[0]),"native map keys must be exactly String")};value,err:=l.typ(args[1],false);if err!=nil{return nil,atLower(err,"map value")};if l.format==Avro{return map[string]any{"type":"map","values":value},nil};return map[string]any{"type":"object","additionalProperties":value},nil}
         return l.generic(t)
     case language.RefinedType(base,rules):
         result,err:=l.typ(base,field);if err!=nil{return nil,err};for _,rule:=range rules{represented:=false;if l.format!=Avro{represented=l.numericRule(result,rule)};if !represented{if l.mode==Refined||l.allowLoss{l.lose(rule,language.FormatType(base))}else{l.lose(rule,language.FormatType(base))}}};return result,nil

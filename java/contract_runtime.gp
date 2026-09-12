@@ -67,6 +67,13 @@ public final class ContractRuntime {
     private record TimestampValue(Timestamp value) implements Val {}
     private record BoolValue(boolean value) implements Val {}
     private record ListValue(List<Val> values) implements Val { ListValue { values = List.copyOf(values); } }
+    private record MapValue(Map<String, Val> entries) implements Val {
+        MapValue {
+            var ordered = new ArrayList<>(entries.entrySet()); ordered.sort(Map.Entry.comparingByKey());
+            var copy = new java.util.LinkedHashMap<String, Val>(); for (var entry : ordered) copy.put(entry.getKey(), entry.getValue());
+            entries = java.util.Collections.unmodifiableMap(copy);
+        }
+    }
     private record FieldValue(String name, Val value) {}
     private record RecordValue(List<FieldValue> fields) implements Val { RecordValue { fields = List.copyOf(fields); } }
     private record VariantValue(String name, List<Val> values) implements Val { VariantValue { values = List.copyOf(values); } }
@@ -138,6 +145,13 @@ public final class ContractRuntime {
             step(1);
             if (logicalDepth >= 512) throw fail("evaluation.depth", "evaluation nesting limit exceeded");
         }
+        MapValue mapValue(Map<String, Val> entries) {
+            long levels = 1, maximum = 0; for (int n = entries.size(); n > 1; n >>= 1) levels++;
+            for (String key : entries.keySet()) maximum = Math.max(maximum,key.length());
+            BigInteger count=BigInteger.valueOf(entries.size()), per=BigInteger.valueOf(maximum).multiply(BigInteger.TWO).add(BigInteger.ONE);
+            step(count.multiply(BigInteger.valueOf(levels)).multiply(per).add(count));
+            return new MapValue(entries);
+        }
         Val transfer(Data value) {
             Work work = new Work(); Val[] result = new Val[1];
             class Transfer {
@@ -149,6 +163,17 @@ public final class ContractRuntime {
                             case Data.Text t -> work.complete(done, new TextValue(t.value()));
                             case Data.Bool b -> work.complete(done, new BoolValue(b.value()));
                             case Data.Sequence list -> { step(list.values().size()); items(list.values(), logicalDepth, values -> new ListValue(values), done); }
+                            case Data.Mapping map -> {
+                                step(map.entries().size()); var entries = new ArrayList<>(map.entries().entrySet());
+                                work.later(new Runnable() {
+                                    int index; final Map<String, Val> values = new java.util.LinkedHashMap<>();
+                                    @Override public void run() {
+                                        if (index == entries.size()) { work.complete(done, mapValue(values)); return; }
+                                        var entry = entries.get(index++); step(entry.getKey().length());
+                                        visit(entry.getValue(), logicalDepth + 1, item -> { values.put(entry.getKey(), item); work.later(this); });
+                                    }
+                                });
+                            }
                             case Data.Variant v -> { step((long)v.values().size() + utf8Size(v.name())); items(v.values(), logicalDepth, values -> new VariantValue(v.name(), values), done); }
                             case Data.Struct record -> {
                                 step(record.fields().size());
@@ -228,13 +253,21 @@ public final class ContractRuntime {
                         Consumer<Val> bind = checked -> { var local = new HashMap<>(env); local.put(text, checked); visit(args.get(1), local, types, logicalDepth + 1, done); };
                         if (expr.annotation() == null) work.complete(bind, value); else assertInline(expr.annotation(), value, types, logicalDepth + 1, bind);
                     });
-                    case "list", "record" -> {
+                    case "list", "record", "map" -> {
                         step(args.size());
                         work.later(new Runnable() {
                             int index; final List<Val> values = new ArrayList<>();
                             @Override public void run() {
                                 if (index == args.size()) {
                                     if (expr.kind().equals("list")) work.complete(done, new ListValue(values));
+                                    else if (expr.kind().equals("map")) {
+                                        var entries = new java.util.LinkedHashMap<String, Val>();
+                                        for (int i = 0; i < values.size(); i++) {
+                                            String key = TextCodec.read(expr.names().get(i));
+                                            if (entries.putIfAbsent(key, values.get(i)) != null) throw fail("evaluation.map", "duplicate decoded map key");
+                                        }
+                                        work.complete(done, mapValue(entries));
+                                    }
                                     else {
                                         var fields = new ArrayList<FieldValue>();
                                         for (int i = 0; i < values.size(); i++) fields.add(new FieldValue(expr.names().get(i), values.get(i)));
@@ -283,6 +316,17 @@ public final class ContractRuntime {
                             case TimestampValue t -> same[0] = compareTimestamps(t, (TimestampValue)right) == 0;
                             case BoolValue v -> same[0] = v.value() == ((BoolValue)right).value();
                             case ListValue list -> items(list.values(), ((ListValue)right).values(), logicalDepth);
+                            case MapValue map -> {
+                                var other = ((MapValue)right).entries(); same[0] = map.entries().size() == other.size();
+                                if (same[0]) work.later(new Runnable() {
+                                    final java.util.Iterator<Map.Entry<String, Val>> entries = map.entries().entrySet().iterator();
+                                    @Override public void run() {
+                                        if (!entries.hasNext()) return; var entry = entries.next(); step((long)entry.getKey().length() * 2);
+                                        Val candidate = other.get(entry.getKey()); if (candidate == null) { same[0] = false; return; }
+                                        work.later(this); visit(entry.getValue(), candidate, logicalDepth + 1);
+                                    }
+                                });
+                            }
                             case VariantValue v -> {
                                 var other = (VariantValue)right; same[0] = v.name().equals(other.name());
                                 if (same[0]) items(v.values(), other.values(), logicalDepth);
@@ -504,6 +548,23 @@ public final class ContractRuntime {
                         return;
                     }
                     work.complete(done, wrong(path, "Constructor does not match the declared optional, nullable, or result type.")); return;
+                }
+                case "Map": {
+                    if (args.size() != 2 || !args.getFirst().kind().equals("named") || !args.getFirst().name().equals("String") || !(input instanceof MapValue map)) {
+                        work.complete(done, wrong(path, "Expected a string-keyed map.")); return;
+                    }
+                    structure.step(map.entries().size()); var entries = new ArrayList<>(map.entries().entrySet());
+                    work.later(new Runnable() {
+                        int index; boolean all = true; final Map<String, Val> result = new java.util.LinkedHashMap<>();
+                        @Override public void run() {
+                            if (index == entries.size()) { MapValue mapped=structure.mapValue(result);work.complete(done, new Checked(all ? mapped : null, all)); return; }
+                            int item = index++; var entry = entries.get(item);
+                            schedule(args.get(1), entry.getValue(), env, pointer(path, Integer.toString(item)), depth + 1, checked -> {
+                                all &= checked.shape(); result.put(entry.getKey(),checked.shape()?checked.data():entry.getValue()); work.later(this);
+                            });
+                        }
+                    });
+                    return;
                 }
             }
             if (numericPrimitive(name)) {

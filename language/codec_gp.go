@@ -124,6 +124,19 @@ func (e *evaluator) decodeLiteral(expr *Expr, at Span) evalValue {
 			result[i] = evalField{name: field.Name, value: e.decodeLiteral(field.Value, at)}
 		}
 		return evalValue{form: evalRecord{fields: result}}
+	case MapLiteral:
+		entries := __gp_m0.Entries
+
+		e.step(uint64(len(entries)), at)
+		result := make([]evalMapEntry, len(entries))
+		for i, entry := range entries {
+			key, err := value.ReadText(entry.Key)
+			if err != nil {
+				readError(at, "invalid map key")
+			}
+			result[i] = evalMapEntry{key: key, value: e.decodeLiteral(entry.Value, at)}
+		}
+		return e.mapValue(result, at)
 	case Variable:
 		name := __gp_m0.Name
 

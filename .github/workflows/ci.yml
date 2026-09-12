@@ -19,6 +19,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -122,26 +124,7 @@ jobs:
           bin/refine fmt language/testdata/contracts.refine > /tmp/refine-formatted.refine
           bin/refine typecheck /tmp/refine-formatted.refine
           bin/refine explain --json language/testdata/contracts.refine
-      - name: Fuzz lossless ingestion and text codecs
-        run: |
-          go test ./schemajson -run '^$' -fuzz '^FuzzLosslessDocument$' -fuzztime=10s
-          go test ./value -run '^$' -fuzz '^FuzzTextReadShow$' -fuzztime=10s
-          go test ./value -run '^$' -fuzz '^FuzzTimestampReadShow$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./pattern -run '^$' -fuzz '^FuzzRegexDifferential$' -fuzztime=10s
-          go test ./provenance -run '^$' -fuzz '^FuzzNativeConstraintRoundTrip$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=10s
-          go test ./language -run '^$' -fuzz '^FuzzCompile$' -fuzztime=10s
-          go test ./language -run '^$' -fuzz '^FuzzEvaluatorDeterminism$' -fuzztime=10s
-          go test ./language -run '^$' -fuzz '^FuzzTypedReadShow$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./language -run '^$' -fuzz '^FuzzPayloadType$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./value -run '^$' -fuzz '^FuzzDataMutationIsolation$' -fuzztime=10s
-          go test ./java -run '^$' -fuzz '^FuzzRuntimePackageNames$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./java -run '^$' -fuzz '^FuzzValidatorGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./java -run '^$' -fuzz '^FuzzModelGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./java -run '^$' -fuzz '^FuzzPayloadTypeGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./analysis -run '^$' -fuzz '^FuzzAnalysis$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./explain -run '^$' -fuzz '^FuzzExplain$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./native -run '^$' -fuzz '^FuzzNativeJSONRoundTrip$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./native -run '^$' -fuzz '^FuzzValidateAvroBinary$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./native -run '^$' -fuzz '^FuzzOpenAPIPayloadValidation$' -fuzztime=10s -fuzzminimizetime=1000x
-          go test ./native -run '^$' -fuzz '^FuzzDecodeAndValidateJSON$' -fuzztime=10s -fuzzminimizetime=1000x
+      - name: Plan and run affected fuzz targets
+        env:
+          REFINE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: go run ./cmd/refine-testplan --base "$REFINE_BASE_SHA" --head "$GITHUB_SHA" --run

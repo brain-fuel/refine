@@ -147,8 +147,13 @@ bump. Other caller-classified artifact changes combine by taking the stronger
 requirement. With no changes there is no pending artifact version and no blind
 patch increment.
 
-This planner does not inspect Java bytecode, generate Maven files, publish an
-artifact, or decide Maven coordinates. Those remain integration responsibilities.
+This planner does not inspect Java bytecode, generate Maven files, or publish an
+artifact. `PlanPublication` supplies the bounded integration for `noCodegen`
+and owned generated-source removals. It validates a strict version-1 checked-in
+publication ledger, exact schema/source/class/artifact digests, explicit
+published versus unpublished attestations, and Maven effective coordinates.
+It does not treat generated output as published and does not claim general Java
+ABI compatibility.
 
 ## Project release workflow
 
@@ -197,6 +202,22 @@ project generation:
 Versions in policy use canonical `x.y.z` text without a `v` prefix. Unknown
 fields, duplicate JSON keys, noncanonical versions, loose comparison identities,
 and empty or reused reasons are rejected.
+
+For `documentation`, the CLI additionally compares the latest baseline's
+canonical checked language declarations, reachable dependency bodies and source
+packages. Comments, layout, and equivalent string escapes do not count as
+contract changes; predicates, functions, field/order changes, diagnostic
+messages, and budgets do. Native metadata and constraint units are checked too.
+Compatibility overrides do not authorize a false documentation classification.
+An unproven classification rejects without a version suggestion until the author
+chooses `fix`, `feature`, or `breaking`; the normal compatibility/version policy
+then applies. This does not infer whether a functional change is a bug fix.
+
+Native-resource changes currently remain unknown for documentation-only
+classification, even if they appear confined to descriptions. Native annotation
+equivalence needs a schema-position-aware proof, not removal of every JSON key
+named `description`. Historical Java/project-policy compatibility still has its
+separate unknown/override gate; canonical language equality does not prove it.
 
 `refine release plan [family...]` discovers every `vX.Y.Z.refine` or
 `vX.Y.Z.refined.json` baseline and both comparison directions automatically;
@@ -264,11 +285,51 @@ generation, together with `refine.project.json`, become content preconditions
 that are rechecked after the promotion lock is acquired. A dependency or config
 edit in the plan/apply window therefore fails before any output is installed.
 
-The optional Maven policy records the current artifact version and the schema
-versions whose classes were present in the published artifact. Its intended
-artifact version is checked with `PlanMavenVersion`; `otherChange` may explicitly
-be `none`, `patch`, `feature`, or `breaking`. Removing owned generated outputs
-through `noCodegen` uses content-bound journaled deletions and is rejected unless
-the Maven plan records a nonzero required artifact change. An intended new schema
-version may appear in `noCodegen` before its immutable schema file exists;
-resources are still generated and promoted for that version.
+The optional Maven policy records current/intended artifact versions and may
+select `release.maven.publicationLedger` (default
+`refine.publications.json`). `otherChange` may explicitly be `none`, `patch`,
+`feature`, or `breaking`. The legacy `previouslyGenerated` list is not
+publication authority: publication-sensitive removals require digest-bound
+ledger records. Both ordinary generation and promotion run the same gate before
+owned deletion. Promotion also adds the ledger and every consulted immutable
+schema to its under-lock content preconditions. An intended new schema version
+may appear in `noCodegen` before its immutable schema file exists; because it
+has no historical generated class removal, resources can still be generated
+and promoted without manufacturing publication history.
+
+For a relevant published removal, standalone `release plan`/`promote` accepts
+`--maven-group-id`, `--maven-artifact-id`, and `--maven-version`; all must be
+values from Maven's effective model, must match the ledger coordinates, and the
+version must equal the explicitly accepted artifact suggestion. Missing values
+fail as unknown. Raw POM text is never used as proof of effective coordinates.
+
+The version-1 ledger describes one exact prior artifact baseline; every
+`published` record therefore uses the same artifact version and SHA-256. Its
+shape is:
+
+```json
+{
+  "version": 1,
+  "groupId": "com.example",
+  "artifactId": "models",
+  "records": [{
+    "state": "published",
+    "family": "orders",
+    "schemaVersion": "1.2.0",
+    "schemaSha256": "<SHA-256 of schemata/orders/v1.2.0.refine>",
+    "generatedSources": [{"path": "target/generated-sources/refine/orders/v1_2_0/Order.java", "sha256": "<SHA-256>"}],
+    "artifactVersion": "2.0.0",
+    "artifactSha256": "<SHA-256 of the published JAR>",
+    "classes": [{"path": "com/example/orders/Order.class", "sha256": "<SHA-256 of that JAR entry>"}],
+    "inventorySha256": "<release.PublicationInventoryDigest(record)>",
+    "reason": "verified against repository artifact com.example:models:2.0.0"
+  }]
+}
+```
+
+Records are sorted by family/version; inventory arrays use unique, sorted
+portable paths. An `unpublished` record retains
+the schema/generated-source inventory and reason, but omits artifact version,
+artifact digest, and classes. Unknown/duplicate JSON fields, unsafe paths,
+noncanonical versions, stale schema/source bytes, case-fold collisions, and a
+mismatched inventory digest reject the entire gate.

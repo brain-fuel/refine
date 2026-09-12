@@ -42,7 +42,7 @@ func (m *modelEmitter) witness(t *language.Type)string{
         if _,found:=m.declarations[name];found{return "ModelTypes.for"+name+"()"}
     case language.ListType(element):return "ModelTypes.list("+m.witness(element)+")"
     case language.AppliedType(_,_):
-        name,args:=applied(t);parts:=[]string{};for _,arg:=range args{parts=append(parts,m.witness(arg))}
+        name,args:=applied(t);if name=="Map"{if len(args)!=2{unsupported(t.At,"Map requires String keys and one value type")};return "ModelTypes.mapping("+m.witness(args[1])+")"};parts:=[]string{};for _,arg:=range args{parts=append(parts,m.witness(arg))}
         method:=strings.ToLower(name);if _,found:=m.declarations[name];found{method="for"+name}
         return "ModelTypes."+method+"("+strings.Join(parts,",")+")"
     case language.RecordType(_):name:=m.anonymous[t];if name!=""{decl:=m.declarations[name];parts:=[]string{};for _,parameter:=range decl.Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"anonymous record is outside its generic owner scope")};parts=append(parts,witness)};return "ModelTypes.for"+name+"("+strings.Join(parts,",")+")"}
@@ -133,6 +133,10 @@ public final class ModelTypes {
     public static <T> ModelType<java.util.List<T>> list(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);
         return ModelType.of(ModelType.list(element.type),(value,where) -> ModelSupport.list(value,element::encode,where),raw -> ModelSupport.list(raw,element::decode),element);
+    }
+    public static <T> ModelType<java.util.Map<String,T>> mapping(ModelType<T> element) {
+        java.util.Objects.requireNonNull(element);
+        return ModelType.of(ModelType.applied(ModelType.applied(ModelType.named("Map"),ModelType.named("String")),element.type),(value,where) -> ModelSupport.mapping(value,element::encode,where),raw -> ModelSupport.mapping(raw,element::decode),element);
     }
     public static <T> ModelType<ModelMaybe<T>> maybe(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);

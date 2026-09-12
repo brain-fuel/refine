@@ -155,7 +155,7 @@ with generic unions still required. Inline-refined argument witnesses
 retain statically checked predicate scope in nested model views.
 No serde or Maven publication is implied.
 
-Supported structural forms include records, aliases, lists, generic/recursive
+Supported structural forms include records, aliases, lists, exact string-keyed maps, generic/recursive
 tagged unions, `Maybe`, `Nullable`, `Result`, Bool/String, arbitrary integers and
 rationals, and checked fixed-width integers. Primitive-looking user declarations
 such as `Int01` remain ordinary named types. Field and whole-structure predicates
@@ -164,7 +164,7 @@ invalid-plus-unknown aggregation, and structural/expression budget accounting.
 Custom-message failure preserves the conclusive violation and generated fallback.
 
 The expression emitter handles literals, `it`, field projection, numeric/Boolean
-operators, equality, concatenation/cons, conditionals, record/list literals, and
+operators, equality, concatenation/cons, conditionals, record/list/map literals, and
 local bindings with ordinary and inline-refined type annotations. Named functions support generic
 instantiation, recursion, partial application, higher-order arguments/results,
 zero-argument definitions and ordered equations. Case/function patterns support
@@ -172,7 +172,10 @@ bindings, wildcards, literals, constructors, lists and cons patterns.
 
 Implemented builtins are `not`, `isInteger`, `show`, `read`, `length`, `reverse`, `map`, `filter`,
 `foldl`, `oneOf`, `elem`, `unique`, `all`, `any`, `satisfiesAll`,
-`satisfiesOnlyOneOf`, `satisfiesOneOf`, and `satisfiesAtLeastOneOf`. Quantifiers
+`satisfiesOnlyOneOf`, `satisfiesOneOf`, `satisfiesAtLeastOneOf`, `lookup`,
+`member`, `keys`, `values`, `size`, `insert`, `delete`, `mapValues`,
+`filterValues`, `allValues`, and `anyValues`. Map traversal and canonical display
+use exact UTF-16 key order; key identity does not normalize case or Unicode. Quantifiers
 preserve three-outcome behavior: a later decisive result can survive an earlier
 unknown; nested attempts resume at the correct outer continuation/depth.
 Arguments are eager, even when the function ignores them. First-class functions

@@ -103,7 +103,7 @@ func TestPayloadTypeNamedBudgetParity(t *testing.T){
 }
 
 func FuzzPayloadType(f *testing.F){
-    for _,source:=range []string{"Box Age","Tree (Int where it > 0)","[Maybe Age]","{value :: Int}","Int where positive it","Int -> Int","Box a"}{f.Add(source)}
+    for _,source:=range []string{"Box Age","Tree (Int where it > 0)","[Maybe Age]","Map String (Maybe Age)","{value :: Int}","Int where positive it","Int -> Int","Box a"}{f.Add(source)}
     program,err:=Compile(payloadTypeContract);if err!=nil{f.Fatal(err)}
     f.Fuzz(func(t *testing.T,source string){
         if len(source)>4096{return}

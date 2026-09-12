@@ -97,6 +97,17 @@ const inlineAssertionJava = `
                         assertInline(args.get(index), variant.values().getFirst(), types, level, value ->
                             work.complete(done, new VariantValue(variant.name(), List.of(value)))); return;
                     }
+                    if (name.equals("Map")) {
+                        if (args.size()!=2 || !(input instanceof MapValue map)) throw fail("evaluation.type", "expected map for an annotated type");
+                        var entries = new ArrayList<>(map.entries().entrySet());
+                        work.later(new Runnable() {
+                            int index; final Map<String,Val> result = new java.util.LinkedHashMap<>();
+                            @Override public void run() {
+                                if (index == entries.size()) { work.complete(done,mapValue(result)); return; }
+                                var entry=entries.get(index++);assertInline(args.get(1),entry.getValue(),types,level,value->{result.put(entry.getKey(),value);work.later(this);});
+                            }
+                        }); return;
+                    }
                     // Definition iteration order is source order, part of the
                     // Go evaluator's metered name lookup, not hash-map order.
                     for (var entry : definitions.entrySet()) {

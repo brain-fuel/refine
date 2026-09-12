@@ -166,6 +166,12 @@ func (m *modelEmitter) javaType(t *language.Type) string {
 
 		name, args := applied(t)
 		javaName := ""
+		if name == "Map" {
+			if len(args) != 2 {
+				unsupported(t.At, "Map requires String keys and one value type")
+			}
+			return "java.util.Map<java.lang.String, " + m.javaType(args[1]) + ">"
+		}
 		switch name {
 		case "Maybe":
 			javaName = "ModelMaybe"
@@ -246,6 +252,10 @@ func (m *modelEmitter) encode(t *language.Type, input, location string) string {
 		name, args := applied(t)
 		m.javaType(t)
 		method := strings.ToLower(name)
+		if name == "Map" {
+			item, where := m.fresh(), m.fresh()
+			return "ModelSupport.mapping(" + input + ",(" + item + "," + where + ") -> " + m.encode(args[1], item, where) + "," + location + ")"
+		}
 		if _, found := m.declarations[name]; found {
 			return "ModelSupport.nonNull(" + input + "," + location + ").rawData()"
 		}
@@ -303,6 +313,10 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 		for _, arg := range args {
 			item := m.fresh()
 			pieces = append(pieces, item+" -> "+m.decode(arg, item))
+		}
+		if name == "Map" {
+			item := m.fresh()
+			return "ModelSupport.mapping(" + input + "," + item + " -> " + m.decode(args[1], item) + ")"
 		}
 		if _, found := m.declarations[name]; found {
 			return m.witness(t) + ".decode(" + input + ")"

@@ -1,0 +1,20 @@
+package testplan
+
+import (
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+)
+
+func TestChangedOrdinaryTestImportsSelectPackageFuzzInitialization(t *testing.T){
+    root:=t.TempDir();old:="package fixture\nimport \"testing\"\nfunc TestOrdinary(t *testing.T){}\n";file:="ordinary_test.go";if err:=os.WriteFile(filepath.Join(root,file),[]byte(old),0600);err!=nil{t.Fatal(err)}
+    git:=func(args ...string)string{command:=exec.Command("git",args...);command.Dir=root;command.Env=append(os.Environ(),"GIT_CONFIG_NOSYSTEM=1");output,err:=command.CombinedOutput();if err!=nil{t.Fatalf("fixture git: %v\n%s",err,output)};return strings.TrimSpace(string(output))}
+    git("init","--quiet");git("add","--",file);git("-c","user.name=Refine fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","-c","core.hooksPath=/dev/null","commit","--quiet","-m","fixture");base:=git("rev-parse","HEAD")
+    fixture:=func()[]Package{return []Package{{ImportPath:"example",Directory:".",TestFiles:[]string{file},Targets:[]Target{{Package:".",Name:"FuzzFirst",File:"fuzz_test.go",Inputs:[]string{"fuzz_test.go"}},{Package:".",Name:"FuzzSecond",File:"other_test.go",Inputs:[]string{"other_test.go"}}}}}}
+    unchanged:=fixture();if err:=IncludeChangedTestImports(root,base,[]string{file},unchanged);err!=nil{t.Fatal(err)};if len(Select([]string{file},unchanged,false).Selections)!=0{t.Fatal("unchanged import list caused a campaign")}
+    next:="package fixture\nimport (\"testing\"; \"net/http/pprof\")\nfunc TestOrdinary(t *testing.T){_ = pprof.Handler(\"heap\")}\n";if err:=os.WriteFile(filepath.Join(root,file),[]byte(next),0600);err!=nil{t.Fatal(err)};changed:=fixture();if err:=IncludeChangedTestImports(root,base,[]string{file},changed);err!=nil{t.Fatal(err)};plan:=Select([]string{file},changed,false);if len(plan.Selections)!=2||plan.Full{t.Fatalf("ordinary-test import initialization was omitted: %+v",plan)}
+    missing:=fixture();if err:=IncludeChangedTestImports(root,strings.Repeat("f",40),[]string{file},missing);err!=nil{t.Fatal(err)};if len(Select([]string{file},missing,false).Selections)!=2{t.Fatal("missing import evidence was treated as unchanged")}
+    equal,err:=sameTestImports([]byte("package fixture\nimport alias \"testing\"\n"),[]byte("package fixture\nimport . \"testing\"\n"));if err!=nil||!equal{t.Fatal("spelling-only import change broadened initialization",err)}
+}

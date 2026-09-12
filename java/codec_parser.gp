@@ -152,10 +152,21 @@ const codecParserJava = `
             if (accept("(")) { lines(); expression(0, level, inner -> { lines(); need(")"); work.complete(done, inner); }); return; }
             if (accept("[")) { collection("list", "]", level, false, false, done); return; }
             if (accept("{")) { collection("record", "}", level, true, false, done); return; }
+            if (is("map") && index + 1 < tokens.size() && tokens.get(index + 1).kind().equals("{")) { take(); need("{"); mapCollection(level, done); return; }
             if (is("number") || is("text")) { ReadToken token = take(); work.complete(done, readNode(token.kind(), token.text())); return; }
             if (accept("True")) { work.complete(done, readNode("bool", "True")); return; }
             if (accept("False")) { work.complete(done, readNode("bool", "False")); return; }
             work.complete(done, readNode("variable", name()));
+        }
+        void mapCollection(int level, Consumer<ReadNode> done) {
+            lines(); var values = new ArrayList<ReadNode>(); var names = new ArrayList<String>(); var seen = new java.util.HashSet<String>();
+            work.later(new Runnable() {
+                @Override public void run() {
+                    if (accept("}")) { work.complete(done, readNode("map", "", values, names)); return; }
+                    String token = need("text").text(), key = TextCodec.read(token); if (!seen.add(key)) throw readSyntax(); names.add(token); need("="); lines();
+                    expression(0, level, value -> { values.add(value); lines(); if (!accept(",")) { need("}"); work.complete(done, readNode("map", "", values, names)); } else { lines(); work.later(this); } });
+                }
+            });
         }
         void collection(String kind, String close, int level, boolean record, boolean type, Consumer<ReadNode> done) {
             lines(); var values = new ArrayList<ReadNode>(); var names = new ArrayList<String>(); var seen = new java.util.HashSet<String>();

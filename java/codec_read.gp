@@ -89,10 +89,15 @@ const codecReadJava = `
                                     work.complete(done, new NumberValue(numerator.divide(denominator), "Real"));
                                 }));
                             }
-                            case "list", "record" -> {
+                            case "list", "record", "map" -> {
                                 step(node.args().size());
                                 decodeItems(node.args(), level + 1, values -> {
                                     if (node.kind().equals("list")) work.complete(done, new ListValue(values));
+                                    else if (node.kind().equals("map")) {
+                                        var entries = new java.util.LinkedHashMap<String, Val>();
+                                        for (int i = 0; i < values.size(); i++) if (entries.putIfAbsent(TextCodec.read(node.names().get(i)), values.get(i)) != null) throw fail("read.syntax", "duplicate decoded map key");
+                                        work.complete(done, mapValue(entries));
+                                    }
                                     else { var fields = new ArrayList<FieldValue>(); for (int i = 0; i < values.size(); i++) fields.add(new FieldValue(node.names().get(i), values.get(i))); work.complete(done, new RecordValue(fields)); }
                                 });
                             }
@@ -132,6 +137,16 @@ const codecReadJava = `
                             case FunctionValue ignored -> throw fail("evaluation.type", "a function is not a serializable payload value");
                             case GuardedFunction ignored -> throw fail("evaluation.type", "a function is not a serializable payload value");
                             case ListValue list -> { step(list.values().size()); exportItems(list.values(), level + 1, values -> work.complete(done, new Data.Sequence(values))); }
+                            case MapValue map -> {
+                                step(map.entries().size()); var entries = new ArrayList<>(map.entries().entrySet());
+                                work.later(new Runnable() {
+                                    int index; final Map<String, Data> values = new java.util.LinkedHashMap<>();
+                                    @Override public void run() {
+                                        if (index == entries.size()) { work.complete(done, new Data.Mapping(values)); return; }
+                                        var entry = entries.get(index++); step(entry.getKey().length()); exportData(entry.getValue(), level + 1, value -> { values.put(entry.getKey(), value); work.later(this); });
+                                    }
+                                });
+                            }
                             case VariantValue variant -> { step(variant.values().size()); exportItems(variant.values(), level + 1, values -> work.complete(done, new Data.Variant(variant.name(), values))); }
                             case RecordValue record -> {
                                 step(record.fields().size());

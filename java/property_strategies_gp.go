@@ -152,6 +152,22 @@ func (e *propertyEmitter) propertyStrategy(t *language.Type, active map[string]s
 			variable := e.fresh("value")
 			return propertyStrategy{source: "org.jetbrains.jetCheck.Generator.<Data>anyOf(" + empty + "," + item.source + ".<Data>map(" + variable + " -> new Data.Variant(" + javaQuote(some) + ",java.util.List.of(" + variable + "))))", viable: true, references: propertyReferences(item)}, nil
 		}
+		if name == "Map" {
+			if len(args) != 2 {
+				return emptyPropertyStrategy(), fmt.Errorf("Map requires String keys and one value type")
+			}
+			item, err := e.propertyStrategy(args[1], active, cut)
+			if err != nil {
+				return emptyPropertyStrategy(), err
+			}
+			if !item.viable {
+				return propertySource("org.jetbrains.jetCheck.Generator.<Data>constant(new Data.Mapping(java.util.Map.of()))"), nil
+			}
+			items := e.fresh("items")
+			index := e.fresh("index")
+			source := "org.jetbrains.jetCheck.Generator.listsOf(org.jetbrains.jetCheck.IntDistribution.uniform(0,8)," + item.source + ").<Data>map(" + items + " -> { var entries=new java.util.LinkedHashMap<String,Data>(); for(int " + index + "=0;" + index + "<" + items + ".size();" + index + "++) entries.put(\"key\"+" + index + "," + items + ".get(" + index + ")); return new Data.Mapping(entries); })"
+			return propertyStrategy{source: source, viable: true, references: propertyReferences(item)}, nil
+		}
 		if name == "Result" {
 			if len(args) != 2 {
 				return emptyPropertyStrategy(), fmt.Errorf("Result requires two payload types")

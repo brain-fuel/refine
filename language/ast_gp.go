@@ -194,6 +194,13 @@ type RecordLiteral struct {
 
 func (RecordLiteral) isExprForm() {}
 
+//goplus:variant (ExprForm) MapLiteral(Entries []MapValue)
+type MapLiteral struct {
+	Entries []MapValue
+}
+
+func (MapLiteral) isExprForm() {}
+
 //goplus:variant (ExprForm) Apply(Function *Expr, Argument *Expr)
 type Apply struct {
 	Function *Expr
@@ -256,6 +263,14 @@ func (Case) isExprForm() {}
 
 type FieldValue struct {
 	Name  string
+	Value *Expr
+	At    Span
+}
+
+// MapValue retains the original quoted token. Map identity uses the decoded
+// UTF-16 key, so alternate escape spellings cannot create distinct entries.
+type MapValue struct {
+	Key   string
 	Value *Expr
 	At    Span
 }

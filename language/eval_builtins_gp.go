@@ -91,6 +91,74 @@ func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 		default:
 			evalError(at, "evaluation.type", "length requires text or a list")
 		}
+	case "lookup", "member":
+		key := textOf(args[0], at)
+		entries := mapEntriesOf(args[1], at)
+		for _, entry := range entries {
+			e.step(uint64(key.Length()+entry.key.Length()+1), at)
+			if entry.key.Equal(key) {
+				if name == "member" {
+					return boolValue(true)
+				}
+				return evalValue{form: evalVariant{name: "Just", arguments: []evalValue{entry.value}}}
+			}
+		}
+		if name == "member" {
+			return boolValue(false)
+		}
+		return evalValue{form: evalVariant{name: "Nothing", arguments: nil}}
+	case "keys":
+		entries := mapEntriesOf(args[0], at)
+		e.step(uint64(len(entries)), at)
+		items := make([]evalValue, len(entries))
+		for i, entry := range entries {
+			items[i] = textValue(entry.key)
+		}
+		return evalValue{form: evalList{items: items}}
+	case "values":
+		entries := mapEntriesOf(args[0], at)
+		e.step(uint64(len(entries)), at)
+		items := make([]evalValue, len(entries))
+		for i, entry := range entries {
+			items[i] = entry.value
+		}
+		return evalValue{form: evalList{items: items}}
+	case "size":
+		return numberValue(value.Integer(int64(len(mapEntriesOf(args[0], at)))), "Int")
+	case "insert":
+		key := textOf(args[0], at)
+		source := mapEntriesOf(args[2], at)
+		found := -1
+		for i, entry := range source {
+			e.step(uint64(key.Length()+entry.key.Length()+1), at)
+			if found < 0 && entry.key.Equal(key) {
+				found = i
+			}
+		}
+		entries := append([]evalMapEntry(nil), source...)
+		if found >= 0 {
+			entries[found].value = args[1]
+		} else {
+			entries = append(entries, evalMapEntry{key: key, value: args[1]})
+		}
+		return e.mapValue(entries, at)
+	case "delete":
+		key := textOf(args[0], at)
+		entries := mapEntriesOf(args[1], at)
+		remove := -1
+		for i, entry := range entries {
+			e.step(uint64(key.Length()+entry.key.Length()+1), at)
+			if remove < 0 && entry.key.Equal(key) {
+				remove = i
+			}
+		}
+		if remove < 0 {
+			return e.mapValue(entries, at)
+		}
+		out := make([]evalMapEntry, 0, len(entries)-1)
+		out = append(out, entries[:remove]...)
+		out = append(out, entries[remove+1:]...)
+		return e.mapValue(out, at)
 	case "reverse":
 		items := itemsOf(args[0], at)
 		e.step(uint64(len(items)), at)
@@ -117,6 +185,31 @@ func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 			}
 		}
 		return evalValue{form: evalList{items: result}}
+	case "mapValues", "filterValues":
+		entries := mapEntriesOf(args[1], at)
+		e.step(uint64(len(entries)), at)
+		result := make([]evalMapEntry, 0, len(entries))
+		for _, entry := range entries {
+			mapped := e.apply(args[0], entry.value, at)
+			if name == "mapValues" {
+				result = append(result, evalMapEntry{key: entry.key, value: mapped})
+			} else if boolean(mapped, at) {
+				result = append(result, entry)
+			}
+		}
+		return e.mapValue(result, at)
+	case "allValues", "anyValues":
+		entries := mapEntriesOf(args[1], at)
+		e.step(uint64(len(entries)), at)
+		items := make([]evalValue, len(entries))
+		for i, entry := range entries {
+			items[i] = entry.value
+		}
+		mode := "all"
+		if name == "anyValues" {
+			mode = "any"
+		}
+		return e.combine(mode, []evalValue{args[0], evalValue{form: evalList{items: items}}}, at)
 	case "foldl":
 		result := args[1]
 		for _, item := range itemsOf(args[2], at) {
@@ -291,6 +384,16 @@ func (e *evaluator) show(v evalValue, at Span) string {
 			parts[i] = field.name + " = " + e.show(field.value, at)
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
+	case evalMap:
+		entries := __gp_m1.entries
+
+		e.step(uint64(len(entries)), at)
+		parts := make([]string, len(entries))
+		for i, entry := range entries {
+			e.step(uint64(entry.key.Length()), at)
+			parts[i] = entry.key.Show() + " = " + e.show(entry.value, at)
+		}
+		return "map {" + strings.Join(parts, ", ") + "}"
 	case evalVariant:
 		name := __gp_m1.name
 		args := __gp_m1.arguments
@@ -383,6 +486,16 @@ func (e *evaluator) fromData(data value.Data, at Span) evalValue {
 			result[i] = evalField{name: field.Name, value: e.fromData(field.Value, at)}
 		}
 		return evalValue{form: evalRecord{fields: result}}
+	case value.MapData:
+
+		e.step(uint64(data.Size()), at)
+		entries := data.Entries()
+		result := make([]evalMapEntry, len(entries))
+		for i, entry := range entries {
+			e.step(uint64(entry.Key.Length()), at)
+			result[i] = evalMapEntry{key: entry.Key, value: e.fromData(entry.Value, at)}
+		}
+		return e.mapValue(result, at)
 	case value.VariantData:
 
 		name, _ := data.Constructor()
@@ -436,6 +549,20 @@ func (e *evaluator) toData(v evalValue, at Span) value.Data {
 		data, err := value.Record(result)
 		if err != nil {
 			evalError(at, "evaluation.record", "invalid runtime record")
+		}
+		return data
+	case evalMap:
+		entries := __gp_m4.entries
+
+		e.step(uint64(len(entries)), at)
+		result := make([]value.MapEntry, len(entries))
+		for i, entry := range entries {
+			e.step(uint64(entry.key.Length()), at)
+			result[i] = value.MapEntry{Key: entry.key, Value: e.toData(entry.value, at)}
+		}
+		data, err := value.Map(result)
+		if err != nil {
+			evalError(at, "evaluation.map", "invalid runtime map")
 		}
 		return data
 	case evalVariant:

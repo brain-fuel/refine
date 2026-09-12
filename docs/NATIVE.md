@@ -108,7 +108,8 @@ are ingested through the same native validator before they are returned.
 Implemented JSON Schema Draft 2020-12 and OpenAPI 3.1/3.2 mappings include:
 
 - `Int`, `IntN`, `UIntN`, `String`, and `Bool`;
-- lists, records, required fields, `Maybe` record-field absence, and `Nullable`;
+- lists, records, exact-string-keyed `Map String a`, required fields, `Maybe`
+  record-field absence, and `Nullable`;
 - non-generic named aliases/records and recursive `$ref` definitions;
 - canonical integer comparisons against exact numeric literals as
   `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`;
@@ -122,8 +123,8 @@ OpenAPI 3.0 ingestion is supported, but generation currently requires 3.1.x or
 without a separate 3.0 nullable/keyword adapter.
 
 Implemented Avro mappings include `Int32`, `Int64`, `String`, `Bool`, lists,
-records, `Nullable` unions, aliases, closed generic record applications, and
-recursive named records. Closed applications use simultaneous substitution, so
+`Map String a`, records, `Nullable` unions, aliases, closed generic record
+applications, and recursive named records. Closed applications use simultaneous substitution, so
 transformed generic aliases retain their argument order. Generated
 specialization names are deterministic and cannot overwrite authored names.
 Record and union ordering is deterministic and is validated after generation.
@@ -180,8 +181,9 @@ the report from their checked source when loaded.
 The initial safe structural projection covers:
 
 - JSON Schema/OpenAPI explicitly typed primitives, homogeneous arrays, records,
-  required/optional fields, nullable forms, named definitions, and local refs;
-- Avro primitives, arrays, records, enums, fixed byte sequences, nullable and
+  homogeneous exact-string-keyed maps, required/optional fields, nullable
+  forms, named definitions, and local refs;
+- Avro primitives, arrays, maps, records, enums, fixed byte sequences, nullable and
   general unions, named references, and ordered fields/branches;
 - root-level external JSON Schema/OpenAPI reference chains whose fragments are
   JSON Pointers, and ordered Avro dependency schemas.
@@ -189,9 +191,23 @@ The initial safe structural projection covers:
 Projection deliberately requires enough native structure to choose a language
 type. It does not infer a type from `minimum`, `properties`, or another keyword;
 does not turn Boolean schemas into a guessed payload type; and rejects tuples,
-maps, anchor-based root refs, unsupported field identifiers, and nested external
-refs that it cannot yet express. Those errors are `native.projection`, not a
-silent broadening.
+heterogeneous map value domains, open `patternProperties` maps whose unmatched
+keys have no value type, anchor-based root refs, unsupported field identifiers,
+and nested external refs that it cannot yet express. Schema-valued
+`additionalProperties` and closed `patternProperties` project only when every
+possible value has the same checked type; their original native constraints
+remain authoritative. Those errors are `native.projection`, not a silent
+broadening.
+
+Map identity is the decoded exact UTF-16 key sequence: alternate JSON escape
+spellings are duplicates, while case and Unicode normalization remain distinct.
+Entry order is never semantic and canonical Refine display sorts exact UTF-16
+code units. JSON and Avro wire boundaries reject keys that cannot be represented
+as Unicode scalar text rather than replacing unpaired surrogates. Native checked
+decoding also applies one aggregate per-payload fixed 67,108,864-unit
+conservative UTF-16 ordering-work cap across all nested maps, reported as
+`native.limit`; structural `Nodes`/`Values` retain their stated
+meaning and are not silently reinterpreted as CPU budgets.
 
 Native constraints remain authoritative in the immutable sidecar. For JSON
 Schema, each resource has independently scoped `NativeConstraints`,

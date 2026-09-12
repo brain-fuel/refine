@@ -43,6 +43,15 @@ func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
         case EvalList(items): return numberValue(value.Integer(int64(len(items))),"Int")
         case _: evalError(at,"evaluation.type","length requires text or a list")
         }
+    case "lookup","member":
+        key:=textOf(args[0],at);entries:=mapEntriesOf(args[1],at);for _,entry:=range entries{e.step(uint64(key.Length()+entry.key.Length()+1),at);if entry.key.Equal(key){if name=="member"{return boolValue(true)};return evalValue{form:EvalVariant("Just",[]evalValue{entry.value})}}};if name=="member"{return boolValue(false)};return evalValue{form:EvalVariant("Nothing",nil)}
+    case "keys":entries:=mapEntriesOf(args[0],at);e.step(uint64(len(entries)),at);items:=make([]evalValue,len(entries));for i,entry:=range entries{items[i]=textValue(entry.key)};return evalValue{form:EvalList(items)}
+    case "values":entries:=mapEntriesOf(args[0],at);e.step(uint64(len(entries)),at);items:=make([]evalValue,len(entries));for i,entry:=range entries{items[i]=entry.value};return evalValue{form:EvalList(items)}
+    case "size":return numberValue(value.Integer(int64(len(mapEntriesOf(args[0],at)))),"Int")
+    case "insert":
+        key:=textOf(args[0],at);source:=mapEntriesOf(args[2],at);found:=-1;for i,entry:=range source{e.step(uint64(key.Length()+entry.key.Length()+1),at);if found<0&&entry.key.Equal(key){found=i}};entries:=append([]evalMapEntry(nil),source...);if found>=0{entries[found].value=args[1]}else{entries=append(entries,evalMapEntry{key:key,value:args[1]})};return e.mapValue(entries,at)
+    case "delete":
+        key:=textOf(args[0],at);entries:=mapEntriesOf(args[1],at);remove:=-1;for i,entry:=range entries{e.step(uint64(key.Length()+entry.key.Length()+1),at);if remove<0&&entry.key.Equal(key){remove=i}};if remove<0{return e.mapValue(entries,at)};out:=make([]evalMapEntry,0,len(entries)-1);out=append(out,entries[:remove]...);out=append(out,entries[remove+1:]...);return e.mapValue(out,at)
     case "reverse":
         items := itemsOf(args[0],at); e.step(uint64(len(items)),at)
         result := make([]evalValue,len(items)); for i,item := range items { result[len(items)-1-i] = item }; return evalValue{form:EvalList(result)}
@@ -53,6 +62,10 @@ func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
         items := itemsOf(args[1],at); e.step(uint64(len(items)),at)
         result := make([]evalValue,0,len(items))
         for _,item := range items { if boolean(e.apply(args[0],item,at),at) { result = append(result,item) } }; return evalValue{form:EvalList(result)}
+    case "mapValues","filterValues":
+        entries:=mapEntriesOf(args[1],at);e.step(uint64(len(entries)),at);result:=make([]evalMapEntry,0,len(entries));for _,entry:=range entries{mapped:=e.apply(args[0],entry.value,at);if name=="mapValues"{result=append(result,evalMapEntry{key:entry.key,value:mapped})}else if boolean(mapped,at){result=append(result,entry)}};return e.mapValue(result,at)
+    case "allValues","anyValues":
+        entries:=mapEntriesOf(args[1],at);e.step(uint64(len(entries)),at);items:=make([]evalValue,len(entries));for i,entry:=range entries{items[i]=entry.value};mode:="all";if name=="anyValues"{mode="any"};return e.combine(mode,[]evalValue{args[0],evalValue{form:EvalList(items)}},at)
     case "foldl":
         result := args[1]
         for _,item := range itemsOf(args[2],at) { e.step(1,at); result = e.apply(e.apply(args[0],result,at),item,at) }; return result
@@ -133,6 +146,8 @@ func (e *evaluator) show(v evalValue,at Span) string {
             parts[i] = field.name + " = " + e.show(field.value,at)
         }
         return "{" + strings.Join(parts,", ") + "}"
+    case EvalMap(entries):
+        e.step(uint64(len(entries)),at);parts:=make([]string,len(entries));for i,entry:=range entries{e.step(uint64(entry.key.Length()),at);parts[i]=entry.key.Show()+" = "+e.show(entry.value,at)};return "map {"+strings.Join(parts,", ")+"}"
     case EvalVariant(name,args):
         e.step(uint64(len(name)+len(args)),at)
         if !codecIdentifier(name,true){evalError(at,"evaluation.show","constructor is not representable in the canonical value grammar")}
@@ -169,6 +184,8 @@ func (e *evaluator) fromData(data value.Data,at Span) evalValue {
     case value.RecordData():
         e.step(uint64(data.Size()),at);fields := data.Fields()
         result := make([]evalField,len(fields)); for i,field := range fields {e.step(uint64(len(field.Name)),at);result[i] = evalField{name:field.Name,value:e.fromData(field.Value,at)} }; return evalValue{form:EvalRecord(result)}
+    case value.MapData():
+        e.step(uint64(data.Size()),at);entries:=data.Entries();result:=make([]evalMapEntry,len(entries));for i,entry:=range entries{e.step(uint64(entry.Key.Length()),at);result[i]=evalMapEntry{key:entry.Key,value:e.fromData(entry.Value,at)}};return e.mapValue(result,at)
     case value.VariantData():
         name,_ := data.Constructor();e.step(uint64(data.Size()+len(name)),at);args := data.Elements()
         result := make([]evalValue,len(args)); for i,arg := range args { result[i] = e.fromData(arg,at) }; return evalValue{form:EvalVariant(name,result)}
@@ -189,6 +206,8 @@ func (e *evaluator) toData(v evalValue,at Span) value.Data {
         e.step(uint64(len(fields)),at)
         result := make([]value.DataField,len(fields)); for i,field := range fields { result[i] = value.DataField{Name:field.name,Value:e.toData(field.value,at)} }
         data,err := value.Record(result); if err != nil { evalError(at,"evaluation.record","invalid runtime record") }; return data
+    case EvalMap(entries):
+        e.step(uint64(len(entries)),at);result:=make([]value.MapEntry,len(entries));for i,entry:=range entries{e.step(uint64(entry.key.Length()),at);result[i]=value.MapEntry{Key:entry.key,Value:e.toData(entry.value,at)}};data,err:=value.Map(result);if err!=nil{evalError(at,"evaluation.map","invalid runtime map")};return data
     case EvalVariant(name,args):
         e.step(uint64(len(args)),at)
         result := make([]value.Data,len(args)); for i,arg := range args { result[i] = e.toData(arg,at) }

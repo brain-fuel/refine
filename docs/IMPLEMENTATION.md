@@ -277,6 +277,10 @@ The scopes below extend `d504826`; they do not mark the full release gates done.
 
 ## Follow-up integration checkpoint (2026-09-12)
 
+Committed and pushed as `a0bc5eb`; separate platform verification is tracked in
+[CI run 34715151520](https://github.com/brain-fuel/refine/actions/runs/34715151520).
+The local result below is not a claim that this CI run has completed.
+
 The coherent source batch below passed one full local integration gate, with
 Java and Maven required and all pinned dependency directories enabled:
 
@@ -1474,3 +1478,119 @@ native formats and project workflows. The full checklist remains the release gat
 
 These are concrete remaining gates, not claims that publication occurred. The
 current implementation still performs no Maven deployment or product release.
+
+## No-codegen publication gate — 2026-09-12
+
+- Ordinary project generation and recoverable release promotion now invoke the
+  same `release.PlanPublication` gate before owned main Java sources are removed.
+  Fresh generation without a relevant removal remains configuration-free.
+- `refine.publications.json` is a strict, versioned, checked-in ledger. Records
+  distinguish `published` from `unpublished` and bind exact immutable schema
+  bytes, generated-source inventories, reasons, and a canonical inventory
+  digest. Published records additionally bind the Maven artifact bytes/version
+  and the actual sorted JAR class-entry byte digests. Local generated output is
+  never inferred to have been published.
+- A missing record for an existing `noCodegen` exclusion or owned source
+  deletion is reported as unknown and fails closed. Published removals retain
+  the family-major Maven bump policy. Maven's effective group/artifact/version
+  must be passed to the CLI and match both the ledger and accepted version;
+  parsing a raw POM is intentionally not treated as proof.
+- The generated Maven snippet passes the effective `${project.*}` values.
+  Standalone release promotion requires the equivalent explicit flags.
+  Publication ledger/schema inputs are rechecked under the common mutation lock
+  (or the release transaction lock) before bytes are removed or installed.
+- This closes the first three items in the preceding gap list for no-codegen and
+  owned-source removal only. It does not claim general Java ABI comparison,
+  publication execution, signing, deployment, or repository verification. The
+  semantic change-classification and dependency-impact precision gaps require
+  separate evidence; subsequent work is recorded below.
+
+## Deterministic selection and release classification — 2026-09-12
+
+- Checkpoint `a0bc5eb3ecdd6d8ce3b2dd5f26d1239a0ad3fd14` completed successfully
+  on Linux and macOS in CI run `34715151520`, including the fuzz campaigns.
+  That result does not cover the subsequent dirty map/publication/tooling batch.
+- Added the GoPlus-authored `refine-testplan` development command. CI replaces
+  its manually maintained fuzz list with a sorted, reasoned changed-input plan.
+  It discovered all 23 current targets, including two omitted by the old list.
+  Same-commit dry-run selected none; `--full` discovery selected all 23. Neither
+  dry run executed tests or a fuzz campaign.
+- Initial selector six-test selection passed in 0.357s. Independent review found
+  omitted `TestMain`, receiver-method, blank-import, Markdown fixture, and Go
+  fuzz-signature dependencies. Four new regressions and three affected existing
+  tests passed in one 0.233s selection after the fixes. Unknown fixture roots,
+  tooling changes, and missing baselines select all targets. Progress/test
+  output stays on stderr; stdout remains the versioned JSON plan.
+- `analysis.CompareContractSyntax` reports redacted named syntax differences
+  and stable fingerprints without claiming arbitrary predicate equivalence.
+  Its three focused tests passed (the two corrected explicit-signature fixtures
+  were rerun alone, 0.188s). The CLI rejects false documentation-only claims even
+  with compatibility overrides, including reachable function/type changes,
+  source packages, and native metadata. Six new/affected CLI tests passed in
+  one 0.725s selection. Native resource documentation equivalence and historical
+  Java ABI proof remain explicitly unknown; this is not full semantic diffing.
+- Direct Maven planner callers now cannot use negative schema versions as
+  history or next-version evidence. The single new regression passed in 0.303s.
+- No additional Maven lifecycle or whole-suite run was launched for these
+  intermediate changes. Their source-consistent integration gate is pending.
+
+## Typed maps and final audit follow-ups — 2026-09-12
+
+- Added `Map String a`, contextual `map {"key" = value}` literals, eleven map
+  operations, immutable exact UTF-16 key identity, canonical read/show and
+  order-independent equality. JSON Schema/OpenAPI homogeneous maps and Avro
+  maps now project, lower and decode without weakening native constraints.
+  Heterogeneous or untyped value domains remain explicitly unsupported.
+- Generated Java uses immutable `Map<String,T>` domain values, distinct raw
+  `Data.Mapping`, native JSON/Avro serde and recursive generic property
+  strategies. The grouped Java/JetCheck harness covers all operations, typed
+  generic values, duplicate keys, surrogate rejection with zero output, stable
+  ordering and 198 exact Go/Java budget reports. Final contextual parser checks
+  passed with the function execution anchor in 7.958s; the later allocation
+  audit required only the map parity anchor (2.145s), not both harnesses again.
+- Independent review found collection allocations preceding budget checks.
+  Map literals/quantifiers now precharge before allocation; JSON uses a
+  nonallocating member count before one defensive member copy. JSON and Avro
+  native decoding have a separate aggregate 67,108,864-unit UTF-16 ordering
+  work ceiling across nested maps, not a reinterpretation of Nodes/Values.
+  The single language preflight test passed in 0.266s; three affected native
+  preflight/JSON/Avro checks passed in 0.294s.
+- New `FuzzMapReadShow` and the additional map payload-type seed passed replay
+  in 0.191s. Automatic discovery now finds 24 targets without modifying CI's
+  target list. No local fuzz campaign was launched.
+- Release classification review additionally found native import graphs were
+  flattened before package comparison. Reachable source identities, imports,
+  entry points and packages are now checked for both plain and native bundles.
+  Five affected graph/classification/promotion tests passed in 1.847s. Native
+  package/identity changes cannot use compatibility overrides as documentation
+  approval; comment-only native import edits remain accepted by this check.
+- Publication inventories reject Windows drive/alternate-stream-style colon
+  paths; the exact new table test passed in 0.216s.
+- Selector fuzz signatures were compared with a real `go test -list '^Fuzz'`
+  oracle (no tests/campaign executed). After correcting the test fixture's
+  alias/dot-import package collision, that sole test passed in 0.672s. A
+  separate normal-import initialization regression passed in 0.272s; unchanged
+  test import lists do not cause extra campaigns.
+- The combined source-consistent race/Maven gate passed once with the pinned
+  Java 25, Jackson, Avro, networknt, GraalJS, JetCheck and Maven directories:
+
+  ```sh
+  go tool goplus gen -check ./...
+  REFINE_REQUIRE_JAVA=1 \
+  REFINE_JAVA_HOME=/opt/homebrew/opt/openjdk@25 \
+  REFINE_JETCHECK_DIR=/tmp/refine-jetcheck-sfZEQ7 \
+  REFINE_JACKSON_DIR=/tmp/refine-jackson-dCP3wX \
+  REFINE_AVRO_DIR=/tmp/refine-avro-1.12.0 \
+  REFINE_NETWORKNT_DIR=/tmp/refine-networknt-jars \
+  REFINE_GRAALJS_DIR=/tmp/refine-regex-maven/jars \
+  REFINE_REQUIRE_MAVEN=1 \
+  REFINE_MAVEN_HOME=/tmp/refine-maven-SoxP0H/apache-maven-3.9.16 \
+  go test -race ./...
+  go vet ./...
+  git diff --check
+  ```
+
+  All packages passed. Java took 196.072s; native 35.808s; project, including
+  the actual Maven lifecycle, 31.129s; CLI 6.059s; selector 3.953s. No separate
+  Maven run or local fuzz campaign duplicated this gate. No release tag or
+  Maven deployment is claimed; the full specification still has open gaps.

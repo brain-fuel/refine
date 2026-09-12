@@ -49,7 +49,7 @@ func MavenSnippet(options MavenOptions) string {
 		executable = "refine"
 	}
 	if len(arguments) == 0 {
-		arguments = []string{"project", "generate"}
+		arguments = []string{"project", "generate", "--maven-group-id", "${project.groupId}", "--maven-artifact-id", "${project.artifactId}", "--maven-version", "${project.version}"}
 	}
 	var argumentXML strings.Builder
 	argumentXML.WriteString("<arguments>")

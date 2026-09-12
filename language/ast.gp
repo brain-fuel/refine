@@ -53,6 +53,7 @@ type ExprForm enum {
     Variable(Name string)
     ListLiteral(Elements []*Expr)
     RecordLiteral(Fields []FieldValue)
+    MapLiteral(Entries []MapValue)
     Apply(Function *Expr, Argument *Expr)
     Project(Record *Expr, Field string)
     Unary(Operator string, Operand *Expr)
@@ -62,6 +63,9 @@ type ExprForm enum {
     Case(Value *Expr, Arms []CaseArm)
 }
 type FieldValue struct { Name string; Value *Expr; At Span }
+// MapValue retains the original quoted token. Map identity uses the decoded
+// UTF-16 key, so alternate escape spellings cannot create distinct entries.
+type MapValue struct { Key string; Value *Expr; At Span }
 type CaseArm struct { Pattern *Pattern; Body *Expr; At Span }
 
 type Pattern struct { Form PatternForm; At Span }

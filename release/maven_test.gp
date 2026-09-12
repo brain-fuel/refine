@@ -33,3 +33,8 @@ func TestMavenUnchangedHasNoBlindPatch(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestMavenRejectsNegativeSchemaVersionsWithoutUsingThem(t *testing.T){
+    cases:=[]MavenPlanningInput{{Current:Version{Major:1},PreviouslyPublished:[]GeneratedVersion{{Family:"foo",SchemaVersion:Version{Major:-1},Generated:true}},Next:[]GeneratedVersion{{Family:"foo",SchemaVersion:Version{Major:1},Generated:false}}},{Current:Version{Major:1},PreviouslyPublished:[]GeneratedVersion{{Family:"foo",SchemaVersion:Version{Major:1},Generated:true}},Next:[]GeneratedVersion{{Family:"foo",SchemaVersion:Version{Major:1,Minor:-1},Generated:false}}}}
+    for i,input:=range cases{got:=PlanMavenVersion(input);if got.Ready||len(got.Issues)==0||got.Issues[0].Code!="maven.schema_version"{t.Fatalf("case %d accepted invalid schema version: %+v",i,got)};if i==0&&len(got.Removed)!=0{t.Fatalf("invalid historical evidence influenced removal planning: %+v",got)}}
+}

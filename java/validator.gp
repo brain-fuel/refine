@@ -66,6 +66,7 @@ func (e *initializer) expr(expr *language.Expr,scope map[string]bool)string {
         kind,text="let",name;args=append(args,child(bound));local:=make(map[string]bool);for key,v:=range scope{local[key]=v};local[name]=true;args=append(args,e.expr(body,local))
     case language.ListLiteral(elements):kind="list";for _,element:=range elements{args=append(args,child(element))}
     case language.RecordLiteral(fields):kind="record";for _,field:=range fields{names=append(names,field.Name);args=append(args,child(field.Value))}
+    case language.MapLiteral(entries):kind="map";for _,entry:=range entries{names=append(names,entry.Key);args=append(args,child(entry.Value))}
     case language.Apply(fn,arg):kind="apply";args=append(args,child(fn),child(arg))
     case language.Case(subject,branches):
         kind="case";args=append(args,child(subject))

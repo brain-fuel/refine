@@ -28,6 +28,7 @@ func shapeExpr(e *language.Expr)readShape{
     case language.Let(n,annotation,a,b):s.kind,s.text="let",n;if annotation!=nil{s.children=append(s.children,shapeType(annotation))};s.children=append(s.children,shapeExpr(a),shapeExpr(b))
     case language.ListLiteral(items):s.kind="list";for _,item:=range items{s.children=append(s.children,shapeExpr(item))}
     case language.RecordLiteral(fields):s.kind="record";for _,field:=range fields{s.names=append(s.names,field.Name);s.children=append(s.children,shapeExpr(field.Value))}
+    case language.MapLiteral(entries):s.kind="map";for _,entry:=range entries{s.names=append(s.names,entry.Key);s.children=append(s.children,shapeExpr(entry.Value))}
     case language.Case(subject,arms):s.kind="case";s.children=append(s.children,shapeExpr(subject));for _,arm:=range arms{s.children=append(s.children,shapePattern(arm.Pattern),shapeExpr(arm.Body))}
     }
     return s

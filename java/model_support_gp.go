@@ -47,6 +47,20 @@ final class ModelSupport {
         for (Data value : ((Data.Sequence)data).values()) result.add(decode.apply(value));
         return java.util.List.copyOf(result);
     }
+    static <T> Data mapping(java.util.Map<String,T> values, java.util.function.BiFunction<T,String,Data> encode, String path) {
+        nonNull(values,path); var ordered = new java.util.ArrayList<>(values.entrySet()); ordered.sort(java.util.Map.Entry.comparingByKey());
+        var result = new java.util.LinkedHashMap<String,Data>();
+        for (var entry : ordered) {
+            String key = nonNull(entry.getKey(),path); String where = path + "/" + key.replace("~","~0").replace("/","~1");
+            result.put(key,encode.apply(entry.getValue(),where));
+        }
+        return new Data.Mapping(result);
+    }
+    static <T> java.util.Map<String,T> mapping(Data data, java.util.function.Function<Data,T> decode) {
+        var result = new java.util.LinkedHashMap<String,T>();
+        for (var entry : ((Data.Mapping)data).entries().entrySet()) result.put(entry.getKey(),decode.apply(entry.getValue()));
+        return java.util.Collections.unmodifiableMap(result);
+    }
     static <T> Data maybe(ModelMaybe<T> value, java.util.function.BiFunction<T, String, Data> encode, String path) {
         nonNull(value, path);
         return switch (value) {

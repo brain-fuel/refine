@@ -98,6 +98,9 @@ func projectCommand(args []string, output, errorOutput io.Writer) int {
 	flat := flags.Bool("flat", false, "omit package subdirectories from Java output")
 	check := flags.Bool("check", false, "verify generated outputs without writing")
 	jsonMode := flags.Bool("json", false, "emit machine-readable result")
+	mavenGroup := flags.String("maven-group-id", "", "Maven-evaluated project.groupId for publication-sensitive removal")
+	mavenArtifact := flags.String("maven-artifact-id", "", "Maven-evaluated project.artifactId for publication-sensitive removal")
+	mavenVersion := flags.String("maven-version", "", "Maven-evaluated project.version for publication-sensitive removal")
 	if err := flags.Parse(args[1:]); err != nil || len(flags.Args()) != 0 {
 		return 2
 	}
@@ -126,10 +129,35 @@ func projectCommand(args []string, output, errorOutput io.Writer) int {
 		var bundle project.Bundle
 		bundle, err = project.Generate(input)
 		if err == nil {
-			if *check {
-				err = project.CheckOwned(absolute, bundle, "")
-			} else {
-				err = project.WriteOwned(absolute, bundle, "")
+			var owned project.OwnedAddition
+			owned, err = project.PlanOwnedAddition(absolute, bundle, "")
+			if err == nil {
+				var config projectConfig
+				var configRaw []byte
+				var catalog releaseCatalog
+				config, configRaw, catalog, err = loadProjectPublicationConfig(absolute, *configFlag)
+				if err == nil {
+					var gate release.PublicationPlan
+					var conditions []release.FilePrecondition
+					gate, conditions, err = planPublication(absolute, config, catalog, map[string]release.Version{}, owned, release.MavenCoordinates{GroupID: *mavenGroup, ArtifactID: *mavenArtifact, Version: *mavenVersion})
+					if configRaw != nil {
+						conditions = append(conditions, release.FilePrecondition{Path: filepath.ToSlash(*configFlag), Content: release.Digest(configRaw)})
+					}
+					if err == nil && !gate.Ready {
+						messages := []string{}
+						for _, issue := range gate.Issues {
+							messages = append(messages, issue.Code+": "+issue.Message)
+						}
+						err = fmt.Errorf("publication gate: %s", strings.Join(messages, "; "))
+					}
+					if err == nil {
+						if *check {
+							err = project.CheckOwned(absolute, bundle, "")
+						} else {
+							err = project.WriteOwnedChecked(absolute, bundle, "", conditions)
+						}
+					}
+				}
 			}
 			if err == nil {
 				verb := "Generated"

@@ -267,6 +267,9 @@ func (w *avroDefaultWalker) walk(t *language.Type, schema avro.Schema, bindings 
 			}
 			return nil
 		}
+		if name == "Map" && len(args) == 2 && schema.Type() == avro.Map {
+			return w.walk(args[1], schema.(*avro.MapSchema).Values(), bindings, "", depth+1)
+		}
 		decl, ok := w.declarations[name]
 		if !ok || len(args) != len(decl.Parameters) {
 			return nil

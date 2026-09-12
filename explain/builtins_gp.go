@@ -83,6 +83,28 @@ func builtinMeaning(name string) (string, bool) {
 		meaning = "Apply each predicate in the first argument collection to the second argument value in order. Require exactly one true result. Two known true results are false even if another result is indeterminate. Otherwise any indeterminate result makes the result indeterminate; with all results known, return whether exactly one is true. No predicates gives false."
 	case "satisfiesOneOf", "satisfiesAtLeastOneOf":
 		meaning = "Apply each predicate in the first argument collection to the second argument value in order. Return true as soon as one predicate is known true, even after an indeterminate result. With no true result, any indeterminate result makes the result indeterminate; otherwise return false, including for no predicates."
+	case "lookup":
+		meaning = "Look up the exact UTF-16 string key in the immutable map without normalization; return Nothing when absent or Just with its value when present."
+	case "member":
+		meaning = "Return whether the immutable map contains the exact UTF-16 string key, without case folding or Unicode normalization."
+	case "keys":
+		meaning = "Return the map keys in deterministic exact UTF-16 order."
+	case "values":
+		meaning = "Return the map values in deterministic exact UTF-16 key order."
+	case "size":
+		meaning = "Return the number of entries in the map."
+	case "insert":
+		meaning = "Return a new map with the exact key associated with the supplied value, replacing that key's prior value without mutating the input."
+	case "delete":
+		meaning = "Return a new map without the exact supplied key, leaving the input unchanged."
+	case "mapValues":
+		meaning = "Apply the function to each map value in deterministic exact UTF-16 key order and return a new map with unchanged keys."
+	case "filterValues":
+		meaning = "Apply the predicate to each map value in deterministic exact UTF-16 key order and return a new map containing only known-true values; predicate errors remain indeterminate."
+	case "allValues":
+		meaning = "Apply the predicate to map values in deterministic exact UTF-16 key order with the same three-outcome rules as all."
+	case "anyValues":
+		meaning = "Apply the predicate to map values in deterministic exact UTF-16 key order with the same three-outcome rules as any."
 	default:
 		return "", false
 	}

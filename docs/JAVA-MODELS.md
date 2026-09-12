@@ -333,10 +333,14 @@ closed witness and evidence design; see [GENERIC-UNIONS.md](GENERIC-UNIONS.md).
 
 ## Coverage and remaining scope
 
-Current models cover monomorphic named scalars, records, lists and aliases,
+Current models cover monomorphic named scalars, records, lists, immutable
+`Map<String,T>` values and aliases,
 nominal refinement chains, recursive records through named references/optional
 fields, tagged unions and their recursive/refined alternatives, and composed
 optional/nullable/result values, plus the generic roots described above.
+Map witnesses compose over generic value types. `Data.Mapping` remains distinct
+from records and lists, copies caller maps, sorts exact UTF-16 keys, and model
+getters expose unmodifiable maps.
 Anonymous nested records produce deterministic descriptive model classes from
 their checked owner and field/item/argument path. They retain typed getters,
 validating and explicit-bypass construction, immutable drafts, generic owner

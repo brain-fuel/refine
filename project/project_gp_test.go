@@ -161,7 +161,7 @@ func TestGeneratedTestsAndNoCodegen(t *testing.T) {
 		t.Fatal("missing schema-derived tests or executable launcher")
 	}
 	snippet := MavenSnippet(MavenOptions{})
-	for _, required := range []string{"<artifactId>jetCheck</artifactId>", "<phase>test</phase>", "<goal>java</goal>", "refine.generated.RefineGeneratedTests", "<classpathScope>test</classpathScope>"} {
+	for _, required := range []string{"<artifactId>jetCheck</artifactId>", "<phase>test</phase>", "<goal>java</goal>", "refine.generated.RefineGeneratedTests", "<classpathScope>test</classpathScope>", "${project.groupId}", "--maven-artifact-id", "${project.version}"} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("missing executable Maven integration %s", required)
 		}
@@ -373,5 +373,27 @@ func TestPlanOwnedAdditionRejectsUnownedAndCaseFoldCollisions(t *testing.T) {
 		if _, err := PlanOwnedAddition(root, bundle, ""); err == nil {
 			t.Fatal("unsafe ownership addition accepted")
 		}
+	}
+}
+
+func TestWriteOwnedCheckedRejectsChangedPublicationInputBeforeDeletion(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ledger.json"), []byte("before"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteOwned(root, Bundle{Files: []File{{Path: "generated.java", Content: []byte("owned")}}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	condition := release.FilePrecondition{Path: "ledger.json", Content: release.Digest([]byte("before"))}
+	if err := os.WriteFile(filepath.Join(root, "ledger.json"), []byte("after"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteOwnedChecked(root, Bundle{}, "", []release.FilePrecondition{condition})
+	if err == nil || !strings.Contains(err.Error(), "changed after planning") {
+		t.Fatalf("changed publication input accepted: %v", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(root, "generated.java"))
+	if readErr != nil || string(data) != "owned" {
+		t.Fatal("precondition failure deleted owned output", readErr)
 	}
 }

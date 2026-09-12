@@ -118,6 +118,7 @@ func describeType(t *language.Type)string{
     case language.RefinedType(base,_):return describeType(base)+", subject to the separately listed where clauses"
     case language.ArrowType(arg,result):return "a function taking "+describeType(arg)+" and returning "+describeType(result)
     case language.AppliedType(constructor,arg):
+        if name,args,ok:=appliedType(constructor,arg);ok&&name=="Map"&&len(args)==2{return "an immutable exact-string-keyed map whose values each have "+describeType(args[1])+"; entry order is not semantic and keys are never normalized"}
         match constructor.Form{
         case language.NamedType(name):
             if name=="Maybe"{return "an absent value (Nothing) or a present value (Just) with "+describeType(arg)+"; absence is not null"}
@@ -126,6 +127,8 @@ func describeType(t *language.Type)string{
         return "the applied type "+language.FormatType(t)+" (substitute its arguments in the referenced definition)"
     }
 }
+
+func appliedType(constructor,arg *language.Type)(string,[]*language.Type,bool){root:=&language.Type{Form:language.AppliedType(constructor,arg)};args:=[]*language.Type{};for{match root.Form{case language.AppliedType(fn,item):args=append([]*language.Type{item},args...);root=fn;case language.NamedType(name):return name,args,true;case _:return "",nil,false}}}
 
 func (b *builder) typ(owner,location string,t *language.Type){
     match t.Form{
@@ -164,6 +167,8 @@ func (b *builder) expr(owner string,e *language.Expr)string{
         parts:=[]string{};for _,item:=range items{parts=append(parts,child(item))};english="Evaluate ["+strings.Join(parts,", ")+"] from left to right and return the resulting ordered list."
     case language.RecordLiteral(fields):
         parts:=[]string{};for _,field:=range fields{parts=append(parts,field.Name+" from "+child(field.Value))};english="Evaluate and construct a new record with "+strings.Join(parts,"; ")+"."
+    case language.MapLiteral(entries):
+        parts:=[]string{};for _,entry:=range entries{parts=append(parts,entry.Key+" from "+child(entry.Value))};english="Evaluate and construct an immutable string-keyed map with "+strings.Join(parts,"; ")+". Entry order is not semantic; decoded UTF-16 keys are exact and are not normalized."
     case language.Project(record,field):english="Evaluate "+child(record)+", then select its field "+field+"."
     case language.Apply(fn,arg):english="Evaluate function "+child(fn)+", then argument "+child(arg)+", and apply the former to the latter. Arguments are eager even when unused; partial applications retain supplied arguments. Apply any declared argument/result refinements at their corresponding boundary."
     case language.Unary(op,operand):

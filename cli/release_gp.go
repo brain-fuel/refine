@@ -36,6 +36,7 @@ type releaseMavenPolicy struct {
 	Intended            *string                  `json:"intended"`
 	OtherChange         string                   `json:"otherChange"`
 	PreviouslyGenerated []releaseGeneratedPolicy `json:"previouslyGenerated"`
+	PublicationLedger   string                   `json:"publicationLedger"`
 }
 type releaseGeneratedPolicy struct {
 	Family  string `json:"family"`
@@ -93,26 +94,30 @@ type releaseComparisonReport struct {
 	Detail               string           `json:"detail"`
 }
 type releaseFamilyReport struct {
-	Family      string                    `json:"family"`
-	Plan        release.PlanResult        `json:"plan"`
-	Comparisons []releaseComparisonReport `json:"comparisons"`
+	Family        string                        `json:"family"`
+	Plan          release.PlanResult            `json:"plan"`
+	Comparisons   []releaseComparisonReport     `json:"comparisons"`
+	Documentation *releaseDocumentationEvidence `json:"documentation,omitempty"`
 }
 type releaseWorkflow struct {
-	root          string
-	configPath    string
-	configContent release.ContentID
-	config        projectConfig
-	catalog       releaseCatalog
-	reports       []releaseFamilyReport
-	maven         *release.MavenPlan
-	snapshots     map[string]*releaseSchemaEntry
-	plans         map[string]release.PlanResult
-	selected      []string
-	preconditions map[string]release.ContentID
+	root           string
+	configPath     string
+	configContent  release.ContentID
+	config         projectConfig
+	catalog        releaseCatalog
+	reports        []releaseFamilyReport
+	maven          *release.MavenPlan
+	publication    *release.PublicationPlan
+	effectiveMaven release.MavenCoordinates
+	snapshots      map[string]*releaseSchemaEntry
+	plans          map[string]release.PlanResult
+	selected       []string
+	preconditions  map[string]release.ContentID
 }
 type releasePlanReport struct {
-	Families []releaseFamilyReport `json:"families"`
-	Maven    *release.MavenPlan    `json:"maven,omitempty"`
+	Families    []releaseFamilyReport    `json:"families"`
+	Maven       *release.MavenPlan       `json:"maven,omitempty"`
+	Publication *release.PublicationPlan `json:"publication,omitempty"`
 }
 
 func loadReleaseConfig(root *os.Root, name string) (projectConfig, []byte, error) {
@@ -661,10 +666,23 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 			}
 			planning.BreakingFixes = append(planning.BreakingFixes, release.BreakingFix{Comparison: ref, Justification: item.Justification})
 		}
+		var documentation *releaseDocumentationEvidence
+		if planning.Change == release.DocumentationOnly && len(baselines) > 0 {
+			latest := baselines[len(baselines)-1]
+			latestRoot, e := releaseEntryRoot(latest, family, settings)
+			if e != nil {
+				return releaseWorkflow{}, e
+			}
+			documentation, e = documentationEvidence(latest, snapshot, latestRoot, snapshotRoot, catalog)
+			if e != nil {
+				return releaseWorkflow{}, e
+			}
+		}
 		plan := release.Plan(planning)
+		enforceDocumentationClaim(&plan, documentation)
 		workflow.snapshots[family] = snapshot
 		workflow.plans[family] = plan
-		workflow.reports = append(workflow.reports, releaseFamilyReport{Family: family, Plan: plan, Comparisons: comparisons})
+		workflow.reports = append(workflow.reports, releaseFamilyReport{Family: family, Plan: plan, Comparisons: comparisons, Documentation: documentation})
 	}
 	if policy := config.Release.Maven; policy != nil {
 		if policy.Current == "" {
@@ -727,6 +745,9 @@ func releaseStatus(workflow releaseWorkflow) int {
 	if workflow.maven != nil && !workflow.maven.Ready {
 		return 1
 	}
+	if workflow.publication != nil && !workflow.publication.Ready {
+		return 1
+	}
 	return 0
 }
 func releaseDiagnostics(workflow releaseWorkflow) []diagnostic {
@@ -741,7 +762,46 @@ func releaseDiagnostics(workflow releaseWorkflow) []diagnostic {
 			out = append(out, diagnostic{Code: issue.Code, Message: "Maven artifact: " + issue.Message})
 		}
 	}
+	if workflow.publication != nil {
+		for _, issue := range workflow.publication.Issues {
+			out = append(out, diagnostic{Code: issue.Code, Message: "Publication: " + issue.Message})
+		}
+	}
 	return out
+}
+func checkWorkflowPublication(workflow *releaseWorkflow, owned project.OwnedAddition) error {
+	prospective := map[string]release.Version{}
+	for family, settings := range workflow.config.Families {
+		if settings.Release.Intended != nil {
+			version, err := parsePolicyVersion(*settings.Release.Intended)
+			if err != nil {
+				return err
+			}
+			prospective[family] = version
+		}
+	}
+	plan, conditions, err := planPublication(workflow.root, workflow.config, workflow.catalog, prospective, owned, workflow.effectiveMaven)
+	if err != nil {
+		return err
+	}
+	workflow.publication = &plan
+	if plan.Maven != nil {
+		workflow.maven = plan.Maven
+	}
+	for _, condition := range conditions {
+		if prior, ok := workflow.preconditions[condition.Path]; ok && prior != condition.Content {
+			return fmt.Errorf("release input %s changed after planning", condition.Path)
+		}
+		workflow.preconditions[condition.Path] = condition.Content
+	}
+	if !plan.Ready {
+		messages := []string{}
+		for _, issue := range plan.Issues {
+			messages = append(messages, issue.Code+": "+issue.Message)
+		}
+		return fmt.Errorf("publication gate: %s", strings.Join(messages, "; "))
+	}
+	return nil
 }
 func rememberBundleInputs(workflow *releaseWorkflow, bundle *language.SourceBundle) error {
 	if bundle == nil {
@@ -942,8 +1002,8 @@ func promoteReleaseWorkflow(workflow releaseWorkflow) (release.PromotionResult, 
 		if err != nil {
 			return release.PromotionResult{}, err
 		}
-		if len(owned.Deletions) > 0 && (workflow.maven == nil || workflow.maven.RequiredChange == release.ArtifactNoChange) {
-			return release.PromotionResult{}, fmt.Errorf("release.maven: removing generated outputs requires an explicit Maven artifact change plan")
+		if err = checkWorkflowPublication(&workflow, owned); err != nil {
+			return release.PromotionResult{}, err
 		}
 		input.Families[0].Generated = append(input.Families[0].Generated, owned.Artifacts...)
 		if owned.ManifestCreate != nil {
@@ -980,6 +1040,9 @@ func releaseCommand(args []string, output, errorOutput io.Writer) int {
 	rootFlag := flags.String("root", "", "project root; defaults to nearest Maven project")
 	configFlag := flags.String("config", "refine.project.json", "project-relative configuration path")
 	jsonMode := flags.Bool("json", false, "emit machine-readable result")
+	mavenGroup := flags.String("maven-group-id", "", "Maven-evaluated project.groupId for publication-sensitive removal")
+	mavenArtifact := flags.String("maven-artifact-id", "", "Maven-evaluated project.artifactId for publication-sensitive removal")
+	mavenVersion := flags.String("maven-version", "", "Maven-evaluated project.version for publication-sensitive removal")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -1031,11 +1094,15 @@ func releaseCommand(args []string, output, errorOutput io.Writer) int {
 		return 2
 	}
 	workflow, err := buildReleaseWorkflow(rootPath, *configFlag, flags.Args())
+	workflow.effectiveMaven = release.MavenCoordinates{GroupID: *mavenGroup, ArtifactID: *mavenArtifact, Version: *mavenVersion}
+	if err == nil {
+		err = checkWorkflowPublication(&workflow, project.OwnedAddition{})
+	}
 	result := report{Phase: "release." + command, State: "valid", Diagnostics: []diagnostic{}}
 	status := 0
 	if err == nil {
 		status = releaseStatus(workflow)
-		result.Result = releasePlanReport{Families: workflow.reports, Maven: workflow.maven}
+		result.Result = releasePlanReport{Families: workflow.reports, Maven: workflow.maven, Publication: workflow.publication}
 		result.Diagnostics = releaseDiagnostics(workflow)
 		if status != 0 {
 			result.State = "invalid"
@@ -1045,11 +1112,12 @@ func releaseCommand(args []string, output, errorOutput io.Writer) int {
 			promoted, err = promoteReleaseWorkflow(workflow)
 			if err == nil {
 				result.Result = struct {
-					Families               []releaseFamilyReport   `json:"families"`
-					Maven                  *release.MavenPlan      `json:"maven,omitempty"`
-					Promotion              release.PromotionResult `json:"promotion"`
-					GeneratedOutputsAtomic bool                    `json:"generatedOutputsAtomic"`
-				}{workflow.reports, workflow.maven, promoted, true}
+					Families               []releaseFamilyReport    `json:"families"`
+					Maven                  *release.MavenPlan       `json:"maven,omitempty"`
+					Publication            *release.PublicationPlan `json:"publication,omitempty"`
+					Promotion              release.PromotionResult  `json:"promotion"`
+					GeneratedOutputsAtomic bool                     `json:"generatedOutputsAtomic"`
+				}{workflow.reports, workflow.maven, workflow.publication, promoted, true}
 				result.Summary = "Promoted schema files, exact import pins, generated outputs, and their ownership manifest in one recoverable transaction"
 			}
 		}

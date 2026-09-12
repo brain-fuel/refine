@@ -60,7 +60,8 @@ numbers, strings, Booleans, and nulls remain in the immutable model's raw data
 and are written back. A preserved value that was later changed to a language
 value with no exact JSON representation is rejected before output begins.
 
-Nested named and anonymous records, recursive records, and closed nested generic
+Nested named and anonymous records, recursive records, exact string-keyed maps,
+and closed nested generic
 specializations share a bounded descriptor graph. `Maybe` record fields use
 absence versus presence, while `Nullable` uses JSON `null` versus a non-null
 value. Integer JSON numbers are arbitrary precision and exact; decimal strings
@@ -68,6 +69,10 @@ can instead be selected with `JSONIntegerString`. `Real` requires an explicit
 choice between exact finite JSON decimals and canonical rational strings.
 `Timestamp` requires the explicit RFC 3339 string policy. Exact-decimal writes
 reject repeating rationals before output begins.
+Maps use JSON objects but remain `Data.Mapping` in the semantic model. Decoding
+rejects duplicate decoded keys, including escaped/unescaped spellings of the
+same key; writing uses exact UTF-16 key order and rejects unpaired surrogate keys
+before any staged bytes are released.
 
 ## Resource bounds
 

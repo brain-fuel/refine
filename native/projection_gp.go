@@ -26,6 +26,10 @@ type sourceProjector struct {
 	nextUnion       int
 	openAPI         bool
 }
+type jsonMapCandidate struct {
+	node schemajson.Node
+	path string
+}
 
 func checkedTypeName(name string) bool {
 	if name == "" {
@@ -108,11 +112,8 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 	if schemajson.KindName(node.Kind()) != "object" {
 		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path, Message: "schema position must be an object or Boolean"}
 	}
-	if additional, ok := node.Lookup("additionalProperties"); ok && schemajson.KindName(additional.Kind()) == "object" {
-		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/additionalProperties", Message: "schema-valued additionalProperties requires a language map type; Boolean permissive or closed extra-field policies remain supported"}
-	}
-	if patterns, ok := node.Lookup("patternProperties"); ok && schemajson.KindName(patterns.Kind()) == "object" && len(patterns.Members()) > 0 {
-		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/patternProperties", Message: "patternProperties map values require a language map type; retain this schema in the native document until typed maps are implemented"}
+	if unevaluated, ok := node.Lookup("unevaluatedProperties"); ok && schemajson.KindName(unevaluated.Kind()) == "object" {
+		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/unevaluatedProperties", Message: "schema-valued unevaluatedProperties depends on applicator evaluation and cannot yet be projected as one homogeneous Map value type; provide an explicit checked source"}
 	}
 	if ref, ok := node.Lookup("$ref"); ok {
 		raw, ok := nodeString(ref)
@@ -189,6 +190,12 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 		}
 		result = "[" + element + "]"
 	case "object":
+		if mapped, isMap, err := p.jsonMapType(node, path, openAPI); err != nil {
+			return "", err
+		} else if isMap {
+			result = mapped
+			break
+		}
 		properties, exists := node.Lookup("properties")
 		if !exists {
 			result = "{}"
@@ -237,6 +244,57 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 		result = "Nullable (" + result + ")"
 	}
 	return result, nil
+}
+
+// A JSON object projects as a typed map only when every possible value has one
+// checked type. Native pattern/required constraints remain authoritative in the
+// immutable schema; this projection only establishes the homogeneous value
+// domain. An open unmatched key domain is deliberately rejected.
+func (p *sourceProjector) jsonMapType(node schemajson.Node, path string, openAPI bool) (string, bool, error) {
+	additional, hasAdditional := node.Lookup("additionalProperties")
+	additionalSchema := hasAdditional && schemajson.KindName(additional.Kind()) == "object"
+	patterns, hasPatterns := node.Lookup("patternProperties")
+	patterned := hasPatterns && schemajson.KindName(patterns.Kind()) == "object" && len(patterns.Members()) > 0
+	if !additionalSchema && !patterned {
+		return "", false, nil
+	}
+	candidates := []jsonMapCandidate{}
+	if additionalSchema {
+		candidates = append(candidates, jsonMapCandidate{additional, path + "/additionalProperties"})
+	} else if patterned && (!hasAdditional || additional.Raw() != "false") {
+		return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: path + "/additionalProperties", Message: "patternProperties leaves unmatched keys with an untyped value domain; set additionalProperties to one homogeneous schema or false"}
+	}
+	if patterned {
+		for _, member := range patterns.Members() {
+			name, _ := member.Key.UTF8()
+			candidates = append(candidates, jsonMapCandidate{member.Value, path + "/patternProperties/" + escapePointer(name)})
+		}
+	}
+	if properties, ok := node.Lookup("properties"); ok {
+		if schemajson.KindName(properties.Kind()) != "object" {
+			return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: path + "/properties", Message: "properties must be an object"}
+		}
+		for _, member := range properties.Members() {
+			name, _ := member.Key.UTF8()
+			candidates = append(candidates, jsonMapCandidate{member.Value, path + "/properties/" + escapePointer(name)})
+		}
+	}
+	valueType := ""
+	for _, candidate := range candidates {
+		projected, err := p.jsonType(candidate.node, candidate.path, openAPI)
+		if err != nil {
+			return "", false, err
+		}
+		if valueType == "" {
+			valueType = projected
+		} else if projected != valueType {
+			return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: candidate.path, Message: "JSON map value schemas project to heterogeneous language types (" + valueType + " and " + projected + "); use an explicit annotated Refine source until a common value type is authored"}
+		}
+	}
+	if valueType == "" {
+		return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: path, Message: "typed map has no projectable value schema"}
+	}
+	return "Map String (" + valueType + ")", true, nil
 }
 
 func yamlToJSONDocument(root *yaml.Node) (schemajson.Document, error) {
@@ -363,7 +421,15 @@ func (p *sourceProjector) avroType(node schemajson.Node, hint string) (string, e
 			}
 			return "[" + inner + "]", nil
 		case "map":
-			return "", &Error{Code: "native.projection", Format: Avro, Message: "Avro maps need an explicit language map representation"}
+			values, ok := node.Lookup("values")
+			if !ok {
+				return "", &Error{Code: "native.projection", Format: Avro, Message: "Avro map values schema is absent"}
+			}
+			inner, err := p.avroType(values, hint+"Value")
+			if err != nil {
+				return "", err
+			}
+			return "Map String (" + inner + ")", nil
 		case "enum":
 			nameNode, _ := node.Lookup("name")
 			rawName, _ := nodeString(nameNode)

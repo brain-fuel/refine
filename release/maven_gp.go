@@ -59,6 +59,10 @@ func PlanMavenVersion(input MavenPlanningInput) MavenPlan {
 			issueMaven(&result, "maven.family", "invalid schema family")
 			continue
 		}
+		if !v.SchemaVersion.Valid() {
+			issueMaven(&result, "maven.schema_version", "previously published schema version contains a negative component")
+			continue
+		}
 		k := key(v)
 		if _, ok := previous[k]; ok {
 			issueMaven(&result, "maven.duplicate", "duplicate previously published schema version")
@@ -71,6 +75,10 @@ func PlanMavenVersion(input MavenPlanningInput) MavenPlan {
 	for _, v := range input.Next {
 		if !validFamily(v.Family) {
 			issueMaven(&result, "maven.family", "invalid schema family")
+			continue
+		}
+		if !v.SchemaVersion.Valid() {
+			issueMaven(&result, "maven.schema_version", "next schema version contains a negative component")
 			continue
 		}
 		k := key(v)

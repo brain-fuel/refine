@@ -119,7 +119,7 @@ func (c *checker) requireCapability(class string,t *term,at Span,effective map[s
         return c.requireCapability(class,expanded,at,effective,owners,visiting)
     }
     switch t.name{
-    case "[]","Maybe","Nullable","Result":
+    case "[]","Maybe","Nullable","Result","Map":
         for _,arg:=range t.args{if c.requireCapability(class,arg,at,effective,owners,visiting){changed=true}}
         return changed
     case "{}":

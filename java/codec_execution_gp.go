@@ -18,6 +18,17 @@ const codecExecutionJava = `
                                 step(list.values().size());
                                 showItems(list.values(), level + 1, false, parts -> work.complete(done, "[" + String.join(", ", parts) + "]"));
                             }
+                            case MapValue map -> {
+                                step(map.entries().size()); var entries = new ArrayList<>(map.entries().entrySet());
+                                work.later(new Runnable() {
+                                    int index; final List<String> parts = new ArrayList<>();
+                                    @Override public void run() {
+                                        if (index == entries.size()) { work.complete(done, "map {" + String.join(", ", parts) + "}"); return; }
+                                        var entry = entries.get(index++); step(entry.getKey().length());
+                                        show(entry.getValue(), level + 1, shown -> { parts.add(TextCodec.show(entry.getKey()) + " = " + shown); work.later(this); });
+                                    }
+                                });
+                            }
                             case RecordValue record -> {
                                 long levels = 1; for (int n = record.fields().size(); n > 1; n >>= 1) levels++;
                                 step(record.fields().size() * levels);

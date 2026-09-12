@@ -290,6 +290,14 @@ func (p *parser) prefix() *Expr {
             if !p.accept(",") { p.need("]"); break }; p.lines()
         }
         form = ListLiteral(elements)
+    case p.is("map") && p.index+1<len(p.tokens) && p.tokens[p.index+1].kind=="{":
+        p.take();p.need("{");entries:=[]MapValue{};seen:=make(map[string]bool);p.lines()
+        for !p.accept("}"){
+            key:=p.need("text");decoded,_:=value.ReadText(key.text);identity:=decoded.Show();if seen[identity]{syntax(key.at,"duplicate map key")};seen[identity]=true
+            p.need("=");p.lines();item:=p.expression(0);entries=append(entries,MapValue{Key:key.text,Value:item,At:p.span(key.at.Start)})
+            p.lines();if !p.accept(","){p.need("}");break};p.lines()
+        }
+        form=MapLiteral(entries)
     case p.accept("{"):
         fields := []FieldValue{}; seen := make(map[string]bool); p.lines()
         for !p.accept("}") {

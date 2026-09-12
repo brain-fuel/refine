@@ -139,6 +139,11 @@ func numericLiterals(expr *language.Expr, values map[string]bool) {
 		b := __gp_m0.Body
 		numericLiterals(v, values)
 		numericLiterals(b, values)
+	case language.MapLiteral:
+		entries := __gp_m0.Entries
+		for _, entry := range entries {
+			numericLiterals(entry.Value, values)
+		}
 	default:
 	}
 }
@@ -231,6 +236,12 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 				return nil, fmt.Errorf("%s requires one payload type", name)
 			}
 			return e.rules(target, path, args[0])
+		}
+		if name == "Map" {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("Map requires String keys and one value type")
+			}
+			return e.rules(target, path+"/0", args[1])
 		}
 		if name == "Result" {
 			if len(args) != 2 {
@@ -515,6 +526,20 @@ func exampleDataJava(v value.Data) (string, error) {
 			parts = append(parts, source)
 		}
 		return "new Data.Variant(" + javaQuote(name) + ",java.util.List.of(" + strings.Join(parts, ",") + "))", nil
+	case value.MapData:
+		parts := []string{}
+		for _, entry := range v.Entries() {
+			key, err := entry.Key.UTF8()
+			if err != nil {
+				return "", fmt.Errorf("example map key is not scalar Unicode")
+			}
+			source, err := exampleDataJava(entry.Value)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, "java.util.Map.entry("+javaQuote(key)+","+source+")")
+		}
+		return "new Data.Mapping(java.util.Map.ofEntries(" + strings.Join(parts, ",") + "))", nil
 	}
 	return "", fmt.Errorf("unsupported embedded example")
 }

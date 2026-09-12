@@ -2,6 +2,7 @@ package language
 
 import (
     "fmt"
+    "sort"
     "strconv"
     "strings"
 
@@ -22,11 +23,13 @@ type evalForm enum {
     EvalBool(Value bool)
     EvalList(Items []evalValue)
     EvalRecord(Fields []evalField)
+    EvalMap(Entries []evalMapEntry)
     EvalVariant(Name string, Arguments []evalValue)
     EvalFunction(Name string, Arity int, Arguments []evalValue)
     EvalGuardedFunction(Function evalValue, Argument *Type, Result *Type, Types map[string]typeBinding)
 }
 type evalField struct { name string; value evalValue }
+type evalMapEntry struct { key value.Text; value evalValue }
 type evalFailure struct { code string; at Span; message string }
 func (f *evalFailure) Error() string { return fmt.Sprintf("%s at %d:%d: %s",f.code,f.at.Start.Line,f.at.Start.Column,f.message) }
 type evaluator struct {
@@ -80,6 +83,13 @@ func itemsOf(v evalValue,at Span) []evalValue {
     match v.form { case EvalList(items): return items; case _: evalError(at,"evaluation.type","expected list") }
     return nil
 }
+func mapEntriesOf(v evalValue,at Span)[]evalMapEntry{match v.form{case EvalMap(entries):return entries;case _:evalError(at,"evaluation.type","expected map")};return nil}
+func (e *evaluator) mapValue(entries []evalMapEntry,at Span)evalValue{
+    levels:=uint64(1);for n:=len(entries);n>1;n>>=1{levels++};maximum:=uint64(0);for _,entry:=range entries{length:=uint64(entry.key.Length());if length>maximum{maximum=length}};per:=maximum;if per>(^uint64(0)-1)/2{evalError(at,"evaluation.budget","map ordering cost exceeds evaluation resources")};per=per*2+1;count:=uint64(len(entries));if levels>0&&count>(^uint64(0))/levels||count*levels>(^uint64(0))/per{evalError(at,"evaluation.budget","map ordering cost exceeds evaluation resources")};cost:=count*levels*per;if cost>(^uint64(0))-count{evalError(at,"evaluation.budget","map ordering cost exceeds evaluation resources")};e.step(cost+count,at)
+    copied:=append([]evalMapEntry(nil),entries...)
+    sort.Slice(copied,func(i,j int)bool{return compareMapText(copied[i].key,copied[j].key)<0});for i:=1;i<len(copied);i++{if copied[i-1].key.Equal(copied[i].key){evalError(at,"evaluation.map","duplicate map key")}}
+    return evalValue{form:EvalMap(copied)}
+}
 func cloneEvalEnvironment(env map[string]evalValue) map[string]evalValue {
     result := make(map[string]evalValue,len(env)); for name,v := range env { result[name] = v }; return result
 }
@@ -113,6 +123,8 @@ var builtinArities = map[string]int{
     "matches":2,"search":2,
     "toReal":1,"toInteger":1,"truncate":1,"floor":1,"ceiling":1,"roundHalfEven":1,
     "civilSecondsUntil":2,"siSecondsUntil":2,
+    "lookup":2,"member":2,"keys":1,"values":1,"size":1,"insert":3,"delete":2,
+    "mapValues":2,"filterValues":2,"allValues":2,"anyValues":2,
 }
 func (e *evaluator) resolve(name string,at Span) evalValue {
     return e.resolveTyped(name,nil,at)
@@ -289,6 +301,8 @@ func (e *evaluator) equal(a,b evalValue,at Span) bool {
     case EvalList(left):
         right := itemsOf(b,at); if len(left) != len(right) { return false }
         for i := range left { if !e.equal(left[i],right[i],at) { return false } }; return true
+    case EvalMap(left):
+        match b.form{case EvalMap(right):if len(left)!=len(right){return false};for i:=range left{e.step(uint64(left[i].key.Length()+right[i].key.Length()),at);if !left[i].key.Equal(right[i].key)||!e.equal(left[i].value,right[i].value,at){return false}};return true;case _:evalError(at,"evaluation.type","expected a map")}
     case EvalVariant(name,left):
         match b.form {
         case EvalVariant(otherName,right):

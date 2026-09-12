@@ -25,10 +25,10 @@ Usage:
   refine validate-native [--json] <json-schema|avro|openapi> <schema|->
   refine satisfiable [--json] <source.refine|-> <type>
   refine compare-payload [--json] <old.refine|-> <old-type> <new.refine|-> <new-type>
-  refine project generate [--root DIR] [--config FILE] [--package NAME] [--output DIR] [--flat] [--check] [--json]
+  refine project generate [--root DIR] [--config FILE] [--package NAME] [--output DIR] [--flat] [--check] [--json] [--maven-group-id ID --maven-artifact-id ID --maven-version x.y.z]
   refine project maven [--root DIR] [--config FILE] [--executable PATH] [--native-regex]
-  refine release plan [--root DIR] [--config FILE] [--json] [family...]
-  refine release promote [--root DIR] [--config FILE] [--json] [family...]
+  refine release plan [--root DIR] [--config FILE] [--json] [--maven-group-id ID --maven-artifact-id ID --maven-version x.y.z] [family...]
+  refine release promote [--root DIR] [--config FILE] [--json] [--maven-group-id ID --maven-artifact-id ID --maven-version x.y.z] [family...]
   refine release recover [--root DIR]
   refine native ingest [--resource URI] [--pointer PTR] [--type NAME] [--resources FILE] <json-schema|avro|openapi> <schema|->
   refine native source <bundle|->

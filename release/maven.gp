@@ -20,11 +20,11 @@ func PlanMavenVersion(input MavenPlanningInput)MavenPlan{
     previous:=map[string]GeneratedVersion{};next:=map[string]GeneratedVersion{};currentMajor:=map[string]int{}
     key:=func(v GeneratedVersion)string{return releaseKey(v.Family,v.SchemaVersion)}
     for _,v:=range input.PreviouslyPublished{
-        if !validFamily(v.Family){issueMaven(&result,"maven.family","invalid schema family");continue};k:=key(v);if _,ok:=previous[k];ok{issueMaven(&result,"maven.duplicate","duplicate previously published schema version")};previous[k]=v
+        if !validFamily(v.Family){issueMaven(&result,"maven.family","invalid schema family");continue};if !v.SchemaVersion.Valid(){issueMaven(&result,"maven.schema_version","previously published schema version contains a negative component");continue};k:=key(v);if _,ok:=previous[k];ok{issueMaven(&result,"maven.duplicate","duplicate previously published schema version")};previous[k]=v
         if v.SchemaVersion.Major>currentMajor[v.Family]{currentMajor[v.Family]=v.SchemaVersion.Major}
     }
     for _,v:=range input.Next{
-        if !validFamily(v.Family){issueMaven(&result,"maven.family","invalid schema family");continue};k:=key(v);if _,ok:=next[k];ok{issueMaven(&result,"maven.duplicate","duplicate next schema version")};next[k]=v
+        if !validFamily(v.Family){issueMaven(&result,"maven.family","invalid schema family");continue};if !v.SchemaVersion.Valid(){issueMaven(&result,"maven.schema_version","next schema version contains a negative component");continue};k:=key(v);if _,ok:=next[k];ok{issueMaven(&result,"maven.duplicate","duplicate next schema version")};next[k]=v
         if v.SchemaVersion.Major>currentMajor[v.Family]{currentMajor[v.Family]=v.SchemaVersion.Major}
     }
     for k,old:=range previous{

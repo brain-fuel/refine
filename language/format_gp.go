@@ -4,11 +4,14 @@
 package language
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
 	"goforge.dev/refine/value"
 )
+
+func compareMapText(left, right value.Text) int { return left.Compare(right) }
 
 func quote(text string) string {
 	v, err := value.TextFromUTF8(text)
@@ -55,6 +58,21 @@ func FormatExpression(e *Expr) string {
 			parts[i] = field.Name + " = " + FormatExpression(field.Value)
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
+	case MapLiteral:
+		entries := __gp_m0.Entries
+
+		ordered := append([]MapValue(nil), entries...)
+		sort.Slice(ordered, func(i, j int) bool {
+			left, _ := value.ReadText(ordered[i].Key)
+			right, _ := value.ReadText(ordered[j].Key)
+			return compareMapText(left, right) < 0
+		})
+		parts := make([]string, len(ordered))
+		for i, entry := range ordered {
+			key, _ := value.ReadText(entry.Key)
+			parts[i] = key.Show() + " = " + FormatExpression(entry.Value)
+		}
+		return "map {" + strings.Join(parts, ", ") + "}"
 	case Apply:
 		fn := __gp_m0.Function
 		arg := __gp_m0.Argument

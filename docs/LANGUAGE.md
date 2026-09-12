@@ -54,6 +54,11 @@ and multi-module compilation stage remain required work.
   left. Unary minus is supported. The in-memory evaluator tests eager arguments
   and short-circuit Boolean execution.
 - Lists: `[1, 2, 3]`; record expressions: `{age = 21, name = "A"}`.
+- Exact string-keyed maps have type `Map String a` and literal syntax
+  `map {"key" = value, "other" = value}`. Decoded UTF-16 key sequences are
+  compared exactly: escape spelling and entry order are not semantic, while
+  case and Unicode normalization are never changed. Canonical display sorts
+  entries by UTF-16 code units.
 - Conditional: `if predicate then value else alternative`.
 - Local binding: `let n :: Int = expression in body`; omit the annotation when
   inference suffices.
@@ -85,6 +90,10 @@ The front end recognizes signatures for collection operations, predicate
 combinators, show/read, and regex predicates. Collection operations and typed
 show/read, budgeted full-string `matches`/substring `search`, and RFC 3339
 timestamp validation/comparison have conforming Go and generated Java execution.
+Map operations are `lookup`, `member`, `keys`, `values`, `size`, `insert`,
+`delete`, `mapValues`, `filterValues`, `allValues`, and `anyValues`. They return
+new immutable maps and traverse entries in canonical key order; predicate
+resource failures remain indeterminate rather than becoming false.
 See [runtime semantics](RUNTIME.md) for the refinement regex dialect, timestamp
 precision, and leap-second policy.
 `read` needs an inferable target type; for example:

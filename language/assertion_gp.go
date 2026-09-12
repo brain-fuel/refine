@@ -121,6 +121,15 @@ func (e *evaluator) assertInline(t *Type, input evalValue, types map[string]type
 }
 
 func (e *evaluator) assertApplication(name string, args []*Type, input evalValue, types map[string]typeBinding, at Span) evalValue {
+	if name == "Map" {
+		entries := mapEntriesOf(input, at)
+		e.step(uint64(len(entries)), at)
+		result := make([]evalMapEntry, len(entries))
+		for i, entry := range entries {
+			result[i] = evalMapEntry{key: entry.key, value: e.assertInline(args[1], entry.value, types)}
+		}
+		return e.mapValue(result, at)
+	}
 	if name == "Maybe" || name == "Nullable" || name == "Result" {
 		switch __gp_m5 := any(input.form).(type) {
 		case evalVariant:

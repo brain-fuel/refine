@@ -30,9 +30,9 @@ const functionExecutionJava = `
                         work.complete(done, arity == 0 ? new VariantValue(name, List.of()) : new FunctionValue(name, arity, List.of(), signature)); return;
                     }
                     arity = switch (name) {
-                        case "not", "length", "reverse", "unique", "isInteger", "show", "read", "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven" -> 1;
-                        case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search" -> 2;
-                        case "foldl" -> 3;
+                        case "not", "length", "reverse", "unique", "isInteger", "show", "read", "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven", "keys", "values", "size" -> 1;
+                        case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search", "lookup", "member", "delete", "mapValues", "filterValues", "allValues", "anyValues" -> 2;
+                        case "foldl", "insert" -> 3;
                         case "civilSecondsUntil", "siSecondsUntil" -> 2;
                         default -> fixedConversionType(name) == null && floatConversionType(name) == null ? null : 1;
                     };
@@ -189,6 +189,32 @@ const functionExecutionJava = `
                             Val value = args.getFirst(); int length = value instanceof TextValue text ? text.value().length() : ((ListValue)value).values().size();
                             work.complete(done, new NumberValue(Rational.of(length), "Int"));
                         }
+                        case "lookup", "member" -> {
+                            String key = ((TextValue)args.getFirst()).value(); var entries = ((MapValue)args.get(1)).entries(); Val value = null;
+                            for (var entry : entries.entrySet()) { step((long)key.length() + entry.getKey().length() + 1); if (entry.getKey().equals(key)) { value = entry.getValue(); break; } }
+                            work.complete(done, name.equals("member") ? new BoolValue(value != null)
+                                : value == null ? new VariantValue("Nothing", List.of()) : new VariantValue("Just", List.of(value)));
+                        }
+                        case "keys" -> {
+                            var entries = ((MapValue)args.getFirst()).entries(); step(entries.size()); var result = new ArrayList<Val>();
+                            for (String key : entries.keySet()) result.add(new TextValue(key));
+                            work.complete(done, new ListValue(result));
+                        }
+                        case "values" -> { var entries = ((MapValue)args.getFirst()).entries(); step(entries.size()); work.complete(done, new ListValue(new ArrayList<>(entries.values()))); }
+                        case "size" -> work.complete(done, new NumberValue(Rational.of(((MapValue)args.getFirst()).entries().size()), "Int"));
+                        case "insert" -> {
+                            String key = ((TextValue)args.getFirst()).value(); var before = ((MapValue)args.get(2)).entries();
+                            for (String candidate : before.keySet()) step((long)key.length() + candidate.length() + 1);
+                            var result = new java.util.LinkedHashMap<>(before);
+                            result.put(key,args.get(1)); work.complete(done,mapValue(result));
+                        }
+                        case "delete" -> {
+                            String key = ((TextValue)args.getFirst()).value(); var before = ((MapValue)args.get(1)).entries(); boolean found=false;
+                            for (String candidate : before.keySet()) { step((long)key.length() + candidate.length() + 1); if (candidate.equals(key)) found=true; }
+                            if (!found) { work.complete(done,mapValue(before)); return; }
+                            var result = new java.util.LinkedHashMap<String,Val>(); for(var entry:before.entrySet())if(!entry.getKey().equals(key))result.put(entry.getKey(),entry.getValue());
+                            work.complete(done,mapValue(result));
+                        }
                         case "reverse" -> { var items = ((ListValue)args.getFirst()).values(); step(items.size()); work.complete(done, new ListValue(items.reversed())); }
                         case "map", "filter" -> {
                             var items = ((ListValue)args.get(1)).values(); step(items.size());
@@ -200,6 +226,32 @@ const functionExecutionJava = `
                                     apply(args.getFirst(), item, types, level, value -> {
                                         if (name.equals("map")) result.add(value); else if (((BoolValue)value).value()) result.add(item); work.later(this);
                                     });
+                                }
+                            });
+                        }
+                        case "mapValues", "filterValues" -> {
+                            var source=((MapValue)args.get(1)).entries();step(source.size());var entries = new ArrayList<>(source.entrySet());
+                            work.later(new Runnable() {
+                                int index; final Map<String, Val> result = new java.util.LinkedHashMap<>();
+                                @Override public void run() {
+                                    if (index == entries.size()) { work.complete(done, mapValue(result)); return; }
+                                    var entry = entries.get(index++); step(entry.getKey().length());
+                                    apply(args.getFirst(), entry.getValue(), types, level, value -> {
+                                        if (name.equals("mapValues")) result.put(entry.getKey(), value); else if (((BoolValue)value).value()) result.put(entry.getKey(), entry.getValue()); work.later(this);
+                                    });
+                                }
+                            });
+                        }
+                        case "allValues", "anyValues" -> {
+                            var source=((MapValue)args.get(1)).entries();step(source.size());var entries = new ArrayList<>(source.values()); boolean wantAll = name.equals("allValues");
+                            work.later(new Runnable() {
+                                int index; Failure unknown;
+                                @Override public void run() {
+                                    if (index == entries.size()) { if (unknown != null) throw unknown; work.complete(done, new BoolValue(wantAll)); return; }
+                                    Val item = entries.get(index++);
+                                    work.<Val>attempt(receiver -> apply(args.getFirst(), item, types, level, receiver), value -> {
+                                        boolean yes = ((BoolValue)value).value(); if (wantAll && !yes || !wantAll && yes) work.complete(done, new BoolValue(!wantAll)); else work.later(this);
+                                    }, failure -> { if (unknown == null) unknown = failure; work.later(this); });
                                 }
                             });
                         }

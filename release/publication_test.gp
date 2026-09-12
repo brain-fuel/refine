@@ -1,0 +1,38 @@
+// GoPlus-authored publication ledger and no-codegen gate tests.
+package release
+
+import (
+    "strings"
+    "testing"
+)
+
+func publicationRecord(state PublicationState)PublicationRecord{
+    record:=PublicationRecord{State:state,Family:"orders",SchemaVersion:"1.2.0",SchemaSHA256:Digest([]byte("schema")),GeneratedSources:[]PublicationFile{{Path:"target/generated-sources/refine/orders/v1_2_0/Order.java",SHA256:Digest([]byte("source"))}},Reason:"release inventory reviewed"}
+    if state==PublicationPublished{record.ArtifactVersion="2.0.0";record.ArtifactSHA256=Digest([]byte("jar"));record.Classes=[]PublicationFile{{Path:"example/Order.class",SHA256:Digest([]byte("class"))}}};record.InventorySHA256=PublicationInventoryDigest(record);return record
+}
+func publicationInput(record PublicationRecord)PublicationPlanningInput{
+    intended:=Version{Major:2,Minor:1};target:=PublicationTarget{Family:"orders",SchemaVersion:Version{Major:1,Minor:2},SchemaSHA256:Digest([]byte("schema"))};return PublicationPlanningInput{Ledger:&PublicationLedger{Version:1,GroupID:"dev.example",ArtifactID:"models",Records:[]PublicationRecord{record}},Available:[]PublicationTarget{target},Excluded:[]PublicationTarget{target},DeletedSources:append([]PublicationFile(nil),record.GeneratedSources...),Next:[]GeneratedVersion{{Family:"orders",SchemaVersion:Version{Major:1,Minor:2},Generated:false}},Maven:&MavenPlanningInput{Current:Version{Major:2},Intended:&intended},Effective:MavenCoordinates{GroupID:"dev.example",ArtifactID:"models",Version:"2.1.0"}}
+}
+
+func TestPublicationGateDistinguishesPublishedAndUnpublishedInventory(t *testing.T){
+    published:=PlanPublication(publicationInput(publicationRecord(PublicationPublished)));if !published.Ready||published.Maven==nil||published.Maven.RequiredChange!=ArtifactFeatureChange{t.Fatalf("published removal was not gated by minor artifact version: %+v",published)}
+    unpublished:=PlanPublication(publicationInput(publicationRecord(PublicationUnpublished)));if !unpublished.Ready||unpublished.Maven!=nil{t.Fatalf("explicit unpublished inventory manufactured an artifact bump: %+v",unpublished)}
+}
+
+func TestPublicationGateFailsClosedOnUnknownOrStaleEvidence(t *testing.T){
+    cases:=[]PublicationPlanningInput{publicationInput(publicationRecord(PublicationPublished)),publicationInput(publicationRecord(PublicationPublished)),publicationInput(publicationRecord(PublicationPublished)),publicationInput(publicationRecord(PublicationPublished))}
+    cases[0].Ledger=nil;cases[1].Ledger.Records[0].SchemaSHA256=Digest([]byte("other"));cases[1].Ledger.Records[0].InventorySHA256=PublicationInventoryDigest(cases[1].Ledger.Records[0]);cases[2].DeletedSources[0].SHA256=Digest([]byte("edited"));cases[3].Effective.Version="2.1.1"
+    for i,input:=range cases{got:=PlanPublication(input);if got.Ready{t.Fatalf("case %d accepted stale/unknown evidence: %+v",i,got)};joined:="";for _,issue:=range got.Issues{joined+=issue.Code+" "+issue.Message};if !strings.Contains(joined,"publication")&&!strings.Contains(joined,"effective"){t.Fatalf("case %d lacked actionable diagnostic: %+v",i,got)}}
+}
+
+func TestPublicationGateDoesNotRequireLedgerForFreshGeneration(t *testing.T){got:=PlanPublication(PublicationPlanningInput{Next:[]GeneratedVersion{{Family:"fresh",SchemaVersion:Version{Major:0,Minor:1},Generated:true}}});if !got.Ready||got.Applicable{t.Fatalf("fresh generation acquired publication configuration: %+v",got)}}
+
+func TestPublicationInventoryRejectsWindowsDriveAndAlternateStreamPaths(t *testing.T){
+    cases:=[]struct{name,kind,path string}{
+        {"source drive","generated source","C:/generated/Foo.java"},
+        {"source alternate stream","generated source","generated/Foo.java:stream.java"},
+        {"class drive","class","C:/classes/Foo.class"},
+        {"class alternate stream","class","classes/Foo.class:stream.class"},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){issues:=[]Issue{};valid:=publicationFilesValid([]PublicationFile{{Path:tc.path,SHA256:Digest([]byte("content"))}},tc.kind,&issues);if valid||len(issues)!=1||issues[0].Code!="maven.publication_inventory"{t.Fatalf("unsafe portable inventory path accepted: valid=%t issues=%+v",valid,issues)}})}
+}

@@ -5,6 +5,7 @@ package language
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -68,6 +69,13 @@ type evalRecord struct {
 
 func (evalRecord) isEvalForm() {}
 
+//goplus:variant (evalForm) EvalMap(Entries []evalMapEntry)
+type evalMap struct {
+	entries []evalMapEntry
+}
+
+func (evalMap) isEvalForm() {}
+
 //goplus:variant (evalForm) EvalVariant(Name string, Arguments []evalValue)
 type evalVariant struct {
 	name      string
@@ -97,6 +105,10 @@ func (evalGuardedFunction) isEvalForm() {}
 
 type evalField struct {
 	name  string
+	value evalValue
+}
+type evalMapEntry struct {
+	key   value.Text
 	value evalValue
 }
 type evalFailure struct {
@@ -206,6 +218,51 @@ func itemsOf(v evalValue, at Span) []evalValue {
 	}
 	return nil
 }
+func mapEntriesOf(v evalValue, at Span) []evalMapEntry {
+	switch __gp_m5 := any(v.form).(type) {
+	case evalMap:
+		entries := __gp_m5.entries
+		return entries
+	default:
+		evalError(at, "evaluation.type", "expected map")
+	}
+	return nil
+}
+func (e *evaluator) mapValue(entries []evalMapEntry, at Span) evalValue {
+	levels := uint64(1)
+	for n := len(entries); n > 1; n >>= 1 {
+		levels++
+	}
+	maximum := uint64(0)
+	for _, entry := range entries {
+		length := uint64(entry.key.Length())
+		if length > maximum {
+			maximum = length
+		}
+	}
+	per := maximum
+	if per > (^uint64(0)-1)/2 {
+		evalError(at, "evaluation.budget", "map ordering cost exceeds evaluation resources")
+	}
+	per = per*2 + 1
+	count := uint64(len(entries))
+	if levels > 0 && count > (^uint64(0))/levels || count*levels > (^uint64(0))/per {
+		evalError(at, "evaluation.budget", "map ordering cost exceeds evaluation resources")
+	}
+	cost := count * levels * per
+	if cost > (^uint64(0))-count {
+		evalError(at, "evaluation.budget", "map ordering cost exceeds evaluation resources")
+	}
+	e.step(cost+count, at)
+	copied := append([]evalMapEntry(nil), entries...)
+	sort.Slice(copied, func(i, j int) bool { return compareMapText(copied[i].key, copied[j].key) < 0 })
+	for i := 1; i < len(copied); i++ {
+		if copied[i-1].key.Equal(copied[i].key) {
+			evalError(at, "evaluation.map", "duplicate map key")
+		}
+	}
+	return evalValue{form: evalMap{entries: copied}}
+}
 func cloneEvalEnvironment(env map[string]evalValue) map[string]evalValue {
 	result := make(map[string]evalValue, len(env))
 	for name, v := range env {
@@ -259,6 +316,8 @@ var builtinArities = map[string]int{
 	"matches": 2, "search": 2,
 	"toReal": 1, "toInteger": 1, "truncate": 1, "floor": 1, "ceiling": 1, "roundHalfEven": 1,
 	"civilSecondsUntil": 2, "siSecondsUntil": 2,
+	"lookup": 2, "member": 2, "keys": 1, "values": 1, "size": 1, "insert": 3, "delete": 2,
+	"mapValues": 2, "filterValues": 2, "allValues": 2, "anyValues": 2,
 }
 
 func (e *evaluator) resolve(name string, at Span) evalValue {
@@ -297,19 +356,19 @@ func (e *evaluator) resolveTyped(name string, signature *Type, at Span) evalValu
 func (e *evaluator) apply(fn, arg evalValue, at Span) evalValue {
 	e.enter(at)
 	defer func() { e.depth-- }()
-	switch __gp_m5 := any(fn.form).(type) {
+	switch __gp_m6 := any(fn.form).(type) {
 	case evalGuardedFunction:
-		inner := __gp_m5.function
-		argument := __gp_m5.argument
-		result := __gp_m5.result
-		types := __gp_m5.types
+		inner := __gp_m6.function
+		argument := __gp_m6.argument
+		result := __gp_m6.result
+		types := __gp_m6.types
 
 		checked := e.assertInline(argument, arg, types)
 		return e.assertInline(result, e.apply(inner, checked, at), types)
 	case evalFunction:
-		name := __gp_m5.name
-		arity := __gp_m5.arity
-		previous := __gp_m5.arguments
+		name := __gp_m6.name
+		arity := __gp_m6.arity
+		previous := __gp_m6.arguments
 
 		e.step(uint64(len(previous)+1), at)
 		args := append(append([]evalValue(nil), previous...), arg)
@@ -358,22 +417,22 @@ func (e *evaluator) invoke(name string, args []evalValue, signature *Type, at Sp
 }
 
 func hasInlineRefinement(t *Type) bool {
-	switch __gp_m6 := any(t.Form).(type) {
+	switch __gp_m7 := any(t.Form).(type) {
 	case RefinedType:
 		return true
 	case ArrowType:
-		a := __gp_m6.Argument
-		b := __gp_m6.Result
+		a := __gp_m7.Argument
+		b := __gp_m7.Result
 		return hasInlineRefinement(a) || hasInlineRefinement(b)
 	case AppliedType:
-		a := __gp_m6.Constructor
-		b := __gp_m6.Argument
+		a := __gp_m7.Constructor
+		b := __gp_m7.Argument
 		return hasInlineRefinement(a) || hasInlineRefinement(b)
 	case ListType:
-		element := __gp_m6.Element
+		element := __gp_m7.Element
 		return hasInlineRefinement(element)
 	case RecordType:
-		fields := __gp_m6.Fields
+		fields := __gp_m7.Fields
 		for _, field := range fields {
 			if hasInlineRefinement(field.Type) {
 				return true
@@ -390,24 +449,24 @@ func hasInlineRefinement(t *Type) bool {
 func (e *evaluator) pattern(p *Pattern, v evalValue, env map[string]evalValue) bool {
 	e.enter(p.At)
 	defer func() { e.depth-- }()
-	switch __gp_m7 := any(p.Form).(type) {
+	switch __gp_m8 := any(p.Form).(type) {
 	case BindPattern:
-		name := __gp_m7.Name
+		name := __gp_m8.Name
 		env[name] = v
 		return true
 	case WildPattern:
 		return true
 	case LiteralPattern:
-		expr := __gp_m7.Value
+		expr := __gp_m8.Value
 		return e.equal(v, e.expression(expr, nil), p.At)
 	case ConstructorPattern:
-		name := __gp_m7.Name
-		patterns := __gp_m7.Arguments
+		name := __gp_m8.Name
+		patterns := __gp_m8.Arguments
 
-		switch __gp_m8 := any(v.form).(type) {
+		switch __gp_m9 := any(v.form).(type) {
 		case evalVariant:
-			actual := __gp_m8.name
-			args := __gp_m8.arguments
+			actual := __gp_m9.name
+			args := __gp_m9.arguments
 
 			if name != actual || len(patterns) != len(args) {
 				return false
@@ -422,11 +481,11 @@ func (e *evaluator) pattern(p *Pattern, v evalValue, env map[string]evalValue) b
 			return false
 		}
 	case ListPattern:
-		patterns := __gp_m7.Elements
+		patterns := __gp_m8.Elements
 
-		switch __gp_m9 := any(v.form).(type) {
+		switch __gp_m10 := any(v.form).(type) {
 		case evalList:
-			items := __gp_m9.items
+			items := __gp_m10.items
 
 			if len(items) != len(patterns) {
 				return false
@@ -441,12 +500,12 @@ func (e *evaluator) pattern(p *Pattern, v evalValue, env map[string]evalValue) b
 			return false
 		}
 	case ConsPattern:
-		head := __gp_m7.Head
-		tail := __gp_m7.Tail
+		head := __gp_m8.Head
+		tail := __gp_m8.Tail
 
-		switch __gp_m10 := any(v.form).(type) {
+		switch __gp_m11 := any(v.form).(type) {
 		case evalList:
-			items := __gp_m10.items
+			items := __gp_m11.items
 
 			if len(items) == 0 {
 				return false
@@ -497,14 +556,14 @@ func (e *evaluator) binary(op string, a, b evalValue, at Span) evalValue {
 		items[0] = a
 		return evalValue{form: evalList{items: append(items, tail...)}}
 	case "++":
-		switch __gp_m11 := any(a.form).(type) {
+		switch __gp_m12 := any(a.form).(type) {
 		case evalText:
-			left := __gp_m11.value
+			left := __gp_m12.value
 			right := textOf(b, at)
 			e.step(uint64(left.Length()+right.Length()), at)
 			return textValue(left.Concat(right))
 		case evalList:
-			left := __gp_m11.items
+			left := __gp_m12.items
 			right := itemsOf(b, at)
 			e.step(uint64(len(left)+len(right)), at)
 			return evalValue{form: evalList{items: append(append([]evalValue(nil), left...), right...)}}
@@ -557,10 +616,10 @@ func (e *evaluator) binary(op string, a, b evalValue, at Span) evalValue {
 }
 
 func (e *evaluator) compare(a, b evalValue, at Span) int {
-	switch __gp_m12 := any(a.form).(type) {
+	switch __gp_m13 := any(a.form).(type) {
 	case evalNumber:
-		left := __gp_m12.value
-		typ := __gp_m12.numericType
+		left := __gp_m13.value
+		typ := __gp_m13.numericType
 
 		right, otherType := number(b, at)
 		if typ != otherType {
@@ -569,7 +628,7 @@ func (e *evaluator) compare(a, b evalValue, at Span) int {
 		e.step(uint64(len(left.Show()))*uint64(len(right.Show()))+1, at)
 		return left.Compare(right)
 	case evalText:
-		left := __gp_m12.value
+		left := __gp_m13.value
 
 		right := textOf(b, at)
 		e.step(uint64(left.Length()+right.Length()), at)
@@ -590,7 +649,7 @@ func (e *evaluator) compare(a, b evalValue, at Span) int {
 		}
 		return 0
 	case evalTimestamp:
-		left := __gp_m12.value
+		left := __gp_m13.value
 
 		right := timestampOf(b, at)
 		e.step(uint64(len(left.Fraction().Show()))*uint64(len(right.Fraction().Show()))+1, at)
@@ -604,24 +663,24 @@ func (e *evaluator) compare(a, b evalValue, at Span) int {
 func (e *evaluator) equal(a, b evalValue, at Span) bool {
 	e.enter(at)
 	defer func() { e.depth-- }()
-	switch __gp_m13 := any(a.form).(type) {
+	switch __gp_m14 := any(a.form).(type) {
 	case evalNumber:
-		left := __gp_m13.value
+		left := __gp_m14.value
 		right, _ := number(b, at)
 		e.step(uint64(len(left.Show())+len(right.Show())), at)
 		return left.Show() == right.Show()
 	case evalText:
-		left := __gp_m13.value
+		left := __gp_m14.value
 		right := textOf(b, at)
 		e.step(uint64(left.Length()+right.Length()), at)
 		return left.Equal(right)
 	case evalTimestamp:
 		return e.compare(a, b, at) == 0
 	case evalBool:
-		left := __gp_m13.value
+		left := __gp_m14.value
 		return left == boolean(b, at)
 	case evalList:
-		left := __gp_m13.items
+		left := __gp_m14.items
 
 		right := itemsOf(b, at)
 		if len(left) != len(right) {
@@ -633,14 +692,33 @@ func (e *evaluator) equal(a, b evalValue, at Span) bool {
 			}
 		}
 		return true
-	case evalVariant:
-		name := __gp_m13.name
-		left := __gp_m13.arguments
+	case evalMap:
+		left := __gp_m14.entries
 
-		switch __gp_m14 := any(b.form).(type) {
+		switch __gp_m15 := any(b.form).(type) {
+		case evalMap:
+			right := __gp_m15.entries
+			if len(left) != len(right) {
+				return false
+			}
+			for i := range left {
+				e.step(uint64(left[i].key.Length()+right[i].key.Length()), at)
+				if !left[i].key.Equal(right[i].key) || !e.equal(left[i].value, right[i].value, at) {
+					return false
+				}
+			}
+			return true
+		default:
+			evalError(at, "evaluation.type", "expected a map")
+		}
+	case evalVariant:
+		name := __gp_m14.name
+		left := __gp_m14.arguments
+
+		switch __gp_m16 := any(b.form).(type) {
 		case evalVariant:
-			otherName := __gp_m14.name
-			right := __gp_m14.arguments
+			otherName := __gp_m16.name
+			right := __gp_m16.arguments
 
 			if name != otherName || len(left) != len(right) {
 				return false
@@ -655,11 +733,11 @@ func (e *evaluator) equal(a, b evalValue, at Span) bool {
 			evalError(at, "evaluation.type", "expected a constructor value")
 		}
 	case evalRecord:
-		left := __gp_m13.fields
+		left := __gp_m14.fields
 
-		switch __gp_m15 := any(b.form).(type) {
+		switch __gp_m17 := any(b.form).(type) {
 		case evalRecord:
-			right := __gp_m15.fields
+			right := __gp_m17.fields
 
 			if len(left) != len(right) {
 				return false

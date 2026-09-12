@@ -1,0 +1,103 @@
+package release
+
+import (
+    "crypto/sha256"
+    "encoding/binary"
+    "fmt"
+    "hash"
+    "path"
+    "sort"
+    "strings"
+)
+
+const PublicationLedgerVersion=1
+
+type PublicationState string
+const (PublicationPublished PublicationState="published"; PublicationUnpublished PublicationState="unpublished")
+
+// MavenCoordinates are values from Maven's effective model, not a raw pom.xml.
+type MavenCoordinates struct { GroupID string `json:"groupId"`; ArtifactID string `json:"artifactId"`; Version string `json:"version"` }
+type PublicationFile struct { Path string `json:"path"`; SHA256 ContentID `json:"sha256"` }
+type PublicationRecord struct {
+    State PublicationState `json:"state"`
+    Family string `json:"family"`
+    SchemaVersion string `json:"schemaVersion"`
+    SchemaSHA256 ContentID `json:"schemaSha256"`
+    GeneratedSources []PublicationFile `json:"generatedSources"`
+    ArtifactVersion string `json:"artifactVersion,omitempty"`
+    ArtifactSHA256 ContentID `json:"artifactSha256,omitempty"`
+    Classes []PublicationFile `json:"classes,omitempty"`
+    InventorySHA256 ContentID `json:"inventorySha256"`
+    Reason string `json:"reason"`
+}
+type PublicationLedger struct { Version int `json:"version"`; GroupID string `json:"groupId"`; ArtifactID string `json:"artifactId"`; Records []PublicationRecord `json:"records"` }
+type PublicationTarget struct { Family string; SchemaVersion Version; SchemaSHA256 ContentID }
+type PublicationPlanningInput struct {
+    Ledger *PublicationLedger
+    Available []PublicationTarget
+    Excluded []PublicationTarget
+    DeletedSources []PublicationFile
+    Next []GeneratedVersion
+    Maven *MavenPlanningInput
+    Effective MavenCoordinates
+}
+type PublicationPlan struct { Applicable bool; Ready bool; Unknown bool; Maven *MavenPlan; Removed []GeneratedVersion; Issues []Issue }
+
+func publicationWrite(h hash.Hash,text string){_ = binary.Write(h,binary.BigEndian,uint64(len(text)));_,_ = h.Write([]byte(text))}
+func publicationFilesValid(files []PublicationFile,kind string,issues *[]Issue)bool{
+    ok:=true;last:="";folded:=map[string]bool{};for _,file:=range files{clean:=path.Clean(file.Path);portable:=strings.ToLower(file.Path);suffix:=".java";if kind=="class"{suffix=".class"};if file.Path==""||clean!=file.Path||strings.HasPrefix(clean,"../")||path.IsAbs(clean)||strings.ContainsAny(file.Path,"\\:\x00")||!strings.HasSuffix(file.Path,suffix)||!file.SHA256.Valid(){*issues=append(*issues,Issue{Code:"maven.publication_inventory",Message:fmt.Sprintf("%s inventory has an unsafe path, suffix, or digest",kind)});ok=false};if last!=""&&file.Path<=last||folded[portable]{*issues=append(*issues,Issue{Code:"maven.publication_inventory",Message:fmt.Sprintf("%s inventory must be sorted with unique portable paths",kind)});ok=false};last=file.Path;folded[portable]=true};return ok
+}
+
+// PublicationInventoryDigest binds an attestation to its schema bytes, exact
+// generated-source inventory, and (for published records) actual JAR entries.
+func PublicationInventoryDigest(record PublicationRecord)ContentID{
+    h:=sha256New();publicationWrite(h,"refine.maven-publication.v1");publicationWrite(h,string(record.State));publicationWrite(h,record.Family);publicationWrite(h,record.SchemaVersion);publicationWrite(h,string(record.SchemaSHA256));publicationWrite(h,record.ArtifactVersion);publicationWrite(h,string(record.ArtifactSHA256));publicationWrite(h,record.Reason);for _,file:=range record.GeneratedSources{publicationWrite(h,file.Path);publicationWrite(h,string(file.SHA256))};for _,file:=range record.Classes{publicationWrite(h,file.Path);publicationWrite(h,string(file.SHA256))};return ContentID(fmt.Sprintf("%x",h.Sum(nil)))
+}
+
+// sha256New is kept package-local so the canonical length-framed digest cannot
+// accidentally be replaced with concatenation by callers.
+func sha256New()hash.Hash{return sha256.New()}
+
+func validatePublicationLedger(ledger *PublicationLedger)[]Issue{
+    issues:=[]Issue{};if ledger.Version!=PublicationLedgerVersion{issues=append(issues,Issue{Code:"maven.publication_version",Message:"publication ledger version must be 1"})};if strings.TrimSpace(ledger.GroupID)!=ledger.GroupID||ledger.GroupID==""||strings.TrimSpace(ledger.ArtifactID)!=ledger.ArtifactID||ledger.ArtifactID==""{issues=append(issues,Issue{Code:"maven.publication_coordinates",Message:"publication ledger requires canonical Maven groupId and artifactId"})}
+    seen:=map[string]bool{};last:="";artifactVersion:="";artifactSHA:=ContentID("")
+    for _,record:=range ledger.Records{
+        version,err:=ParseVersion(record.SchemaVersion);key:=record.Family+"\x00"+record.SchemaVersion
+        if !validFamily(record.Family)||err!=nil||record.SchemaVersion!=version.String(){issues=append(issues,Issue{Code:"maven.publication_record",Message:"publication record requires a valid family and canonical schemaVersion"})}
+        if seen[key]{issues=append(issues,Issue{Code:"maven.publication_duplicate",Message:"duplicate publication record for "+record.Family+" "+record.SchemaVersion})};if last!=""&&key<last{issues=append(issues,Issue{Code:"maven.publication_order",Message:"publication records must be sorted by family and schemaVersion"})};last=key;seen[key]=true
+        if !record.SchemaSHA256.Valid(){issues=append(issues,Issue{Code:"maven.publication_schema",Message:"publication record requires an exact schema SHA-256"})};publicationFilesValid(record.GeneratedSources,"generated source",&issues);publicationFilesValid(record.Classes,"class",&issues);if strings.TrimSpace(record.Reason)==""{issues=append(issues,Issue{Code:"maven.publication_reason",Message:"publication attestation requires a reason"})}
+        switch record.State{
+        case PublicationPublished:
+            artifact,parseErr:=ParseVersion(record.ArtifactVersion);if parseErr!=nil||record.ArtifactVersion!=artifact.String()||!record.ArtifactSHA256.Valid()||len(record.Classes)==0{issues=append(issues,Issue{Code:"maven.publication_artifact",Message:"published attestation requires canonical artifactVersion, artifact SHA-256, and actual class inventory"})}
+            if artifactVersion==""{artifactVersion=record.ArtifactVersion;artifactSHA=record.ArtifactSHA256}else if artifactVersion!=record.ArtifactVersion||artifactSHA!=record.ArtifactSHA256{issues=append(issues,Issue{Code:"maven.publication_artifact",Message:"all published records must describe the same prior artifact version and bytes"})}
+        case PublicationUnpublished:
+            if record.ArtifactVersion!=""||record.ArtifactSHA256!=""||len(record.Classes)!=0{issues=append(issues,Issue{Code:"maven.publication_unpublished",Message:"unpublished attestation cannot claim artifact bytes or classes"})}
+        default:issues=append(issues,Issue{Code:"maven.publication_state",Message:"publication state must be published or unpublished"})
+        }
+        if !record.InventorySHA256.Valid()||record.InventorySHA256!=PublicationInventoryDigest(record){issues=append(issues,Issue{Code:"maven.publication_digest",Message:"publication inventorySha256 does not match the exact attestation inventory"})}
+    }
+    return issues
+}
+
+func publicationKey(family string,version Version)string{return family+"\x00"+version.String()}
+func containsPublicationFile(files []PublicationFile,want PublicationFile)bool{for _,file:=range files{if file==want{return true}};return false}
+func addPublicationIssue(result *PublicationPlan,code,message string,unknown bool){result.Issues=append(result.Issues,Issue{Code:code,Message:message});if unknown{result.Unknown=true}}
+func validatePublicationTargets(targets []PublicationTarget,kind string,result *PublicationPlan){seen:=map[string]bool{};for _,target:=range targets{key:=publicationKey(target.Family,target.SchemaVersion);if !validFamily(target.Family)||!target.SchemaVersion.Valid()||!target.SchemaSHA256.Valid(){addPublicationIssue(result,"maven.publication_input",kind+" schema target requires a valid family, version, and SHA-256",false)};if seen[key]{addPublicationIssue(result,"maven.publication_input","duplicate "+kind+" schema target",false)};seen[key]=true}}
+
+// PlanPublication is the shared fail-closed no-codegen/removal gate. It proves
+// only checked-in publication inventory and the required artifact version; it
+// is not a general Java ABI comparison.
+func PlanPublication(input PublicationPlanningInput)PublicationPlan{
+    result:=PublicationPlan{};validatePublicationTargets(input.Available,"available",&result);validatePublicationTargets(input.Excluded,"excluded",&result);available:=map[string]ContentID{};for _,target:=range input.Available{available[publicationKey(target.Family,target.SchemaVersion)]=target.SchemaSHA256};for _,target:=range input.Excluded{if available[publicationKey(target.Family,target.SchemaVersion)]!=target.SchemaSHA256{addPublicationIssue(&result,"maven.publication_input","excluded schema target must be an exact member of available immutable schemata",false)}};publicationFilesValid(input.DeletedSources,"generated source",&result.Issues);seenNext:=map[string]bool{};for _,item:=range input.Next{key:=publicationKey(item.Family,item.SchemaVersion);if !validFamily(item.Family)||!item.SchemaVersion.Valid(){addPublicationIssue(&result,"maven.publication_input","next generated version requires a valid family and schema version",false)};if seenNext[key]{addPublicationIssue(&result,"maven.publication_input","duplicate next generated version",false)};seenNext[key]=true};if input.Maven!=nil&&(len(input.Maven.PreviouslyPublished)>0||len(input.Maven.Next)>0){addPublicationIssue(&result,"maven.publication_authority","publication planning history and next versions come from the ledger and checked project inventory, not MavenPlanningInput",false)};if len(result.Issues)>0{return result};if len(input.Excluded)==0&&len(input.DeletedSources)==0&&input.Ledger==nil{return PublicationPlan{Ready:true}}
+    result.Applicable=len(input.Excluded)>0||len(input.DeletedSources)>0
+    if input.Ledger==nil{addPublicationIssue(&result,"maven.publication_unknown","generated Java removal has unknown publication history; add a content-bound published or unpublished record to refine.publications.json",true);return result}
+    result.Issues=append(result.Issues,validatePublicationLedger(input.Ledger)...);if len(result.Issues)>0{return result}
+    records:=map[string]PublicationRecord{};published:=[]GeneratedVersion{};for _,record:=range input.Ledger.Records{version,_:=ParseVersion(record.SchemaVersion);records[publicationKey(record.Family,version)]=record;if record.State==PublicationPublished{published=append(published,GeneratedVersion{Family:record.Family,SchemaVersion:version,Generated:true})}}
+    for _,target:=range input.Available{if record,ok:=records[publicationKey(target.Family,target.SchemaVersion)];ok&&record.SchemaSHA256!=target.SchemaSHA256{addPublicationIssue(&result,"maven.publication_schema",fmt.Sprintf("publication attestation for %s %s is bound to different schema bytes",target.Family,target.SchemaVersion.String()),false)}}
+    for _,target:=range input.Excluded{result.Applicable=true;record,ok:=records[publicationKey(target.Family,target.SchemaVersion)];if !ok{addPublicationIssue(&result,"maven.publication_unknown",fmt.Sprintf("publication history for no-codegen %s %s is unknown; attest it as published or unpublished",target.Family,target.SchemaVersion.String()),true);continue};if record.SchemaSHA256!=target.SchemaSHA256{addPublicationIssue(&result,"maven.publication_schema",fmt.Sprintf("publication attestation for %s %s is bound to different schema bytes",target.Family,target.SchemaVersion.String()),false)}}
+    for _,deleted:=range input.DeletedSources{result.Applicable=true;matched:=false;for _,record:=range input.Ledger.Records{if containsPublicationFile(record.GeneratedSources,deleted){matched=true;break}};if !matched{addPublicationIssue(&result,"maven.publication_unknown",fmt.Sprintf("deleted generated source %s has no exact published or unpublished inventory attestation",deleted.Path),true)}}
+    if len(result.Issues)>0{return result}
+    probe:=MavenPlanningInput{PreviouslyPublished:published,Next:append([]GeneratedVersion(nil),input.Next...)};if input.Maven!=nil{probe.Current=input.Maven.Current;probe.Intended=input.Maven.Intended;probe.OtherChange=input.Maven.OtherChange};maven:=PlanMavenVersion(probe);if len(maven.Removed)==0{result.Ready=true;return result};result.Maven=&maven;result.Removed=append([]GeneratedVersion(nil),maven.Removed...)
+    result.Applicable=true;if input.Maven==nil{addPublicationIssue(&result,"maven.publication_version","published generated classes are being removed; configure release.maven current/intended artifact versions",false);return result};for _,record:=range input.Ledger.Records{if record.State==PublicationPublished&&record.ArtifactVersion!=input.Maven.Current.String(){addPublicationIssue(&result,"maven.publication_baseline","configured current artifact version does not match the exact published-ledger artifact",false);break}};if len(result.Issues)>0{return result};if !maven.Ready{result.Issues=append(result.Issues,maven.Issues...);return result}
+    if input.Effective.GroupID==""||input.Effective.ArtifactID==""||input.Effective.Version==""{addPublicationIssue(&result,"maven.effective_model","published generated classes are being removed; pass Maven-evaluated --maven-group-id, --maven-artifact-id, and --maven-version",true);return result};if input.Effective.GroupID!=input.Ledger.GroupID||input.Effective.ArtifactID!=input.Ledger.ArtifactID{addPublicationIssue(&result,"maven.effective_coordinates","Maven effective groupId/artifactId do not match the publication ledger",false)};actual,err:=ParseVersion(input.Effective.Version);if err!=nil||input.Effective.Version!=actual.String()||maven.Accepted==nil||actual.Compare(*maven.Accepted)!=0{addPublicationIssue(&result,"maven.effective_version",fmt.Sprintf("Maven effective version must equal accepted artifact version %s",maven.Suggested.String()),false)};result.Ready=len(result.Issues)==0;return result
+}

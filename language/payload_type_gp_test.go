@@ -181,7 +181,7 @@ func TestPayloadTypeNamedBudgetParity(t *testing.T) {
 }
 
 func FuzzPayloadType(f *testing.F) {
-	for _, source := range []string{"Box Age", "Tree (Int where it > 0)", "[Maybe Age]", "{value :: Int}", "Int where positive it", "Int -> Int", "Box a"} {
+	for _, source := range []string{"Box Age", "Tree (Int where it > 0)", "[Maybe Age]", "Map String (Maybe Age)", "{value :: Int}", "Int where positive it", "Int -> Int", "Box a"} {
 		f.Add(source)
 	}
 	program, err := Compile(payloadTypeContract)
