@@ -22,6 +22,9 @@ final class ModelSupport {
     static Evidence withoutValidation(String root, Data raw, Budget.Limits caller) {
         %s.validateStructure(root, raw, caller).orThrow(); return new Evidence(root, raw);
     }
+    static Evidence read(String root, String text, Budget.Limits caller) {
+        return new Evidence(root, %s.read(root, text, caller).orThrow());
+    }
     static <T> T nonNull(T value, String path) {
         if (value == null) throw new ValidationException(new Validation.Invalid(java.util.List.of(
             new Validation.Diagnostic("validation.structure", java.util.List.of(path), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false));

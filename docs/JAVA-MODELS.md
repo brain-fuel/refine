@@ -22,6 +22,8 @@ the generated Java supports:
 AccountId id = new AccountId("account-21");
 String rawId = id.value();
 Age age = new AdultAge(BigInteger.valueOf(21)); // Ordinary parent substitution.
+Age parsed = Age.read("21"); // Validating canonical text, not JSON/Avro serde.
+String canonical = parsed.showWithoutValidation();
 
 Booking old = new Booking(BigInteger.ONE, BigInteger.TWO);
 Booking updated = old.update(draft -> {
@@ -50,6 +52,14 @@ Booking updated = old.update(draft -> {
 - Normal constructors and `fromData` validate. Overloads accept caller
   `Budget.Limits`; defaults require no configuration. `validate()` and static
   `validateData(raw[, limits])` return non-throwing validation outcomes.
+- Static `read(text[, limits])` parses canonical language text and validates the
+  target before constructing the model from nominal evidence. It does not repeat
+  that validation. Instance `showWithoutValidation([limits])` displays raw values
+  without asserting refinements; a subsequent `read` checks invalid bypass-created
+  values again. Failed reads throw `ValidationException` and expose no candidate.
+  For non-throwing reads, use `Contract.read(typeName, text[, limits]).outcome()`.
+  Canonical reads use the checked view (dropping undeclared fields and filling
+  absent `Maybe` fields), unlike raw-preserving `fromData`.
 - `createWithoutValidation`, `fromDataWithoutValidation`, and
   `updateWithoutValidation` explicitly skip predicates. They still check shape,
   declared numeric representability and structural resource limits. A later
@@ -123,7 +133,7 @@ exactly the budget required for one validation pass. Two jetCheck suites add
 determinism, collision, rejection, fuzz and benchmark coverage.
 
 The complete release still requires all model shapes and language execution,
-typed compound show/read, validated Jackson and Avro serde, native schema formats,
+timestamp codecs, validated Jackson and Avro serde, native schema formats,
 English exports, generated schema-derived tests, versioning, Maven/project/CLI
 integration and the full [specification](../SPEC.md). No Maven deployment or
 product release is implied by these model tests.

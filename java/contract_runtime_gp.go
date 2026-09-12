@@ -23,6 +23,8 @@ public final class ContractRuntime {
     private ContractRuntime() {}
     // @CODEC_UNICODE@
     ` + codecNamesJava + `
+    ` + codecParserJava + `
+    ` + codecBoundaryJava + `
     /** Canonical text only: never asserts a payload's refinements. */
     public static String showWithoutValidation(Data input, Budget.Limits caller) {
         if (input == null) throw new ValidationException(new Validation.Invalid(List.of(new Validation.Diagnostic(
@@ -187,21 +189,13 @@ public final class ContractRuntime {
                         enterDepth(logicalDepth);
                         List<Expr> args = expr.arguments(); String text = expr.text();
                         switch (expr.kind()) {
-                    case "number" -> {
-                        BigInteger cost = BigInteger.valueOf(text.length()); int at = Math.max(text.indexOf('e'), text.indexOf('E'));
-                        if (at >= 0) {
-                            cost = cost.add(new BigInteger(text.substring(at + 1)).abs());
-                            if (cost.compareTo(Budget.MAX) > 0) throw fail("evaluation.budget", "numeric literal expansion exceeds evaluation resources");
-                        }
-                        step(cost);
-                        work.complete(done, new NumberValue(Rational.parse(text), text.indexOf('.') >= 0 || at >= 0 ? "Real" : "Int"));
-                    }
+                    case "number" -> work.complete(done, literalNumber(text));
                     case "text" -> { step(utf8Size(text)); work.complete(done, new TextValue(TextCodec.read(text))); }
                     case "bool" -> work.complete(done, new BoolValue(expr.flag()));
                     case "variable" -> work.complete(done, env.get(text));
-                    case "global" -> resolve(text, instantiate(expr.signature(), types), logicalDepth + 1, done);
+                    case "global" -> resolve(text, instantiate(expr.signature(), types), types, logicalDepth + 1, done);
                     case "apply" -> visit(args.get(0), env, types, logicalDepth + 1, fn ->
-                        visit(args.get(1), env, types, logicalDepth + 1, arg -> apply(fn, arg, logicalDepth + 1, done)));
+                        visit(args.get(1), env, types, logicalDepth + 1, arg -> apply(fn, arg, types, logicalDepth + 1, done)));
                     case "case" -> visit(args.getFirst(), env, types, logicalDepth + 1, value -> {
                         work.later(new Runnable() {
                             int index;
@@ -260,6 +254,7 @@ public final class ContractRuntime {
                 ` + functionExecutionJava + `
                 ` + inlineAssertionJava + `
                 ` + codecExecutionJava + `
+                ` + codecReadJava + `
         }
         ` + functionTypesJava + `
         NumberValue checkedNumber(Rational number, String type) {
@@ -375,10 +370,15 @@ public final class ContractRuntime {
         final Eval structure;
         final List<Validation.Check> checks = new ArrayList<>();
         final boolean refinements;
-        final Work work = new Work();
+        final Eval enclosing;
+        final Work work;
         String currentPath = "";
         Validator(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Budget.Limits caller, boolean refinements) {
-            this.definitions = definitions; this.functions = functions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure(), definitions, functions);
+            this.definitions = definitions; this.functions = functions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure(), definitions, functions); enclosing = null; work = new Work();
+        }
+        Validator(Eval enclosing, Work work) {
+            this.enclosing = enclosing; this.structure = enclosing; this.work = work;
+            definitions = enclosing.definitions; functions = enclosing.functions; refinements = true; budget = null;
         }
         Validation.Outcome run(String root, Data input) {
             try {
@@ -399,8 +399,14 @@ public final class ContractRuntime {
                 switch (type.kind()) {
                     case "refined": {
                         schedule(type.arguments().getFirst(), input, env, path, depth + 1, result -> {
-                            if (result.shape() && refinements) for (Rule rule : type.rules()) rule(rule, result.data(), path, env);
-                            work.complete(done, result);
+                            if (!result.shape() || !refinements) { work.complete(done, result); return; }
+                            work.later(new Runnable() {
+                                int index;
+                                @Override public void run() {
+                                    if (index == type.rules().size()) { work.complete(done, result); return; }
+                                    rule(type.rules().get(index++), result.data(), path, env, depth + 1, () -> work.later(this));
+                                }
+                            });
                         });
                         return;
                     }
@@ -515,7 +521,7 @@ public final class ContractRuntime {
                 env = bindings(definition, type.arguments(), env); type = definition.body();
             }
         }
-        void rule(Rule rule, Val input, String path, Map<String, Binding> types) {
+        void rule(Rule rule, Val input, String path, Map<String, Binding> types, int level, Runnable done) {
             String code = rule.code();
             if (code.isEmpty()) {
                 try {
@@ -523,19 +529,21 @@ public final class ContractRuntime {
                     code = "refine." + HexFormat.of().formatHex(digest, 0, 8);
                 } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
             }
-            String message = "Value must satisfy the declared condition: " + rule.predicate() + ".";
-            Eval evaluator = new Eval(budget.beginClause(rule.steps()), definitions, functions); var env = Map.of("it", input);
-            boolean satisfied;
-            try { satisfied = ((BoolValue)evaluator.expression(rule.expression(), env, types)).value(); }
-            catch (Failure e) {
-                checks.add(new Validation.Undecided(new Validation.Diagnostic(code, List.of(path), rule.predicate(), "Could not determine whether the condition holds: " + e.code + ": " + e.getMessage() + "."))); return;
-            }
-            if (satisfied) { checks.add(new Validation.Satisfied()); return; }
-            if (rule.message() != null) {
-                try { String custom = ((TextValue)evaluator.expression(rule.message(), env, types)).value(); TextCodec.utf8(custom); message = custom; }
-                catch (Failure | IllegalArgumentException ignored) { /* The violation remains conclusive. */ }
-            }
-            checks.add(new Validation.Violated(new Validation.Diagnostic(code, List.of(path), rule.predicate(), message)));
+            String defaultMessage = "Value must satisfy the declared condition: " + rule.predicate() + ".", diagnosticCode = code;
+            Eval evaluator = new Eval(enclosing == null ? budget.beginClause(rule.steps()) : enclosing.meter.nested(rule.steps()), definitions, functions);
+            int start = enclosing == null ? 0 : level; var env = Map.of("it", input); Eval.Engine engine = evaluator.new Engine(work);
+            Consumer<String> violated = message -> { checks.add(new Validation.Violated(new Validation.Diagnostic(diagnosticCode, List.of(path), rule.predicate(), message))); work.later(done); };
+            work.<Val>attempt(receiver -> engine.visit(rule.expression(), env, types, start, receiver), result -> {
+                if (((BoolValue)result).value()) { checks.add(new Validation.Satisfied()); work.later(done); return; }
+                if (rule.message() == null) { work.complete(violated, defaultMessage); return; }
+                work.<Val>attempt(receiver -> engine.visit(rule.message(), env, types, start, receiver), custom -> {
+                    String message = ((TextValue)custom).value();
+                    try { TextCodec.utf8(message); } catch (IllegalArgumentException failure) { message = defaultMessage; }
+                    work.complete(violated, message);
+                }, failure -> work.complete(violated, defaultMessage));
+            }, failure -> {
+                checks.add(new Validation.Undecided(new Validation.Diagnostic(diagnosticCode, List.of(path), rule.predicate(), "Could not determine whether the condition holds: " + failure.code + ": " + failure.getMessage() + "."))); work.later(done);
+            });
         }
     }
 }

@@ -552,3 +552,42 @@ native formats and project workflows. The full checklist remains the release gat
   generation, race, vet, CLI and all fuzz gates. GoPlus latest remains pinned at
   v0.158.0. No product tag or Maven deployment was made; the full release
   checklist remains open.
+
+## Java typed canonical reading
+
+- The `read` builtin now resolves inferred targets through generic functions,
+  higher-order calls, local bindings and declaration scopes. It parses the same
+  expression/type/pattern grammar as Go, then interprets only literal data and
+  constructor forms. Text cannot execute arbitrary functions or expressions.
+  Parser and decoder traversal are iterative, retaining Go's depth, token,
+  UTF-8 byte and logical-step limits.
+- Target validation shares enclosing meters and the expression continuation
+  queue. `Ok` is produced only after successful validation; malformed input and
+  conclusive target violations produce `Err`; unknown target validation remains
+  an evaluation failure. Recursively reading a refined target cannot reset its
+  caller's budget or recurse on the JVM stack. Failed custom messages preserve
+  a conclusive target violation.
+- `Contract.read` returns full reports and exposes a candidate only for a valid
+  read. `orThrow()` integrates with ordinary exception handling. Generated model
+  `read` factories use the validated nominal evidence directly; instance
+  `showWithoutValidation` supports canonical display of bypass-created values,
+  which are checked again on subsequent reads. Field naming avoids collisions
+  with the new codec methods.
+- Tests compare 34,575 complete Go/Java read reports/values and 11,717 parser
+  differential/resource cases. Structural hashes compare expression/type/pattern
+  trees, not just parser acceptance. Cases cover generic scopes, anonymous and
+  named refinements, optional/recursive data, failed messages, recursive reads,
+  unknown recovery, small budgets, 512-level boundaries, 16 MiB UTF-8 limits and
+  the million-token limit, all with a 256 KiB JVM stack. Four fresh-seeded
+  jetCheck suites add 8,000 cases for primitive/structured round trips,
+  refinement enforcement and arbitrary-input determinism. Generated model tests
+  exercise typed factories, parent evidence, collisions and bypass revalidation.
+- Full local race tests, vet and deterministic GoPlus generation pass. A
+  10-second validator-emitter fuzz run passed 3,679,216 executions. The regular
+  validator generation benchmark measured 571,867 ns/op, 1,535,548 B/op and
+  11,386 allocations/op on Darwin/arm64 (Apple M5 Max). These measurements cover
+  generation, not payload throughput. The latest GoPlus remains v0.158.0.
+- Java timestamps and regex remain explicitly unsupported. Complete models,
+  native ingestion/exports, validated Jackson/Avro serde, English output,
+  analysis, versioning, schema-derived tests, Maven wiring and the full CLI
+  remain required. This checkpoint does not complete the release checklist.

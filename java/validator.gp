@@ -54,7 +54,7 @@ func (e *initializer) expr(expr *language.Expr,scope map[string]bool)string {
     case language.Variable(name):
         kind,text="variable",name
         if !scope[name]{
-            if name=="read"||name=="matches"||name=="search"{
+            if name=="matches"||name=="search"{
                 declared:=false;for _,fn:=range e.checked.Syntax.Functions{if fn.Name==name{declared=true;break}}
                 if !declared{unsupported(expr.At,"Java execution for "+name+" remains required")}
             }
@@ -146,6 +146,8 @@ public final class %s {
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
     public static String showWithoutValidation(Data input) { return showWithoutValidation(input, Budget.Limits.defaults()); }
     public static String showWithoutValidation(Data input, Budget.Limits caller) { return ContractRuntime.showWithoutValidation(input, caller); }
+    public static ContractRuntime.ReadResult read(String root, String text) { return read(root, text, Budget.Limits.defaults()); }
+    public static ContractRuntime.ReadResult read(String root, String text, Budget.Limits caller) { return ContractRuntime.read(DEFINITIONS, FUNCTIONS, root, text, caller); }
 `,className,className,functions)+e.source(definitions,signatures)
     files,failure=GenerateRuntime(namespace);if failure!=nil{return nil,failure}
     prefix:=strings.ReplaceAll(namespace,".","/")

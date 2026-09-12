@@ -46,7 +46,7 @@ generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
 The current 65,536-bit integer-width guard matches Go's development primitive,
 not the final shared resource policy. Java regex/timestamps, schema-derived
-complete model shapes, typed compound read, Jackson/Avro codecs,
+complete model shapes, Jackson/Avro codecs,
 schema-derived test generators, Maven wiring and the full CLI generation path
 remain required. Nothing here establishes full product conformance.
 
@@ -128,7 +128,7 @@ instantiation, recursion, partial application, higher-order arguments/results,
 zero-argument definitions and ordered equations. Case/function patterns support
 bindings, wildcards, literals, constructors, lists and cons patterns.
 
-Implemented builtins are `not`, `isInteger`, `show`, `length`, `reverse`, `map`, `filter`,
+Implemented builtins are `not`, `isInteger`, `show`, `read`, `length`, `reverse`, `map`, `filter`,
 `foldl`, `oneOf`, `elem`, `unique`, `all`, `any`, `satisfiesAll`,
 `satisfiesOnlyOneOf`, `satisfiesOneOf`, and `satisfiesAtLeastOneOf`. Quantifiers
 preserve three-outcome behavior: a later decisive result can survive an earlier
@@ -147,7 +147,7 @@ reports indeterminate, rather than mistaking a failed computation for `False`.
 Nested clauses share their enclosing budgets and the continuation queue, so
 recursive contract predicates obey logical depth limits without JVM recursion.
 
-Java builtin `read`, regex `matches`/`search`, and timestamps still reject
+Java regex `matches`/`search` and timestamps still reject
 generation with `java.unsupported` and a source position.
 Function-valued payload fields are not serializable payload types.
 Unsupported rules are never dropped. The missing execution forms remain release
@@ -160,7 +160,7 @@ guarded functions. Exact numbers use reduced fractions; text quotes and escapes
 every non-ASCII UTF-16 code unit, including lone surrogates. Lists and constructor
 arguments retain order. Record fields sort by Unicode scalar order, not Java's
 UTF-16 lexicographic order. Negative and fractional constructor arguments receive
-parentheses so the eventual reader cannot mistake them for arithmetic.
+parentheses so the reader cannot mistake them for arithmetic.
 
 `Contract.showWithoutValidation(data[, limits])` also displays raw `Data` without
 checking a named schema or reasserting refinements. It can therefore show an
@@ -180,8 +180,56 @@ exact fractions, structured values, optional/null/result variants, higher-order
 display, escaped surrogates, scalar ordering, invalid names, deep values and
 budget boundaries. The Java classifier is checked against Go for all 1,114,112
 code points. Another 4,000 jetCheck cases exercise arbitrary UTF-16 strings,
-rational display, higher-order equivalence and raw-value preservation. Typed
-`read` and timestamps remain required before the complete canonical codec is ready.
+rational display, higher-order equivalence and raw-value preservation.
+
+### Typed, validating reads
+
+The `read` builtin uses its inferred `Result String target` type, including
+generic, higher-order and local-reader bindings. It interprets only data forms:
+numbers and exact fractions, quoted text, Booleans, lists, records and tagged
+constructors. It parses but never executes function calls, arithmetic, `let`,
+`if` or `case` expressions supplied as text. Syntactic variants such as comments,
+whitespace and parentheses follow the same grammar as Go.
+
+Successful target validation produces `Ok value`. Malformed data or a conclusive
+target violation produces `Err message`; an indeterminate target or exhausted
+execution budget remains an evaluation failure, not an accepted value or a
+misleading parse error. Recursive reads share the enclosing meters and logical
+depth. Validation, predicate execution and custom messages use one continuation
+queue, so nested reads cannot reset budgets or recurse on the JVM stack.
+
+The public boundary is `Contract.read(root, text[, limits])`, which returns a
+`ContractRuntime.ReadResult`. Its `outcome()` carries the full validation report;
+`data()` is non-null only for a valid read. `orThrow()` returns that value or
+throws the ordinary `ValidationException` for invalid/indeterminate outcomes.
+Generated models also have direct `Model.read(text[, limits])` factories, which
+construct from the reader's nominal evidence without repeating validation.
+
+```java
+var result = Contract.read("Age", "21");
+Data value = result.orThrow();
+Age age = Age.read("21");
+String canonical = age.showWithoutValidation();
+```
+
+Reads check all declared refinements, including values previously created via a
+bypass. They return the checked typed view: undeclared record fields are omitted
+and absent `Maybe` fields become `Nothing`. This differs from `fromData`, which
+retains the supplied raw payload. A raw lone surrogate in input text is rejected;
+surrogate payload units must appear inside a quoted escaped string. Timestamp
+reads remain unsupported until Java's timestamp backend is implemented.
+
+Verification compares 34,575 complete reports and read values against Go, plus
+11,717 parser differential/resource cases. The parser tests compare complete
+expression/type/pattern tree structure and test the 512-level, 16 MiB UTF-8 and
+one-million-token limits. All run with `-Xss256k`. Four 2,000-case jetCheck suites
+cover arbitrary UTF-16 round trips, exact rationals/refinement enforcement,
+structured recursive/optional payload round trips and deterministic handling of
+arbitrary text. Model tests cover direct typed factories, parent evidence,
+method/field collisions, failed reads and invalid-bypass revalidation.
+
+Canonical reading is not JSON/Avro serde or native schema ingestion; those remain
+separate release obligations.
 
 ### Initialization and execution evidence
 

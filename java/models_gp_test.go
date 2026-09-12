@@ -25,6 +25,9 @@ type FunctionAge = Int where positive it
 guarded :: (Int where it > 0) -> Bool
 guarded _ = True
 type GuardedAge = Int where guarded it
+acceptAge :: Age -> Bool
+acceptAge _ = True
+type ReadAge = String where (case read it of { Ok age -> acceptAge age; Err _ -> False })
 type AccountId = String
 type OtherId = String
 type Age = Int where it >= 0 @code "age.nonnegative"
@@ -45,6 +48,7 @@ type Uncertain = Real where it / 0.0 > 0.0
 type Empty = {}
 type OptionalAge = Maybe Age
 type OptionalRefinement = Maybe (Int where it > 0)
+type CodecCollision = { read :: String, showWithoutValidation :: String }
 `
 
 func TestGeneratedSemanticModels(t *testing.T) {
@@ -149,6 +153,16 @@ public final class Models {
         rejects(() -> new GuardedAge(n(0)));
         require(GuardedAge.createWithoutValidation(n(-1)).validate().state() == Validation.State.INDETERMINATE);
         require(Contract.showWithoutValidation(GuardedAge.createWithoutValidation(n(-1)).rawData()).equals("-1"));
+        require(new ReadAge("21").value().equals("21"));
+        rejects(() -> new ReadAge("-1")); rejects(() -> new ReadAge("not a number"));
+        require(Age.fromData(Contract.read("Age", "21").orThrow()).value().equals(n(21)));
+        require(Contract.read("Age", Contract.showWithoutValidation(Age.createWithoutValidation(n(-1)).rawData())).data() == null);
+        Age readParent = ElderAge.read("65"); require(readParent.value().equals(n(65)));
+        require(Age.read("21").showWithoutValidation().equals("21"));
+        rejects(() -> AdultAge.read("17")); rejects(() -> Age.read("1", new Budget.Limits(1,0)));
+        rejects(() -> Age.read(Age.createWithoutValidation(n(-1)).showWithoutValidation()));
+        var codecCollision = CodecCollision.read("{read = \"x\", showWithoutValidation = \"y\"}");
+        require(codecCollision.read_().equals("x") && codecCollision.showWithoutValidation_().equals("y"));
         ProofChecks.run();
         String spelling = new String(new char[]{'x', (char)0xd800}); AccountId id = new AccountId(spelling);
         require(id.value() == spelling);

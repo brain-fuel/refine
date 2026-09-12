@@ -300,7 +300,7 @@ func (m *modelEmitter) recordFields(root string, t *language.Type) []modelField 
 	if fields, found := m.fields[root]; found {
 		return fields
 	}
-	reserved := " rawData validate fromData fromDataWithoutValidation createWithoutValidation update updateWithoutValidation validateData equals hashCode toString getClass wait notify notifyAll draft freeze caller raw change evidence source "
+	reserved := " rawData validate fromData fromDataWithoutValidation createWithoutValidation update updateWithoutValidation validateData read showWithoutValidation equals hashCode toString getClass wait notify notifyAll draft freeze caller raw change evidence source "
 	used, setters := map[string]bool{}, map[string]bool{}
 	result := []modelField{}
 	switch __gp_m7 := any(t.Form).(type) {
@@ -406,10 +406,13 @@ func (m *modelEmitter) model(decl language.TypeDecl) string {
 		fmt.Fprintf(&out, "    public static %s fromData%s(Data raw, Budget.Limits caller) { return new %s(ModelSupport.%s(%s,ModelSupport.nonNull(raw,\"\"),caller)); }\n", name, suffix, name, method, javaQuote(name))
 	}
 	out.WriteString("    public static Validation.Outcome validateData(Data raw) { return validateData(raw,Budget.Limits.defaults()); }\n")
+	fmt.Fprintf(&out, "    public static %s read(String text) { return read(text,Budget.Limits.defaults()); }\n", name)
+	fmt.Fprintf(&out, "    public static %s read(String text, Budget.Limits caller) { return new %s(ModelSupport.read(%s,text,caller)); }\n", name, name, javaQuote(name))
 	fmt.Fprintf(&out, "    public static Validation.Outcome validateData(Data raw, Budget.Limits caller) { return %s.validate(%s,raw,caller); }\n", m.contract, javaQuote(name))
 	fmt.Fprintf(&out, "    public Validation.Outcome validate() { return validate(Budget.Limits.defaults()); }\n    public Validation.Outcome validate(Budget.Limits caller) { return %s.validate(%s,rawData(),caller); }\n", m.contract, javaQuote(name))
 	if parent == "" {
 		out.WriteString("    public final Data rawData() { return raw; }\n")
+		fmt.Fprintf(&out, "    public final String showWithoutValidation() { return showWithoutValidation(Budget.Limits.defaults()); }\n    public final String showWithoutValidation(Budget.Limits caller) { return %s.showWithoutValidation(rawData(),caller); }\n", m.contract)
 		if record {
 			for _, field := range fields {
 				fmt.Fprintf(&out, "    public final %s %s() { return %s; }\n", m.javaType(field.typ), field.member, m.decode(field.typ, "ModelSupport.field(rawData(),"+javaQuote(field.name)+")"))
@@ -546,7 +549,7 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 	support := []struct {
 		name string
 		body string
-	}{{"ModelSupport", fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName)}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}}
+	}{{"ModelSupport", fmt.Sprintf(modelSupportJava, strings.Join(parents, ","), contractName, contractName, contractName)}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}}
 	for _, item := range support {
 		files = append(files, File{Path: path.Join(prefix, item.name+".java"), Source: header + item.body})
 	}
