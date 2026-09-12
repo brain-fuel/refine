@@ -888,3 +888,15 @@ native formats and project workflows. The full checklist remains the release gat
   classes, remaining language/native/serde work, analysis, English output,
   schema-derived tests, versioning, Maven and CLI integration remain required.
   No product tag or Maven deployment is made.
+- A fresh external module fetched
+  `v0.0.0-20260912043040-acfc6c213327` with `GOWORK=off` and no replacements.
+  Its race-tested harness compiled generated Java 25 with warnings-as-errors and
+  ran a 262-field record with nominal parent refinements, a domain type named
+  `Draft`, typed helper disambiguation, absent optional fields, exact single-pass
+  budgets, immutable updates, structural bypass failures and canonical read
+  revalidation at `-Xss256k`. This is a development pseudo-version, not a product
+  release or Maven deployment.
+- Checkpoint `acfc6c2` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34673194522), including
+  generation, race, vet, CLI and all fuzz gates. Authored GoPlus and generated
+  Go were pushed together. No product tag or Maven deployment was made.
