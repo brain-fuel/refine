@@ -4,6 +4,8 @@
 package native
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 
 	yaml "github.com/oasdiff/yaml3"
@@ -11,7 +13,7 @@ import (
 	"goforge.dev/refine/schemajson"
 )
 
-func checkAnnotation(format Format, pointer, source, root string) (Annotation, error) {
+func checkAnnotation(format Format, pointer, source, root string, metadata WireMetadata, hasMetadata bool) (Annotation, error) {
 	program, err := language.Compile(source)
 	if err != nil {
 		return Annotation{}, wrap(format, "native.refinement", pointer, err)
@@ -21,21 +23,26 @@ func checkAnnotation(format Format, pointer, source, root string) (Annotation, e
 			return Annotation{}, wrap(format, "native.refinement", pointer+"/root", err)
 		}
 	}
-	return Annotation{Pointer: pointer, Source: source, Root: root, Formatted: program.Formatted()}, nil
+	if hasMetadata {
+		if err := validateMetadata(program, metadata); err != nil {
+			return Annotation{}, wrap(format, "native.metadata", pointer+"/metadata", err)
+		}
+	}
+	return Annotation{Pointer: pointer, Source: source, Root: root, Formatted: program.Formatted(), Metadata: copyMetadata(metadata), HasMetadata: hasMetadata}, nil
 }
 
 func jsonAnnotation(format Format, pointer string, node schemajson.Node) (Annotation, error) {
 	if source, ok := nodeString(node); ok {
-		return checkAnnotation(format, pointer, source, "")
+		return checkAnnotation(format, pointer, source, "", WireMetadata{}, false)
 	}
 	if schemajson.KindName(node.Kind()) != "object" {
 		return Annotation{}, &Error{Code: "native.refinement", Format: format, Pointer: pointer, Message: "x-refine must be a source string or an object containing source and optional root strings"}
 	}
-	allowed := map[string]bool{"source": true, "root": true}
+	allowed := map[string]bool{"source": true, "root": true, "metadata": true}
 	for _, member := range node.Members() {
 		key, err := member.Key.UTF8()
 		if err != nil || !allowed[key] {
-			return Annotation{}, &Error{Code: "native.refinement", Format: format, Pointer: pointer, Message: "x-refine object permits only source and root"}
+			return Annotation{}, &Error{Code: "native.refinement", Format: format, Pointer: pointer, Message: "x-refine object permits only source, root, and metadata"}
 		}
 	}
 	sourceNode, ok := node.Lookup("source")
@@ -53,7 +60,17 @@ func jsonAnnotation(format Format, pointer string, node schemajson.Node) (Annota
 			return Annotation{}, &Error{Code: "native.refinement", Format: format, Pointer: pointer + "/root", Message: "root must be a string"}
 		}
 	}
-	return checkAnnotation(format, pointer, source, root)
+	metadata := WireMetadata{}
+	hasMetadata := false
+	if metadataNode, exists := node.Lookup("metadata"); exists {
+		decoder := json.NewDecoder(bytes.NewBufferString(metadataNode.Raw()))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&metadata); err != nil {
+			return Annotation{}, wrap(format, "native.metadata", pointer+"/metadata", err)
+		}
+		hasMetadata = true
+	}
+	return checkAnnotation(format, pointer, source, root, metadata, hasMetadata)
 }
 
 func jsonSchemaAnnotations(root schemajson.Node) ([]Annotation, error) {
@@ -168,11 +185,15 @@ func yamlRootAnnotation(root *yaml.Node) ([]Annotation, error) {
 	}
 	for i := 0; i < len(root.Content); i += 2 {
 		if root.Content[i].Value == "x-refine" {
-			source, rootType, err := yamlAnnotationValue(root.Content[i+1], "/x-refine")
-			if err != nil {
-				return nil, err
+			var encoded bytes.Buffer
+			if err := writeYAMLJSON(&encoded, root.Content[i+1], "/x-refine"); err != nil {
+				return nil, wrap(OpenAPI, "native.refinement", "/x-refine", err)
 			}
-			annotation, err := checkAnnotation(OpenAPI, "/x-refine", source, rootType)
+			document, err := schemajson.Parse(encoded.Bytes(), schemajson.Limits{})
+			if err != nil {
+				return nil, wrap(OpenAPI, "native.refinement", "/x-refine", err)
+			}
+			annotation, err := jsonAnnotation(OpenAPI, "/x-refine", document.Root())
 			if err != nil {
 				return nil, err
 			}

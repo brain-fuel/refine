@@ -6,6 +6,10 @@ tests does not satisfy that objective. No release is ready yet.
 
 ## Architecture
 
+Development test selection and rerun policy are recorded in
+[TESTING.md](TESTING.md). Exact focused checks are reused on unchanged inputs;
+whole-repository race/vet/generation runs belong to integration checkpoints.
+
 1. Lossless native document ingestion preserves native schema nodes and attaches
    per-constraint provenance to canonical refinement expressions. It never
    confuses additional refinements with loss of an existing native constraint.
@@ -76,7 +80,59 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
 - Hugo vanity page is prepared in `../goforge/dev.goforge`; deployment is not
   proven by a successful local Hugo build.
 
-## Current evidence (2026-09-11 foundation checkpoint)
+## Native/Maven integration checkpoint (2026-09-12)
+
+- Native JSON Schema and selected OpenAPI 3.0/3.1/3.2 payloads have offline,
+  exact-number native validation composed with checked Refine decoding. Native
+  Avro binary validation has bounded preflight and an independent ecosystem
+  oracle; the full Go Avro-to-Refine decoding bridge remains unfinished.
+- Java generation now includes validated Jackson 3 and Apache Avro 1.12 binary
+  and JSON adapters, named scalar metadata, anonymous typed nested records,
+  closed generic native lowering, bounded finite float conversion, and generated
+  JetCheck wire properties. Native JSON and Avro candidate filters reject only
+  proven invalid/unrepresentable samples; resource/indeterminate failures are
+  not converted into ordinary sampling misses.
+- Canonical JSON native constraint units are versioned and audited at their
+  original scope. Supported edits affect the effective native validator while
+  immutable original bytes remain available. Same-format project exports retain
+  external URI/resource manifests, native-unit authority, checked wire metadata,
+  and ordinary/refined explanations. Unsupported cross-format opaque conversion
+  fails closed. This is not a claim of complete native schema projection.
+- Project/CLI generation accepts self-contained `.refined.json` catalog entries;
+  release planning binds approvals to the complete bundle and publication policy.
+  Promotion preserves native bundle bytes, rechecks inputs under the shared
+  generation/promotion lock, and retains the snapshot. Recovery rejects reserved,
+  duplicate and symlinked destinations before mutation.
+- Qualified polymorphic capabilities, named-call continuations, finite Float32/
+  Float64 semantics and scoped resource checks have focused Go/Java conformance
+  evidence. The full integration run found two obsolete fixtures (untyped
+  `show []`, formerly unsupported nested records) and a typed-read structural
+  depth mismatch. The fixtures were corrected without weakening checking;
+  Java typed reads now inherit structural depth independently of expression-call
+  depth, retaining the shared guard for nested validating reads.
+- One frozen-source `go test -race ./... -skip
+  '^TestMavenRegenerationAndReproducibleArtifact$'` run passed every non-Java
+  package and all but those three Java tests (Java package duration 160.057s).
+  After the scoped fixes, the exact anchored race reruns passed:
+  `TestGeneratedTypedRead` (8.213s), `TestGeneratedCanonicalShow` (11.737s), and
+  `TestModelGenerationBoundaries` (1.702s). The full suite was not repeated.
+- The real Maven lifecycle test passed in 14.667s with both ordinary generated
+  JSON/Avro contracts and an imported native JSON bundle. Its four builds verify
+  initial compilation/property execution, byte-identical reproducibility,
+  snapshot regeneration and expected generation-exhaustion failure. This
+  lifecycle evidence is reused locally; CI supplies independent platform runs.
+- Environment: Go 1.26.5, GoPlus v0.158.0, Java 25, pinned Maven 3.9.16,
+  JetCheck 0.3.0, Apache Avro 1.12.0, Jackson 3.2.0 standalone and 3.2.1 with
+  networknt 3.0.7. Java harnesses verify dependency digests and compile with
+  warnings-as-errors. Deterministic development selections are in
+  [TESTING.md](TESTING.md).
+- Still required: complete native projection and cross-format conversion,
+  OpenAPI request/response context, broader Java JSON codec allocation/stack
+  hardening, bounded ECMA native regex execution, complete generators/examples,
+  full specification audit and eventual versioned release. No product release
+  tag or Maven deployment is implied by this integration checkpoint.
+
+## Historical evidence (2026-09-11 foundation checkpoint)
 
 - Latest published GoPlus `v0.158.0` verified through `go list -m ...@latest`
   and upstream Git tags, pinned in go.mod. The generated `v0.28.0` header is
@@ -129,10 +185,10 @@ be expanded as concrete tests and commands land. Unchecked items are incomplete.
   with `GOWORK=off`, no local replacements, and race tests passed. It resolved
   to development pseudo-version `v0.0.0-20260911195505-359ff42f6bbb`, not a product
   release. The Hugo vanity route is deployed and its go-import metadata verified.
-- Required front-end work remains explicit in `docs/LANGUAGE.md`: imports,
-  constraint-qualified polymorphism, full explicit conversion/numeric semantics,
-  and integration with execution/native/Java backends. No full-language or release
-  checkbox is marked complete based on this checkpoint.
+- At this checkpoint, imports, qualified polymorphism, conversion/numeric
+  semantics and backend integration remained. Later evidence below supersedes
+  that historical gap list; see `docs/LANGUAGE.md` and `docs/CAPABILITIES.md` for
+  the current boundary. No release checkbox is inferred from this checkpoint.
 
 ## In-memory runtime checkpoint
 
@@ -1056,6 +1112,19 @@ native formats and project workflows. The full checklist remains the release gat
   and 1,616,294 native round-trip executions. These counts describe only those
   runs, not exhaustive conformance. Latest published GoPlus remains v0.158.0.
   No full-specification release gate is marked complete by this integration.
+- Integration checkpoint `91d4af4` passed local race tests, vet and deterministic
+  generation, then the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34703383890), including
+  all eighteen fuzz gates. The race suite exposed a multiline-infix parser
+  discrepancy between Go and Java; the corrected generated reader passed
+  34,575 read/report comparisons, 11,717 parser differential/resource cases,
+  and 8,000 JetCheck cases before the full rerun passed.
+- A fresh external module consumed public pseudo-version
+  `v0.0.0-20260912154627-91d4af49a7a0` with `GOWORK=off` and no replacements.
+  Its race-tested harness checked native-bundle exact-source recovery and native
+  constraints, English export and satisfiability, then generated Java 25 and ran
+  Jackson 3 valid/invalid read/write tests at `-Xss256k`. No product version tag
+  or Maven deployment was made.
 
 ## Inline-refined Java argument witnesses
 

@@ -45,7 +45,7 @@ func (e *Error) Unwrap()error{return e.Cause}
 // Annotation is a checked x-refine extension. Source is either a complete
 // language module, or the source member of {source,root}. Root, when present,
 // is checked as a closed payload type in that module.
-type Annotation struct { Pointer string; Source string; Root string; Formatted string }
+type Annotation struct { Pointer string; Source string; Root string; Formatted string; Metadata WireMetadata; HasMetadata bool }
 
 // Document retains the exact caller bytes. Parsed oracle models are not exposed:
 // doing so would make an apparently immutable imported contract mutable.
@@ -60,7 +60,7 @@ func (d *Document) Format()Format{if d==nil{return ""};return d.format}
 func (d *Document) Version()string{if d==nil{return ""};return d.version}
 func (d *Document) Original()string{if d==nil{return ""};return d.raw}
 func (d *Document) ExportOriginal()[]byte{if d==nil{return nil};return append([]byte(nil),[]byte(d.raw)...)}
-func (d *Document) Annotations()[]Annotation{if d==nil{return nil};return append([]Annotation(nil),d.annotations...)}
+func (d *Document) Annotations()[]Annotation{if d==nil{return nil};out:=append([]Annotation(nil),d.annotations...);for i:=range out{out[i].Metadata=copyMetadata(out[i].Metadata)};return out}
 
 func Parse(format Format,input []byte,options Options)(*Document,error){
     switch format {
@@ -78,7 +78,7 @@ func limits(options Options)(schemajson.Limits,error){
     return l,nil
 }
 
-func ParseJSONSchema(input []byte,options Options)(*Document,error){
+func ParseJSONSchema(input []byte,options Options)(document *Document,failure error){defer recoverRegexEvaluation(JSONSchema,&failure)
     doc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(JSONSchema,"native.syntax","",err)}
     if err:=scalarJSON(doc.Root(),"");err!=nil{return nil,wrap(JSONSchema,"native.encoding","",err)}
     root:=doc.Root();kind:=schemajson.KindName(root.Kind())
@@ -112,7 +112,7 @@ func supportedOpenAPI(version string)bool{
     switch version {case "3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0":return true};return false
 }
 
-func ParseOpenAPI(input []byte,options Options)(*Document,error){
+func ParseOpenAPI(input []byte,options Options)(document *Document,failure error){defer recoverRegexEvaluation(OpenAPI,&failure)
     l,err:=limits(options);if err!=nil{return nil,wrap(OpenAPI,"native.limit","",err)}
     if len(input)>l.Bytes{return nil,&Error{Code:"native.limit",Format:OpenAPI,Message:"document byte limit exceeded"}}
     if strings.HasPrefix(strings.TrimSpace(string(input)),"{"){jsonDoc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(OpenAPI,"native.syntax","",err)};if err:=scalarJSON(jsonDoc.Root(),"");err!=nil{return nil,wrap(OpenAPI,"native.encoding","",err)}}
@@ -130,15 +130,16 @@ func ParseOpenAPI(input []byte,options Options)(*Document,error){
 
 func wrap(format Format,code,pointer string,err error)*Error{return &Error{Code:code,Format:format,Pointer:pointer,Message:err.Error(),Cause:err}}
 
-func parseYAML(input []byte,l schemajson.Limits)(*yaml.Node,error){
+func parseYAML(input []byte,l schemajson.Limits)(*yaml.Node,error){numericExpansion:=0;return parseYAMLWithNumericExpansion(input,l,&numericExpansion)}
+func parseYAMLWithNumericExpansion(input []byte,l schemajson.Limits,numericExpansion *int)(*yaml.Node,error){
     decoder:=yaml.NewDecoder(strings.NewReader(string(input)));var root yaml.Node
     if err:=decoder.Decode(&root);err!=nil{return nil,err};if len(root.Content)==0{return nil,errors.New("empty document")}
     var extra yaml.Node;if err:=decoder.Decode(&extra);err!=io.EOF{return nil,errors.New("OpenAPI input must contain exactly one YAML document")}
-    count:=0;if err:=checkYAML(root.Content[0],0,l,&count,"",make(map[*yaml.Node]bool));err!=nil{return nil,err}
+    count:=0;if err:=checkYAML(root.Content[0],0,l,&count,numericExpansion,"",make(map[*yaml.Node]bool));err!=nil{return nil,err}
     return root.Content[0],nil
 }
 
-func checkYAML(node *yaml.Node,depth int,l schemajson.Limits,count *int,path string,active map[*yaml.Node]bool)error{
+func checkYAML(node *yaml.Node,depth int,l schemajson.Limits,count,numericExpansion *int,path string,active map[*yaml.Node]bool)error{
     if depth>l.Depth{return fmt.Errorf("document depth limit exceeded at %s",path)};*count++;if *count>l.Nodes{return errors.New("document node limit exceeded")}
     if active[node]{return fmt.Errorf("cyclic YAML alias at %s",path)};active[node]=true;defer delete(active,node)
     if node.Kind==yaml.AliasNode{return fmt.Errorf("YAML aliases are not supported at %s; expand the value explicitly",path)}
@@ -146,10 +147,11 @@ func checkYAML(node *yaml.Node,depth int,l schemajson.Limits,count *int,path str
         seen:=make(map[string]bool)
         for i:=0;i<len(node.Content);i+=2{key:=node.Content[i];if key.Kind!=yaml.ScalarNode{return fmt.Errorf("non-scalar mapping key at %s",path)};if key.Value=="<<"{return fmt.Errorf("YAML merge keys are not supported at %s; expand the mapping explicitly",path)}
             if seen[key.Value]{return fmt.Errorf("duplicate mapping key %q at %s",key.Value,path)};seen[key.Value]=true
-            childPath:=path+"/"+escapePointer(key.Value);if err:=checkYAML(node.Content[i+1],depth+1,l,count,childPath,active);err!=nil{return err}
+            childPath:=path+"/"+escapePointer(key.Value);if err:=checkYAML(node.Content[i+1],depth+1,l,count,numericExpansion,childPath,active);err!=nil{return err}
         };return nil
     }
-    for i,child:=range node.Content{if err:=checkYAML(child,depth+1,l,count,fmt.Sprintf("%s/%d",path,i),active);err!=nil{return err}}
+    if node.Kind==yaml.ScalarNode&&(node.Tag=="!!int"||node.Tag=="!!float"){if len(node.Value)>DefaultNumericExpansion{return fmt.Errorf("exact YAML number token limit exceeded at %s",path)};raw:="";var err error;if node.Tag=="!!int"{raw,err=yamlIntegerJSON(node.Value)}else{raw,err=yamlFloatJSON(node.Value)};if err!=nil{return err};cost,err:=exactJSONNumberExpansion(raw,path,DefaultNumericExpansion);if err!=nil{return err};if cost>DefaultNumericExpansion-*numericExpansion{return fmt.Errorf("aggregate exact YAML number expansion limit exceeded at %s",path)};*numericExpansion+=cost}
+    for i,child:=range node.Content{if err:=checkYAML(child,depth+1,l,count,numericExpansion,fmt.Sprintf("%s/%d",path,i),active);err!=nil{return err}}
     return nil
 }
 
@@ -157,10 +159,19 @@ func escapePointer(s string)string{return strings.ReplaceAll(strings.ReplaceAll(
 func nodeString(node schemajson.Node)(string,bool){text,ok:=node.Text();if !ok{return "",false};s,err:=text.UTF8();return s,err==nil}
 func checkJSONDraft(root schemajson.Node,prefix string)error{if schemajson.KindName(root.Kind())=="object"{if dialect,ok:=root.Lookup("$schema");ok{value,ok:=nodeString(dialect);if !ok||strings.TrimSuffix(value,"#")!="https://json-schema.org/draft/2020-12/schema"{return &Error{Code:"native.version",Format:JSONSchema,Pointer:prefix+"/$schema",Message:"only JSON Schema Draft 2020-12 is supported"}}}};return nil}
 
-func scalarJSON(node schemajson.Node,path string)error{
+func scalarJSON(node schemajson.Node,path string)error{return scalarJSONWithNumericExpansion(node,path,DefaultNumericExpansion)}
+func scalarJSONWithNumericExpansion(node schemajson.Node,path string,limit int)error{used:=0;return scalarJSONBudget(node,path,limit,&used)}
+func scalarJSONText(node schemajson.Node,path string)error{switch schemajson.KindName(node.Kind()){case "string":if _,ok:=nodeString(node);!ok{return fmt.Errorf("non-scalar Unicode string at %s is not supported by native validators",path)};case "array":for i,child:=range node.Elements(){if err:=scalarJSONText(child,fmt.Sprintf("%s/%d",path,i));err!=nil{return err}};case "object":for _,member:=range node.Members(){key,err:=member.Key.UTF8();if err!=nil{return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators",path)};if err:=scalarJSONText(member.Value,path+"/"+escapePointer(key));err!=nil{return err}}};return nil}
+func scalarJSONBudget(node schemajson.Node,path string,limit int,used *int)error{
     switch schemajson.KindName(node.Kind()){
     case "string":if _,ok:=nodeString(node);!ok{return fmt.Errorf("non-scalar Unicode string at %s is not supported by native validators",path)}
-    case "array":for i,child:=range node.Elements(){if err:=scalarJSON(child,fmt.Sprintf("%s/%d",path,i));err!=nil{return err}}
-    case "object":for _,member:=range node.Members(){key,err:=member.Key.UTF8();if err!=nil{return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators",path)};if err:=scalarJSON(member.Value,path+"/"+escapePointer(key));err!=nil{return err}}
+    case "number":cost,err:=exactJSONNumberExpansion(node.Raw(),path,limit);if err!=nil{return err};if cost>limit-*used{return fmt.Errorf("aggregate exact JSON number expansion limit exceeded at %s",path)};*used+=cost
+    case "array":for i,child:=range node.Elements(){if err:=scalarJSONBudget(child,fmt.Sprintf("%s/%d",path,i),limit,used);err!=nil{return err}}
+    case "object":for _,member:=range node.Members(){key,err:=member.Key.UTF8();if err!=nil{return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators",path)};if err:=scalarJSONBudget(member.Value,path+"/"+escapePointer(key),limit,used);err!=nil{return err}}
     };return nil
 }
+
+// exactJSONNumberExpansion charges the token bytes plus the absolute decimal
+// exponent without constructing a big integer. Callers aggregate this cost
+// across the complete document before handing any value to an exact oracle.
+func exactJSONNumberExpansion(raw,path string,limit int)(int,error){if limit<=0{return 0,fmt.Errorf("exact JSON number expansion limit must be positive")};if len(raw)>limit{return 0,fmt.Errorf("exact JSON number token limit exceeded at %s",path)};exponent:="";if index:=strings.IndexAny(raw,"eE");index>=0{exponent=raw[index+1:]};if strings.HasPrefix(exponent,"+")||strings.HasPrefix(exponent,"-"){exponent=exponent[1:]};magnitude:=0;for _,char:=range exponent{if char<'0'||char>'9'{return 0,fmt.Errorf("invalid JSON number exponent at %s",path)};digit:=int(char-'0');if magnitude>(limit-digit)/10{return 0,fmt.Errorf("exact JSON number exponent limit exceeded at %s",path)};magnitude=magnitude*10+digit};if magnitude>limit-len(raw){return 0,fmt.Errorf("exact JSON number expansion limit exceeded at %s",path)};return len(raw)+magnitude,nil}

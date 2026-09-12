@@ -38,9 +38,9 @@ type evaluator struct {
     typeEnvironment map[string]typeBinding
 }
 
-// Nesting is an independent deterministic safety cap. Reaching it is unknown,
-// not a proof of nontermination or a predicate violation. A trampoline remains
-// planned so recursive predicates can use their complete logical step budget.
+// Structural helper nesting is an independent deterministic safety cap.
+// Named expression/function recursion uses evalWork instead, so nontermination
+// is governed by the logical step budget rather than the host call stack.
 const evaluationNesting = 512
 
 func newEvaluator(module *Module, meter *validation.Meter) *evaluator {
@@ -106,61 +106,6 @@ func (e *evaluator) literalNumber(raw string,at Span) evalValue {
     return numberValue(n,typ)
 }
 
-func (e *evaluator) expression(expr *Expr,env map[string]evalValue) evalValue {
-    e.enter(expr.At); defer func(){ e.depth-- }()
-    match expr.Form {
-    case NumberLiteral(raw): return e.literalNumber(raw,expr.At)
-    case TextLiteral(raw):
-        e.step(uint64(len(raw)),expr.At)
-        t,err := value.ReadText(raw); if err != nil { evalError(expr.At,"evaluation.text","invalid text literal") }; return textValue(t)
-    case BoolLiteral(b): return boolValue(b)
-    case Variable(name):
-        if v,found := env[name]; found { return v }
-        signature:=e.instantiate(e.module.inferred[expr],e.typeEnvironment,0)
-        return e.resolveTyped(name,signature,expr.At)
-    case ListLiteral(expressions):
-        e.step(uint64(len(expressions)),expr.At)
-        items := make([]evalValue,len(expressions)); for i,item := range expressions { items[i] = e.expression(item,env) }; return evalValue{form:EvalList(items)}
-    case RecordLiteral(fields):
-        e.step(uint64(len(fields)),expr.At)
-        result := make([]evalField,len(fields)); for i,field := range fields { result[i] = evalField{name:field.Name,value:e.expression(field.Value,env)} }; return evalValue{form:EvalRecord(result)}
-    case Apply(fn,arg):
-        function := e.expression(fn,env)
-        argument := e.expression(arg,env) // eager, including ignored arguments
-        return e.apply(function,argument,expr.At)
-    case Project(record,field):
-        v := e.expression(record,env)
-        match v.form {
-        case EvalRecord(fields):
-            for _,member := range fields { e.step(1,expr.At); if member.name == field { return member.value } }
-            evalError(expr.At,"evaluation.field","record field is missing")
-        case _: evalError(expr.At,"evaluation.type","projection requires a record")
-        }
-    case Unary(_,operand):
-        n,typ := number(e.expression(operand,env),expr.At); e.step(uint64(len(n.Show())),expr.At)
-        return e.checkedNumber(n.Negate(),typ,expr.At)
-    case Binary(op,left,right):
-        a := e.expression(left,env)
-        if op == "&&" && !boolean(a,left.At) { return boolValue(false) }
-        if op == "||" && boolean(a,left.At) { return boolValue(true) }
-        b := e.expression(right,env); return e.binary(op,a,b,expr.At)
-    case Conditional(condition,yes,no):
-        if boolean(e.expression(condition,env),condition.At) { return e.expression(yes,env) }; return e.expression(no,env)
-    case Let(name,annotation,bound,body):
-        v := e.expression(bound,env)
-        if annotation!=nil && hasInlineRefinement(annotation){v=e.assertInline(annotation,v,e.typeEnvironment)}
-        local := cloneEvalEnvironment(env); local[name] = v; return e.expression(body,local)
-    case Case(subject,arms):
-        v := e.expression(subject,env)
-        for _,arm := range arms {
-            local := cloneEvalEnvironment(env)
-            if e.pattern(arm.Pattern,v,local) { return e.expression(arm.Body,local) }
-        }
-        evalError(expr.At,"evaluation.pattern","no pattern matched the value")
-    }
-    panic("unreachable evaluation form")
-}
-
 var builtinArities = map[string]int{
     "not":1,"show":1,"read":1,"length":1,"reverse":1,"unique":1,"isInteger":1,
     "map":2,"filter":2,"all":2,"any":2,"foldl":3,"oneOf":2,"elem":2,
@@ -185,6 +130,8 @@ func (e *evaluator) resolveTyped(name string,signature *Type,at Span) evalValue 
         return evalValue{form:EvalFunction(name,arity,nil),signature:signature}
     }
     if arity,found := builtinArities[name]; found { return evalValue{form:EvalFunction(name,arity,nil),signature:signature} }
+    if _,found:=FixedIntegerConversion(name);found{return evalValue{form:EvalFunction(name,1,nil),signature:signature}}
+    if _,found:=FixedFloatConversion(name);found{return evalValue{form:EvalFunction(name,1,nil),signature:signature}}
     evalError(at,"evaluation.name","unresolved function or variable"); return evalValue{}
 }
 func (e *evaluator) apply(fn,arg evalValue,at Span) evalValue {
@@ -267,6 +214,10 @@ func (e *evaluator) pattern(p *Pattern,v evalValue,env map[string]evalValue) boo
 }
 
 func (e *evaluator) checkedNumber(n value.Number,typ string,at Span) evalValue {
+    if typ=="Float32"||typ=="Float64" {
+        if _,err:=exactFloat(n,typ);err!=nil{evalError(at,"evaluation.precision","fixed-precision result is not exactly representable")}
+        return numberValue(n,typ)
+    }
     if typ != "Int" && typ != "Real" {
         digits := strings.TrimPrefix(strings.TrimPrefix(typ,"UInt"),"Int")
         width,err := strconv.ParseUint(digits,10,32)

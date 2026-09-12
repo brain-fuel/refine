@@ -3,7 +3,32 @@
 
 package explain
 
+import (
+	"fmt"
+	"goforge.dev/refine/language"
+)
+
 func builtinMeaning(name string) (string, bool) {
+	if conversion, ok := language.FixedIntegerConversion(name); ok {
+		meaning := fmt.Sprintf("Explicitly convert an arbitrary-precision integer to %s; return Ok with the unchanged mathematical value when representable, otherwise Err with an overflow explanation that the author must handle.", conversion.Type)
+		if conversion.Mode == "from" {
+			meaning = "Convert the " + conversion.Type + " argument to an arbitrary-precision integer without changing its mathematical value."
+		}
+		if conversion.Mode == "wrap" {
+			meaning = fmt.Sprintf("Explicitly reduce the arbitrary-precision integer modulo 2 to the power %d, then interpret the result as %s (subtract that modulus for the upper signed half). This produces a new predicate value and does not mutate the payload.", conversion.Bits, conversion.Type)
+		}
+		return "Use this built-in operation when applied: " + meaning, true
+	}
+	if conversion, ok := language.FixedFloatConversion(name); ok {
+		meaning := "Convert the " + conversion.Type + " argument to an exact rational without changing its mathematical value."
+		if conversion.Mode == "exact" {
+			meaning = "Convert the exact rational argument to finite " + conversion.Type + " only when it is already exactly representable; return Err instead of rounding or producing an infinity."
+		}
+		if conversion.Mode == "round" {
+			meaning = "Explicitly round the exact rational argument to the nearest finite " + conversion.Type + ", breaking half-way ties toward an even significand; return Err when the result would be infinite."
+		}
+		return "Use this built-in operation when applied: " + meaning, true
+	}
 	meaning := ""
 	switch name {
 	case "toReal":

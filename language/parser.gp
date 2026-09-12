@@ -91,7 +91,7 @@ func Parse(source string) (module *Module, failure error) {
             fn := &result.Functions[index]
             if p.accept("::") {
                 if fn.Signature != nil { syntax(name.at, "duplicate function signature") }
-                p.lines(); fn.Signature = p.typeExpression()
+                p.lines(); fn.Constraints,fn.Signature = p.functionSignature()
             } else {
                 equation := Equation{}
                 for !p.is("=") { equation.Patterns = append(equation.Patterns, p.patternAtom()) }
@@ -104,6 +104,32 @@ func Parse(source string) (module *Module, failure error) {
         }
         if !p.is("eof") && !p.accept(";") { p.need("newline") }
     }
+}
+
+// functionSignature recognizes a deliberately first-order Haskell-style
+// context. Parenthesized ordinary types remain unambiguous because a context is
+// committed only when it ends in =>.
+func (p *parser) functionSignature()([]CapabilityConstraint,*Type) {
+    mark:=p.index
+    constraints:=[]CapabilityConstraint{}
+    grouped:=p.accept("(")
+    for {
+        if !p.is("name"){p.index=mark;return nil,p.typeExpression()}
+        capability:=p.take()
+        if !uppercase(capability.text)||!p.is("name"){p.index=mark;return nil,p.typeExpression()}
+        variable:=p.take()
+        if uppercase(variable.text)||reserved(variable.text){p.index=mark;return nil,p.typeExpression()}
+        constraints=append(constraints,CapabilityConstraint{Capability:capability.text,Variable:variable.text,At:Span{Start:capability.at.Start,End:variable.at.End}})
+        if grouped {
+            if p.accept(","){p.lines();continue}
+            if !p.accept(")"){p.index=mark;return nil,p.typeExpression()}
+        }
+        break
+    }
+    p.lines()
+    if !p.accept("=>"){p.index=mark;return nil,p.typeExpression()}
+    p.lines()
+    return constraints,p.typeExpression()
 }
 
 func ParseExpression(source string) (expression *Expr, failure error) {

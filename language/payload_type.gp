@@ -37,7 +37,7 @@ func (t *PayloadType) CheckedSyntax()CheckedPayloadType{
     if t==nil||t.typ==nil{return CheckedPayloadType{}}
     copy,err:=t.program.PayloadType(t.source);if err!=nil{panic("checked payload type stopped compiling")}
     module:=copy.program.module
-    return CheckedPayloadType{Module:CheckedModule{Syntax:module,Inferred:module.inferred,FunctionScopes:module.functionScopes,DeclarationScopes:module.declarationScopes},Type:copy.typ}
+    return CheckedPayloadType{Module:checkedModuleSnapshot(module),Type:copy.typ}
 }
 func invalidPayloadType()validation.Report{
     return validation.Collect([]validation.Check{validation.Violated(validation.Diagnostic{Code:"validation.root",Paths:[]string{""},Message:"Choose a checked payload type."})})

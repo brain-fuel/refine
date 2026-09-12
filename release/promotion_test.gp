@@ -8,6 +8,31 @@ import (
 	"testing"
 )
 
+func TestRollbackRejectsSymlinkedDestinationParent(t *testing.T){
+    root:=t.TempDir();outside:=t.TempDir();transaction,err:=os.MkdirTemp(root,transactionPrefix);if err!=nil{t.Fatal(err)}
+    stage:=filepath.Join(transaction,"entry-000000");if err=os.WriteFile(stage,[]byte("owned"),0600);err!=nil{t.Fatal(err)}
+    external:=filepath.Join(outside,"output");if err=os.Link(stage,external);err!=nil{t.Fatal(err)}
+    if err=os.Symlink(outside,filepath.Join(root,"linked"));err!=nil{t.Fatal(err)}
+    err=rollbackEntries(root,transaction,[]transactionEntry{{Destination:"linked/output",Stage:"entry-000000",Digest:Digest([]byte("owned")),Mode:"create"}})
+    if err==nil{t.Fatal("rollback followed a symlinked parent")};data,err:=os.ReadFile(external);if err!=nil||string(data)!="owned"{t.Fatalf("external file changed: %q %v",data,err)}
+}
+
+func TestReservedTransactionPaths(t *testing.T){
+    for _,path:=range []string{TransactionLockName,".REFINE-RELEASE.LOCK",".refine-release.lock/child",".refine-release-txn-mine/entry-000000",".refine-project-stage-mine/output"}{if _,err:=cleanRelative(path);err==nil{t.Errorf("accepted reserved path %s",path)}}
+    for _,path:=range []string{"generated/Thing.java","generated/.refine-release.lock","entry-000000","backup-000000"}{if _,err:=cleanRelative(path);err!=nil{t.Errorf("rejected ordinary path %s: %v",path,err)}}
+}
+
+func TestRecoverRejectsDuplicateDestinationsBeforeMutation(t *testing.T){
+    for _,other:=range []string{"output","OUTPUT"}{t.Run(other,func(t *testing.T){
+        root:=t.TempDir();transaction,err:=os.MkdirTemp(root,transactionPrefix);if err!=nil{t.Fatal(err)}
+        data:=[]byte("owned");entries:=[]transactionEntry{}
+        for i,name:=range []string{"output",other}{stage:=[]string{"entry-000000","entry-000001"}[i];if err=os.WriteFile(filepath.Join(transaction,stage),data,0600);err!=nil{t.Fatal(err)};entries=append(entries,transactionEntry{Destination:name,Stage:stage,Digest:Digest(data),Mode:"create"})}
+        destination:=filepath.Join(root,"output");if err=os.Link(filepath.Join(transaction,entries[0].Stage),destination);err!=nil{t.Fatal(err)}
+        if err=writeJournal(filepath.Join(transaction,"journal.json"),transactionJournal{Version:1,State:"installing",Entries:entries});err!=nil{t.Fatal(err)}
+        if err=Recover(root);err==nil{t.Fatal("duplicate destinations accepted")};got,err:=os.ReadFile(destination);if err!=nil||string(got)!="owned"{t.Fatalf("recovery mutated destination before rejection: %q %v",got,err)}
+    })}
+}
+
 func writeSnapshot(t *testing.T, root, path string, content []byte) ContentID {
 	t.Helper()
 	full := filepath.Join(root, path)
@@ -185,4 +210,28 @@ func TestPromotionRejectsSymlinkAndImmutableCollision(t *testing.T) {
 	if string(data) != "published" {
 		t.Fatal("published release overwritten")
 	}
+}
+
+func TestPromotionAtomicallyReplacesContentBoundOwnedManifest(t *testing.T){
+    root:=t.TempDir();snapshot:=[]byte("schema");id:=writeSnapshot(t,root,"SNAPSHOT",snapshot);manifest:=[]byte("old manifest\n");if err:=os.WriteFile(filepath.Join(root,"owned.json"),manifest,0644);err!=nil{t.Fatal(err)}
+    family:=PromotionFamily{Family:"foo",Version:Version{Major:1},SnapshotPath:"SNAPSHOT",SnapshotFileContent:id,ReleasePath:"release",ReleaseContent:snapshot,Generated:[]Artifact{{Path:"generated/Foo.java",Content:[]byte("class Foo {}")}}};replacement:=ReplacementArtifact{Path:"owned.json",ExpectedContent:Digest(manifest),Content:[]byte("new manifest\n")}
+    if _,err:=Promote(PromotionInput{Root:root,Families:[]PromotionFamily{family},Replacements:[]ReplacementArtifact{replacement}});err!=nil{t.Fatal(err)};data,err:=os.ReadFile(filepath.Join(root,"owned.json"));if err!=nil||string(data)!="new manifest\n"{t.Fatalf("manifest=%q %v",data,err)}
+}
+
+func TestPromotionReplacementRollbackRestoresOwnedInodeAndKeepsRacer(t *testing.T){
+    root:=t.TempDir();snapshot:=[]byte("schema");id:=writeSnapshot(t,root,"SNAPSHOT",snapshot);manifest:=[]byte("old manifest\n");if err:=os.WriteFile(filepath.Join(root,"a-manifest"),manifest,0644);err!=nil{t.Fatal(err)};original:=linkFile;calls:=0;linkFile=func(old,new string)error{calls++;if calls==4{if err:=os.WriteFile(new,[]byte("racer"),0644);err!=nil{return err}};return os.Link(old,new)};defer func(){linkFile=original}()
+    family:=PromotionFamily{Family:"foo",Version:Version{Major:1},SnapshotPath:"SNAPSHOT",SnapshotFileContent:id,ReleasePath:"release",ReleaseContent:snapshot,Generated:[]Artifact{{Path:"z-generated",Content:[]byte("generated")}}};replacement:=ReplacementArtifact{Path:"a-manifest",ExpectedContent:Digest(manifest),Content:[]byte("new manifest\n")};if _,err:=Promote(PromotionInput{Root:root,Families:[]PromotionFamily{family},Replacements:[]ReplacementArtifact{replacement}});err==nil{t.Fatal("injected collision succeeded")};data,err:=os.ReadFile(filepath.Join(root,"a-manifest"));if err!=nil||string(data)!=string(manifest){t.Fatalf("manifest was not restored: %q %v",data,err)};data,err=os.ReadFile(filepath.Join(root,"z-generated"));if err!=nil||string(data)!="racer"{t.Fatalf("racing file was touched: %q %v",data,err)};if _,err=os.Stat(filepath.Join(root,"release"));!errors.Is(err,os.ErrNotExist){t.Fatal("release was not rolled back")}
+}
+
+func TestRecoverRestoresInstalledReplacement(t *testing.T){
+    root:=t.TempDir();txn,err:=os.MkdirTemp(root,transactionPrefix);if err!=nil{t.Fatal(err)};old:=[]byte("old");next:=[]byte("next");destination:=filepath.Join(root,"manifest");if err=os.WriteFile(destination,old,0644);err!=nil{t.Fatal(err)};backup:=filepath.Join(txn,"backup-000000");if err=os.Link(destination,backup);err!=nil{t.Fatal(err)};stage:=filepath.Join(txn,"entry-000000");if err=os.WriteFile(stage,next,0644);err!=nil{t.Fatal(err)};if err=os.Remove(destination);err!=nil{t.Fatal(err)};if err=os.Link(stage,destination);err!=nil{t.Fatal(err)};entries:=[]transactionEntry{{Destination:"manifest",Stage:"entry-000000",Digest:Digest(next),Mode:"replace",Backup:"backup-000000",Expected:Digest(old)}};if err=writeJournal(filepath.Join(txn,"journal.json"),transactionJournal{Version:1,State:"installing",Entries:entries});err!=nil{t.Fatal(err)};if err=os.WriteFile(filepath.Join(root,lockName),nil,0600);err!=nil{t.Fatal(err)};if err=Recover(root);err!=nil{t.Fatal(err)};data,err:=os.ReadFile(destination);if err!=nil||string(data)!="old"{t.Fatalf("replacement was not recovered: %q %v",data,err)}
+}
+
+func TestRecoverRejectsDuplicateJournalKeys(t *testing.T){
+    root:=t.TempDir();txn,err:=os.MkdirTemp(root,transactionPrefix);if err!=nil{t.Fatal(err)};if err=os.WriteFile(filepath.Join(txn,"journal.json"),[]byte(`{"version":1,"version":1,"state":"installing","entries":[]}`),0600);err!=nil{t.Fatal(err)};if err=Recover(root);err==nil{t.Fatal("duplicate journal key accepted")}
+}
+
+func TestPromotionDeletesOnlyContentBoundOwnedOutput(t *testing.T){
+    root:=t.TempDir();snapshot:=[]byte("schema");id:=writeSnapshot(t,root,"SNAPSHOT",snapshot);stale:=[]byte("generated stale");if err:=os.WriteFile(filepath.Join(root,"stale.java"),stale,0644);err!=nil{t.Fatal(err)};family:=PromotionFamily{Family:"foo",Version:Version{Major:1},SnapshotPath:"SNAPSHOT",SnapshotFileContent:id,ReleasePath:"release",ReleaseContent:snapshot};if _,err:=Promote(PromotionInput{Root:root,Families:[]PromotionFamily{family},Deletions:[]DeletionArtifact{{Path:"stale.java",ExpectedContent:Digest(stale)}}});err!=nil{t.Fatal(err)};if _,err:=os.Stat(filepath.Join(root,"stale.java"));!errors.Is(err,os.ErrNotExist){t.Fatal("stale owned output remains")}
+    other:=t.TempDir();otherID:=writeSnapshot(t,other,"SNAPSHOT",snapshot);if err:=os.WriteFile(filepath.Join(other,"stale.java"),stale,0644);err!=nil{t.Fatal(err)};if _,err:=Promote(PromotionInput{Root:other,Families:[]PromotionFamily{{Family:"foo",Version:Version{Major:1},SnapshotPath:"SNAPSHOT",SnapshotFileContent:otherID,ReleasePath:"release",ReleaseContent:snapshot}},Deletions:[]DeletionArtifact{{Path:"stale.java",ExpectedContent:Digest([]byte("wrong"))}}});err==nil{t.Fatal("wrong deletion digest accepted")};data,_:=os.ReadFile(filepath.Join(other,"stale.java"));if string(data)!=string(stale){t.Fatal("unowned deletion occurred")}
 }

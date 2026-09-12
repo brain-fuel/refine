@@ -28,6 +28,10 @@ type LowerOptions struct {
 	// checked rule with embedded and companion English. The returned Losses
 	// enumerate every such rule. Wire-unrepresentable base types always error.
 	AllowDocumentedLoss bool
+	// MaxGenericSpecializations bounds distinct closed generic applications.
+	// Zero selects DefaultLowerGenericSpecializations; values above the hard
+	// package maximum are rejected before lowering.
+	MaxGenericSpecializations int
 }
 type Loss struct {
 	Owner       string
@@ -81,23 +85,27 @@ func (e *Export) Losses() []Loss {
 }
 
 type lowerer struct {
-	format          Format
-	mode            ExportMode
-	allowLoss       bool
-	module          *language.Module
-	rootSource      string
-	declarations    map[string]language.TypeDecl
-	definitions     map[string]any
-	building        map[string]bool
-	avroDefined     map[string]bool
-	losses          []Loss
-	explanation     explain.Document
-	companion       string
-	explanationUsed map[int]bool
-	encodings       map[string]ScalarEncoding
-	extraFields     map[string]ExtraFieldMode
-	discriminators  map[string]Discriminator
-	owner           string
+	format              Format
+	mode                ExportMode
+	allowLoss           bool
+	module              *language.Module
+	rootSource          string
+	declarations        map[string]language.TypeDecl
+	definitions         map[string]any
+	building            map[string]bool
+	avroDefined         map[string]bool
+	losses              []Loss
+	explanation         explain.Document
+	companion           string
+	explanationUsed     map[int]bool
+	encodings           map[string]ScalarEncoding
+	extraFields         map[string]ExtraFieldMode
+	discriminators      map[string]Discriminator
+	owner               string
+	specializationNames map[string]string
+	nativeNames         map[string]string
+	specializationCount int
+	maxSpecializations  int
 }
 
 // LowerPayload lowers one immutable checked payload type. It validates the
@@ -124,6 +132,13 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 	if mode != Ordinary && mode != Refined {
 		return nil, &Error{Code: "native.lower", Format: format, Message: "mode must be ordinary or refined"}
 	}
+	maxSpecializations := options.MaxGenericSpecializations
+	if maxSpecializations == 0 {
+		maxSpecializations = DefaultLowerGenericSpecializations
+	}
+	if maxSpecializations < 1 || maxSpecializations > MaximumLowerGenericSpecializations {
+		return nil, &Error{Code: "native.lower", Format: format, Message: fmt.Sprintf("MaxGenericSpecializations must be between 1 and %d, or zero for the default", MaximumLowerGenericSpecializations)}
+	}
 	checked := payload.CheckedSyntax()
 	if checked.Type == nil || checked.Module.Syntax == nil {
 		return nil, &Error{Code: "native.lower", Format: format, Message: "invalid checked payload type"}
@@ -143,9 +158,16 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 	if format == Avro && (len(copiedMetadata.ExtraFields) > 0 || len(copiedMetadata.Discriminators) > 0) {
 		return nil, &Error{Code: "native.unrepresentable", Format: Avro, Message: "JSON extra-field and discriminator policies cannot be represented by Avro lowering"}
 	}
-	l := &lowerer{format: format, mode: mode, allowLoss: options.AllowDocumentedLoss, module: checked.Module.Syntax, rootSource: payload.Source(), declarations: make(map[string]language.TypeDecl), definitions: make(map[string]any), building: make(map[string]bool), avroDefined: make(map[string]bool), explanation: explained, companion: explained.Markdown(), explanationUsed: make(map[int]bool), encodings: copiedMetadata.Scalars, extraFields: copiedMetadata.ExtraFields, discriminators: copiedMetadata.Discriminators, owner: "$payload"}
+	l := &lowerer{format: format, mode: mode, allowLoss: options.AllowDocumentedLoss, module: checked.Module.Syntax, rootSource: payload.Source(), declarations: make(map[string]language.TypeDecl), definitions: make(map[string]any), building: make(map[string]bool), avroDefined: make(map[string]bool), explanation: explained, companion: explained.Markdown(), explanationUsed: make(map[int]bool), encodings: copiedMetadata.Scalars, extraFields: copiedMetadata.ExtraFields, discriminators: copiedMetadata.Discriminators, owner: "$payload", specializationNames: make(map[string]string), nativeNames: make(map[string]string), maxSpecializations: maxSpecializations}
+	l.nativeNames["Anonymous"] = "reserved anonymous Avro record"
 	for _, decl := range l.module.Types {
 		l.declarations[decl.Name] = decl
+		l.nativeNames[decl.Name] = "declaration " + decl.Name
+	}
+	for name, encoding := range l.encodings {
+		if encoding.Kind == RationalRecord {
+			l.nativeNames[name+"Wire"] = "scalar wire " + name
+		}
 	}
 	schema, err := l.typ(checked.Type, false)
 	if err != nil {
@@ -329,7 +351,7 @@ func (l *lowerer) typ(t *language.Type, field bool) (any, error) {
 		if ok, _ := unwrap(t, "Maybe"); ok {
 			return nil, &Error{Code: "native.unrepresentable", Format: l.format, Message: "Maybe represents field absence and is supported only directly on record fields"}
 		}
-		return nil, &Error{Code: "native.unrepresentable", Format: l.format, Message: "generic/applied type " + language.FormatType(t) + " has no implemented native lowering"}
+		return l.generic(t)
 	case language.RefinedType:
 		base := __gp_m0.Base
 		rules := __gp_m0.Rules
@@ -426,6 +448,9 @@ func (l *lowerer) named(name string) (any, error) {
 		return l.scalarEncoding(name, encoding)
 	}
 	if l.format == Avro {
+		if !genericRecordBody(decl.Body) {
+			return l.avroNamed(name, decl.Body)
+		}
 		if l.avroDefined[name] {
 			return name, nil
 		}
@@ -679,12 +704,12 @@ func comparison(expr *language.Expr) (string, string, bool) {
 		right := __gp_m4.Right
 
 		if isIt(left) {
-			if raw, ok := numberLiteral(right); ok {
+			if raw, ok := loweringNumberLiteral(right); ok {
 				return op, raw, true
 			}
 		}
 		if isIt(right) {
-			if raw, ok := numberLiteral(left); ok {
+			if raw, ok := loweringNumberLiteral(left); ok {
 				reverse := map[string]string{"<": ">", ">": "<", "<=": ">=", ">=": "<="}
 				if flipped, exists := reverse[op]; exists {
 					return flipped, raw, true
@@ -780,7 +805,7 @@ func multiple(expr *language.Expr) (string, bool) {
 }
 
 func jsonNumberExpression(expr *language.Expr) (string, bool) {
-	if raw, ok := numberLiteral(expr); ok {
+	if raw, ok := loweringNumberLiteral(expr); ok {
 		return raw, true
 	}
 	switch __gp_m11 := any(expr.Form).(type) {
@@ -789,8 +814,8 @@ func jsonNumberExpression(expr *language.Expr) (string, bool) {
 		left := __gp_m11.Left
 		right := __gp_m11.Right
 		if op == "/" {
-			a, okA := numberLiteral(left)
-			b, okB := numberLiteral(right)
+			a, okA := loweringNumberLiteral(left)
+			b, okB := loweringNumberLiteral(right)
 			if okA && okB && b == "1" {
 				return a, true
 			}

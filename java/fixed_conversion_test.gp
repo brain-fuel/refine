@@ -1,0 +1,37 @@
+package java
+
+import (
+    "bytes"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestGeneratedFixedWidthConversions(t *testing.T){
+    source:=`type Fits = Int where case toInt8 it of { Ok n -> fromInt8 n == it; Err _ -> False }
+type UnsignedFits = Int where case toUInt8 it of { Ok n -> fromUInt8 n == it; Err _ -> False }
+type Wrapped = Int where fromInt8 (wrapInt8 it) >= -128 && fromInt8 (wrapInt8 it) <= 127
+type UnsignedWrapped = Int where fromUInt1 (wrapUInt1 it) == 0 || fromUInt1 (wrapUInt1 it) == 1
+type Overflow = Int where case toInt8 it of { Ok n -> fromInt8 (n + wrapInt8 1) > fromInt8 n; Err _ -> False }
+type Message = Int where False @message (show (toUInt8 it) ++ ":" ++ show (wrapInt8 it))
+wrapUInt3 :: Int -> Int
+wrapUInt3 n = n + 1
+type Shadow = Int where wrapUInt3 it == it + 1
+`
+    program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};compiler,vm:=javaTools(t);files,err:=GenerateModels(program,"example.fixed","Contract");if err!=nil{t.Fatal(err)}
+    root:=t.TempDir();sources:=[]string{};for _,file:=range files{target:=filepath.Join(root,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0600);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harness:=filepath.Join(root,"Conversions.java");if err:=os.WriteFile(harness,[]byte(strings.ReplaceAll(conversionHarnessJava,"example.conversions","example.fixed")),0600);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(root,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",classes},sources...);if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("javac %v\n%s",err,output)}
+    vectors:=[]vector{}
+    for _,name:=range []string{"Fits","UnsignedFits","Wrapped","UnsignedWrapped","Overflow","Message","Shadow"}{for _,raw:=range []string{"-129","-128","-1","0","127","128","255","256","900719925474099300000000"}{text,err:=value.TextFromUTF8(raw);if err!=nil{t.Fatal(err)};for budget:=uint64(0);budget<600;budget+=3{for _,limits:=range []validation.Limits{{Total:budget},{Clause:budget}}{_,report:=program.ReadData(name,text,limits);vectors=append(vectors,vector{fmt.Sprintf("%s\t%s\t%d\t%d",name,readUnits(text),limits.Total,limits.Clause),reportLine(report)})}}}}
+    var input strings.Builder;for _,v:=range vectors{input.WriteString(v.input+"\n")};command:=exec.Command(vm,"-Xss256k","-cp",classes,"Conversions");command.Stdin=strings.NewReader(input.String());var stderr bytes.Buffer;command.Stderr=&stderr;output,err:=command.Output();if err!=nil{t.Fatalf("Java %v\n%s",err,&stderr)}
+    lines:=strings.Split(strings.TrimSuffix(string(output),"\n"),"\n");if len(lines)!=len(vectors){t.Fatalf("got%d want%d",len(lines),len(vectors))};for i,line:=range lines{if line!=vectors[i].expected{t.Fatalf("%s\nJava %s\nGo %s",vectors[i].input,line,vectors[i].expected)}}
+    t.Logf("%d complete fixed-width conversion reports",len(vectors))
+}

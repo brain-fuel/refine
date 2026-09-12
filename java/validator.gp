@@ -160,6 +160,7 @@ public final class %s {
     static Validation.Outcome modelValidate(ContractRuntime.Type type, Data input, Budget.Limits caller, boolean refinements) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,caller,refinements); }
     static ContractRuntime.ReadResult modelRead(ContractRuntime.Type type, String text, Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,caller); }
     static ContractRuntime.Type modelRefinement(String owner, int[] path, java.util.List<ContractRuntime.Type> arguments) { return ContractRuntime.modelRefinement(DEFINITIONS.get(owner),path,arguments); }
+    static ContractRuntime.Type modelType(String owner, int[] path, java.util.List<ContractRuntime.Type> arguments) { return ContractRuntime.modelType(DEFINITIONS.get(owner),path,arguments); }
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
     public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
     public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }

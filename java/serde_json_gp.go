@@ -44,31 +44,29 @@ type JSONSerdeOptions struct {
 	PreserveExtraFields    bool
 	PreserveExtraFieldsFor map[string]bool
 	Discriminators         map[string]JSONDiscriminator
+	Scalars                map[string]native.ScalarEncoding
+	NumericExpansion       int
 	Integers               JSONIntegerEncoding
 	Reals                  JSONRealEncoding
 	Timestamps             JSONTimestampEncoding
+	nativeValidator        string
 }
 
-// GenerateProjectJSONSerde consumes the checked native project's wire choices;
-// it never invents a discriminator, scalar encoding, or extra-field policy.
-func GenerateProjectJSONSerde(project *native.Project, contractName, moduleName string) ([]File, error) {
-	if project == nil {
-		return nil, &GenerationError{Message: "a checked native project is required"}
+// JSONSerdeOptionsFromMetadata is the single checked conversion from native
+// project wire metadata to the policies understood by the Jackson JSON serde.
+// Named scalar policies are copied and retained at each named reference.
+func JSONSerdeOptionsFromMetadata(root string, metadata native.WireMetadata) (JSONSerdeOptions, error) {
+	if root == "" {
+		return JSONSerdeOptions{}, &GenerationError{Message: "JSON serde root is required"}
 	}
-	program, err := language.Compile(project.EditableSource())
-	if err != nil {
-		return nil, err
-	}
-	metadata := project.Metadata()
-	root := project.Root().TypeName
-	options := JSONSerdeOptions{Root: root}
-	options.PreserveExtraFieldsFor = map[string]bool{}
+	options := JSONSerdeOptions{Root: root, PreserveExtraFieldsFor: map[string]bool{}, Discriminators: map[string]JSONDiscriminator{}, Scalars: map[string]native.ScalarEncoding{}, NumericExpansion: metadata.NumericExpansion}
 	for name, mode := range metadata.ExtraFields {
 		if mode == native.PreserveExtraFields {
 			options.PreserveExtraFieldsFor[name] = true
+		} else if mode != native.DiscardExtraFields {
+			return JSONSerdeOptions{}, &GenerationError{Message: "unsupported native extra-field policy for " + name}
 		}
 	}
-	options.Discriminators = map[string]JSONDiscriminator{}
 	for name, wire := range metadata.Discriminators {
 		values := map[string]string{}
 		arguments := map[string][]string{}
@@ -83,21 +81,83 @@ func GenerateProjectJSONSerde(project *native.Project, contractName, moduleName 
 	if metadata.ExtraFields[root] == native.PreserveExtraFields {
 		options.PreserveExtraFields = true
 	}
-	if scalar, ok := metadata.Scalars[root]; ok {
+	for name, scalar := range metadata.Scalars {
 		switch scalar.Kind {
 		case native.JSONNumber:
-			options.Integers = JSONIntegerNumber
-			options.Reals = JSONRealExactDecimal
+			if name == root {
+				options.Integers = JSONIntegerNumber
+			}
 		case native.DecimalString:
-			options.Integers = JSONIntegerString
-			options.Reals = JSONRealRationalString
+			if name == root {
+				options.Integers = JSONIntegerString
+			}
 		case native.TimestampString:
-			options.Timestamps = JSONTimestampRFC3339String
+			if name == root {
+				options.Timestamps = JSONTimestampRFC3339String
+			}
+		case native.RationalRecord:
 		default:
-			return nil, &GenerationError{Message: "native scalar encoding is not supported by Jackson JSON serde"}
+			return JSONSerdeOptions{}, &GenerationError{Message: "native scalar encoding is not supported by Jackson JSON serde"}
 		}
+		options.Scalars[name] = scalar
 	}
-	return GenerateJSONSerde(program, metadata.PublicationNamespace, contractName, moduleName, options)
+	return options, nil
+}
+
+// GenerateProjectJSONSerde composes the immutable native sidecar with semantic
+// Jackson decoding. Reads validate native bytes before constructing a model;
+// writes stage and validate bytes before touching the caller's generator.
+func GenerateProjectJSONSerde(project *native.Project, contractName, moduleName string) ([]File, error) {
+	if project == nil {
+		return nil, &GenerationError{Message: "a checked native project is required"}
+	}
+	program, err := language.Compile(project.EditableSource())
+	if err != nil {
+		return nil, err
+	}
+	metadata := project.Metadata()
+	root := project.Root().TypeName
+	options, err := JSONSerdeOptionsFromMetadata(root, metadata)
+	if err != nil {
+		return nil, err
+	}
+	validatorName, err := JSONNativeValidatorName(program, contractName, moduleName)
+	if err != nil {
+		return nil, err
+	}
+	options.nativeValidator = validatorName
+	files, err := GenerateJSONSerde(program, metadata.PublicationNamespace, contractName, moduleName, options)
+	if err != nil {
+		return nil, err
+	}
+	validator, err := GenerateProjectNativeJSONValidator(project, validatorName)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, validator...), nil
+}
+
+// JSONNativeValidatorName shares the collision-safe sidecar class name with
+// project/property generation. It does not execute or weaken validation.
+func JSONNativeValidatorName(program *language.Program, contractName, moduleName string) (string, error) {
+	if program == nil {
+		return "", &GenerationError{Message: "a checked program is required"}
+	}
+	if err := javaClassName(contractName); err != nil {
+		return "", err
+	}
+	if err := javaClassName(moduleName); err != nil {
+		return "", err
+	}
+	used := map[string]bool{sourceNameKey(contractName): true, sourceNameKey(moduleName): true}
+	for _, decl := range program.Syntax().Types {
+		used[sourceNameKey(decl.Name)] = true
+	}
+	name := moduleName + "NativeSidecar"
+	for used[sourceNameKey(name)] {
+		name += "_"
+	}
+	return name, nil
 }
 
 // GenerateJSONSerde emits semantic models plus a Jackson 3 module for one
@@ -129,6 +189,14 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	for _, decl := range module.Types {
 		decls[decl.Name] = decl
 	}
+	validateJSONScalarTypes(options, decls)
+	numericExpansion := options.NumericExpansion
+	if numericExpansion == 0 {
+		numericExpansion = 65536
+	}
+	if numericExpansion < 1 || numericExpansion > 1000000 {
+		unsupported(language.Span{}, "JSON numeric expansion limit must be between 1 and 1000000")
+	}
 	root, ok := decls[options.Root]
 	if !ok {
 		unsupported(language.Span{}, "unknown JSON serde root "+options.Root)
@@ -147,7 +215,7 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 			fields := __gp_m0.Fields
 			shape = emitter.record(options.Root, options.Root, fields, 0)
 		default:
-			shape = emitter.shape(body, 0)
+			shape = emitter.shape(&language.Type{Form: language.NamedType{Name: root.Name}, At: root.At}, 0)
 		}
 	}
 	definitionParts := []string{}
@@ -159,7 +227,22 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	if jsonGenericRoot(root, decls) {
 		construct = "new " + options.Root + "." + modelFactoryNameFor(decls, contractName) + "().fromData(raw)"
 	}
-	source := fmt.Sprintf(jsonSerdeJava, moduleName, shape, definitions, options.Integers == JSONIntegerString, options.Reals == JSONRealRationalString, moduleName, moduleName, options.Root, options.Root, options.Root, options.Root, options.Root, options.Root, options.Root, construct)
+	constructor := "public " + moduleName + "(){this(input->{});}private " + moduleName + "(NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate));}"
+	if options.nativeValidator != "" {
+		constructor = "public " + moduleName + "(){this(" + options.nativeValidator + ".Limits.defaults());}public " + moduleName + "(" + options.nativeValidator + ".Limits limits){this(new " + options.nativeValidator + "(limits)::validate);}private " + moduleName + "(NativeGate nativeGate){super(" + javaQuote(moduleName) + ");this.nativeCandidateGate=nativeGate;addSerializer(" + options.Root + ".class,new Serializer(nativeGate));addDeserializer(" + options.Root + ".class,new Deserializer(nativeGate));}"
+		constructor += fmt.Sprintf(`
+    /** Candidate filtering for native rules only; this never validates Refine predicates. */
+    public boolean acceptsNativeCandidate(Data raw){
+        J wire;
+        try { wire=toWire(ROOT,raw,0); }
+        catch(ArithmeticException unrepresentable){return false;}
+        catch(ValidationException failure){if(failure.outcome().state()==Validation.State.INVALID && failure.outcome().diagnostics().stream().allMatch(d->d.code().equals("validation.structure")))return false;throw failure;}
+        try { nativeCandidateGate.validate(nativeBytes(wire));return true; }
+        catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}
+    }
+`, options.nativeValidator)
+	}
+	source := fmt.Sprintf(jsonSerdeJava, moduleName, shape, definitions, options.Integers == JSONIntegerString, options.Reals == JSONRealRationalString, numericExpansion, constructor, options.Root, options.Root, options.Root, options.Root, options.Root, construct)
 	header := "// Generated by Refine: validated Jackson 3 JSON serde. MIT licensed.\n"
 	if namespace != "" {
 		header += "package " + namespace + ";\n"
@@ -387,6 +470,12 @@ func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
 	case language.NamedType:
 		name := __gp_m3.Name
 
+		if shape, ok := e.namedScalar(name, t.At); ok {
+			return shape
+		}
+		if name == "Float32" || name == "Float64" {
+			return "new S(\"float-number\",null,null,null,false,null)"
+		}
 		if integerType(name) {
 			return "new S(\"integer\",null,null,null,false,null)"
 		}
@@ -518,43 +607,63 @@ public final class %s extends tools.jackson.databind.module.SimpleModule {
     private static final S ROOT=%s;
     private static final java.util.Map<String,S> DEFINITIONS=%s;
     private static final boolean INTEGER_STRING=%t,REAL_STRING=%t;
-    public %s(){super(%q);addSerializer(%s.class,new Serializer());addDeserializer(%s.class,new Deserializer());}
+    private static final int NUMERIC_EXPANSION=%d;
+    private static final class NumericBudget {
+        private long remaining=NUMERIC_EXPANSION;
+        void charge(String raw){long cost=raw.length();if(cost>remaining)throw numericLimit();int exponentAt=Math.max(raw.indexOf('e'),raw.indexOf('E'));if(exponentAt>=0){long exponent=0;for(int i=exponentAt+1;i<raw.length();i++){char c=raw.charAt(i);if(i==exponentAt+1&&(c=='+'||c=='-'))continue;if(c<'0'||c>'9')throw structure("Invalid number exponent.");int digit=c-'0';if(exponent>(remaining-digit)/10)throw numericLimit();exponent=exponent*10+digit;}cost+=exponent;}if(cost>remaining)throw numericLimit();remaining-=cost;}
+    }
+    private static ValidationException numericLimit(){return new ValidationException(new Validation.Indeterminate(java.util.List.of(new Validation.Diagnostic("validation.limit",java.util.List.of(""),"","JSON numeric expansion budget exhausted."))));}
+    private interface NativeGate {void validate(byte[] input);}
+    // Jackson modules are runtime configuration, not Java object-stream state.
+    // Keep the gate intact; transient would silently remove native validation.
+    @SuppressWarnings("serial") private final NativeGate nativeCandidateGate;
+    %s
     private static final class Serializer extends tools.jackson.databind.ValueSerializer<%s>{
+        private final NativeGate nativeGate;private Serializer(NativeGate nativeGate){this.nativeGate=nativeGate;}
         @Override public void serialize(%s value,tools.jackson.core.JsonGenerator output,tools.jackson.databind.SerializationContext context)throws tools.jackson.core.JacksonException{
-            ModelSupport.nonNull(value,"");value.validate().orThrow();J wire;try{wire=toWire(ROOT,value.rawData(),0);}catch(ArithmeticException failure){throw structure("Value cannot be represented exactly by the configured JSON encoding.");}write(wire,output);
+            ModelSupport.nonNull(value,"");value.validate().orThrow();J wire;try{wire=toWire(ROOT,value.rawData(),0);}catch(ArithmeticException failure){throw structure("Value cannot be represented exactly by the configured JSON encoding.");}nativeGate.validate(nativeBytes(wire));write(wire,output);
         }
     }
     private static final class Deserializer extends tools.jackson.databind.ValueDeserializer<%s>{
+        private final NativeGate nativeGate;private Deserializer(NativeGate nativeGate){this.nativeGate=nativeGate;}
         @Override public %s getNullValue(tools.jackson.databind.DeserializationContext context){throw structure("Java null is not a language value.");}
         @Override public %s deserialize(tools.jackson.core.JsonParser input,tools.jackson.databind.DeserializationContext context)throws tools.jackson.core.JacksonException{
-            J wire=read(input,new java.util.ArrayDeque<>());Data raw=fromWire(ROOT,wire,0);return %s;
+            J wire=read(input,new java.util.ArrayDeque<>());nativeGate.validate(nativeBytes(wire));Data raw=fromWire(ROOT,wire,0,new NumericBudget());return %s;
         }
     }
     private static S resolve(S shape){var current=shape;var seen=new java.util.HashSet<String>();while(current.kind().equals("ref")){if(!seen.add(current.reference()))throw structure("Cyclic JSON shape reference without a record boundary.");current=DEFINITIONS.get(current.reference());if(current==null)throw new AssertionError("missing checked JSON shape");}return current;}
     private static J recordToWire(S shape,Data raw,int depth){var struct=(Data.Struct)raw;var out=new java.util.ArrayList<E>();var declared=new java.util.HashSet<String>();for(F field:shape.fields()){declared.add(field.name());Data value=null;for(var candidate:struct.fields())if(candidate.name().equals(field.name())){value=candidate.value();break;}if(value==null)continue;S fieldShape=resolve(field.shape());if(fieldShape.kind().equals("maybe")&&value instanceof Data.Variant v&&v.name().equals("Nothing"))continue;if(fieldShape.kind().equals("maybe"))value=((Data.Variant)value).values().getFirst();out.add(new E(field.name(),toWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1)));}if(shape.preserveExtras())for(var field:struct.fields())if(!declared.contains(field.name()))out.add(new E(field.name(),extraToWire(field.value(),depth+1)));return new O(out);}
-    private static Data wireToRecord(S shape,J wire,int depth){if(!(wire instanceof O object))throw structure("Expected JSON object.");var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolve(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.preserveExtras())for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1)));return new Data.Struct(out);}
+    private static Data wireToRecord(S shape,J wire,int depth,NumericBudget budget){if(!(wire instanceof O object))throw structure("Expected JSON object.");var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolve(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,budget);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.preserveExtras())for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1,budget)));return new Data.Struct(out);}
     private static J toWire(S unresolved,Data data,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
+        case "integer-number"->new N(((Data.Number)data).value().numerator().toString());
+        case "integer-string"->new T(((Data.Number)data).value().numerator().toString());
+        case "float-number"->new N(((Data.Number)data).value().decimal());
+        case "rational-record"->{var number=((Data.Number)data).value();yield new O(java.util.List.of(new E("numerator",new N(number.numerator().toString())),new E("denominator",new N(number.denominator().toString()))));}
         case "integer"->INTEGER_STRING?new T(((Data.Number)data).value().numerator().toString()):new N(((Data.Number)data).value().numerator().toString());
         case "real"->REAL_STRING?new T(((Data.Number)data).value().toString()):new N(((Data.Number)data).value().decimal());
         case "text"->new T(((Data.Text)data).value());case "timestamp"->new T(((Data.Text)data).value());case "bool"->new B(((Data.Bool)data).value());
         case "record"->recordToWire(shape,data,depth);case "union"->unionToWire(shape.union(),data,depth);case "list"->{var values=new java.util.ArrayList<J>();for(Data item:((Data.Sequence)data).values())values.add(toWire(shape.argument(),item,depth+1));yield new A(values);}
         case "nullable"->{var value=(Data.Variant)data;yield value.name().equals("Null")?new Z():toWire(shape.argument(),value.values().getFirst(),depth+1);}
         default->throw new AssertionError("unsupported checked JSON shape");};}
-    private static Data fromWire(S unresolved,J wire,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
-        case "integer"->integer(wire);case "real"->real(wire);
+    private static Data fromWire(S unresolved,J wire,int depth,NumericBudget budget){if(depth>512)throw structure("JSON value nesting limit exceeded.");S shape=resolve(unresolved);return switch(shape.kind()){
+        case "integer-number"->integer(wire,false,budget);case "integer-string"->integer(wire,true,budget);case "rational-record"->rationalRecord(wire,budget);
+        case "float-number"->{String raw=number(wire);budget.charge(raw);yield new Data.Number(Rational.parse(raw));}
+        case "integer"->integer(wire,INTEGER_STRING,budget);case "real"->real(wire,budget);
         case "text"->new Data.Text(text(wire));case "timestamp"->new Data.Text(text(wire));case "bool"->{if(!(wire instanceof B value))throw structure("Expected JSON Boolean.");yield new Data.Bool(value.value());}
-        case "record"->wireToRecord(shape,wire,depth);case "union"->wireToUnion(shape.union(),wire,depth);case "list"->{if(!(wire instanceof A array))throw structure("Expected JSON array.");var values=new java.util.ArrayList<Data>();for(J item:array.values())values.add(fromWire(shape.argument(),item,depth+1));yield new Data.Sequence(values);}
-        case "nullable"->wire instanceof Z?new Data.Variant("Null",java.util.List.of()):new Data.Variant("NonNull",java.util.List.of(fromWire(shape.argument(),wire,depth+1)));
+        case "record"->wireToRecord(shape,wire,depth,budget);case "union"->wireToUnion(shape.union(),wire,depth,budget);case "list"->{if(!(wire instanceof A array))throw structure("Expected JSON array.");var values=new java.util.ArrayList<Data>();for(J item:array.values())values.add(fromWire(shape.argument(),item,depth+1,budget));yield new Data.Sequence(values);}
+        case "nullable"->wire instanceof Z?new Data.Variant("Null",java.util.List.of()):new Data.Variant("NonNull",java.util.List.of(fromWire(shape.argument(),wire,depth+1,budget)));
         default->throw new AssertionError("unsupported checked JSON shape");};}
     private static J unionToWire(U shape,Data data,int depth){var value=(Data.Variant)data;V selected=null;for(var variant:shape.variants())if(variant.constructor().equals(value.name())){selected=variant;break;}if(selected==null||value.values().size()!=selected.shapes().size())throw structure("Unknown or malformed union constructor.");var fields=new java.util.ArrayList<E>();fields.add(new E(shape.discriminator(),new T(selected.tag())));for(int i=0;i<selected.shapes().size();i++)fields.add(new E(selected.names().get(i),toWire(selected.shapes().get(i),value.values().get(i),depth+1)));return new O(fields);}
-    private static Data wireToUnion(U shape,J wire,int depth){if(!(wire instanceof O object))throw structure("Expected JSON object for tagged union.");var source=new java.util.LinkedHashMap<String,J>();for(var field:object.fields())source.put(field.name(),field.value());J tagWire=source.remove(shape.discriminator());if(tagWire==null)throw structure("Missing union discriminator: "+shape.discriminator());String tag=text(tagWire);V selected=null;for(var variant:shape.variants())if(variant.tag().equals(tag)){selected=variant;break;}if(selected==null)throw structure("Unknown union discriminator value.");var values=new java.util.ArrayList<Data>();for(int i=0;i<selected.shapes().size();i++){J argument=source.remove(selected.names().get(i));if(argument==null)throw structure("Missing union argument: "+selected.names().get(i));values.add(fromWire(selected.shapes().get(i),argument,depth+1));}return new Data.Variant(selected.constructor(),values);}
+    private static Data wireToUnion(U shape,J wire,int depth,NumericBudget budget){if(!(wire instanceof O object))throw structure("Expected JSON object for tagged union.");var source=new java.util.LinkedHashMap<String,J>();for(var field:object.fields())source.put(field.name(),field.value());J tagWire=source.remove(shape.discriminator());if(tagWire==null)throw structure("Missing union discriminator: "+shape.discriminator());String tag=text(tagWire);V selected=null;for(var variant:shape.variants())if(variant.tag().equals(tag)){selected=variant;break;}if(selected==null)throw structure("Unknown union discriminator value.");var values=new java.util.ArrayList<Data>();for(int i=0;i<selected.shapes().size();i++){J argument=source.remove(selected.names().get(i));if(argument==null)throw structure("Missing union argument: "+selected.names().get(i));values.add(fromWire(selected.shapes().get(i),argument,depth+1,budget));}return new Data.Variant(selected.constructor(),values);}
     private static String text(J wire){if(!(wire instanceof T value))throw structure("Expected JSON string.");return value.value();}private static String number(J wire){if(!(wire instanceof N value))throw structure("Expected JSON number.");return value.value();}
-    private static Data integer(J wire){try{return new Data.Number(Rational.of(new java.math.BigInteger(INTEGER_STRING?text(wire):number(wire))));}catch(NumberFormatException failure){throw structure("Invalid integer wire value.");}}
-    private static Data real(J wire){try{return new Data.Number(REAL_STRING?Rational.parse(text(wire)):Rational.parse(number(wire)));}catch(IllegalArgumentException failure){throw structure("Invalid exact real wire value.");}}
+    private static Data integer(J wire,boolean stringEncoded,NumericBudget budget){try{String raw=stringEncoded?text(wire):number(wire);budget.charge(raw);java.math.BigInteger exact;if(stringEncoded){if(!raw.matches("-?(0|[1-9][0-9]*)")||raw.equals("-0"))throw new NumberFormatException();exact=new java.math.BigInteger(raw);}else exact=new java.math.BigDecimal(raw).toBigIntegerExact();return new Data.Number(Rational.of(exact));}catch(NumberFormatException|ArithmeticException failure){throw structure("Invalid integer wire value.");}}
+    private static Data rationalRecord(J wire,NumericBudget budget){if(!(wire instanceof O object)||object.fields().size()!=2)throw structure("Expected numerator and denominator JSON object.");J numerator=null,denominator=null;for(var field:object.fields()){switch(field.name()){case "numerator"->numerator=field.value();case "denominator"->denominator=field.value();default->throw structure("Unexpected rational JSON member.");}}if(numerator==null||denominator==null)throw structure("Missing rational JSON member.");var n=((Data.Number)integer(numerator,false,budget)).value().numerator();var d=((Data.Number)integer(denominator,false,budget)).value().numerator();if(d.signum()<=0)throw structure("Rational denominator must be positive.");return new Data.Number(new Rational(n,d));}
+    private static Data real(J wire,NumericBudget budget){try{String raw=REAL_STRING?text(wire):number(wire);budget.charge(raw);return new Data.Number(Rational.parse(raw));}catch(IllegalArgumentException failure){throw structure("Invalid exact real wire value.");}}
     private static J extraToWire(Data data,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");return switch(data){case Data.Struct object->{var fields=new java.util.ArrayList<E>();var seen=new java.util.HashSet<String>();for(var field:object.fields()){if(!seen.add(field.name()))throw structure("Duplicate preserved object key: "+field.name());fields.add(new E(field.name(),extraToWire(field.value(),depth+1)));}yield new O(fields);}case Data.Sequence array->{var values=new java.util.ArrayList<J>();for(var item:array.values())values.add(extraToWire(item,depth+1));yield new A(values);}case Data.Number number->new N(number.value().decimal());case Data.Text value->new T(value.value());case Data.Bool value->new B(value.value());case Data.Variant value->{if(!value.name().equals("Null")||!value.values().isEmpty())throw structure("Preserved JSON extras cannot encode a language constructor.");yield new Z();}};}
-    private static Data extraFromWire(J wire,int depth){if(depth>512)throw structure("JSON value nesting limit exceeded.");return switch(wire){case O object->{var fields=new java.util.ArrayList<Data.Field>();for(var field:object.fields())fields.add(new Data.Field(field.name(),extraFromWire(field.value(),depth+1)));yield new Data.Struct(fields);}case A array->{var values=new java.util.ArrayList<Data>();for(var item:array.values())values.add(extraFromWire(item,depth+1));yield new Data.Sequence(values);}case N number->{try{yield new Data.Number(Rational.parse(number.value()));}catch(IllegalArgumentException failure){throw structure("Invalid preserved JSON number.");}}case T value->new Data.Text(value.value());case B value->new Data.Bool(value.value());case Z ignored->new Data.Variant("Null",java.util.List.of());};}
+    private static Data extraFromWire(J wire,int depth,NumericBudget budget){if(depth>512)throw structure("JSON value nesting limit exceeded.");return switch(wire){case O object->{var fields=new java.util.ArrayList<Data.Field>();for(var field:object.fields())fields.add(new Data.Field(field.name(),extraFromWire(field.value(),depth+1,budget)));yield new Data.Struct(fields);}case A array->{var values=new java.util.ArrayList<Data>();for(var item:array.values())values.add(extraFromWire(item,depth+1,budget));yield new Data.Sequence(values);}case N number->{try{budget.charge(number.value());yield new Data.Number(Rational.parse(number.value()));}catch(IllegalArgumentException failure){throw structure("Invalid preserved JSON number.");}}case T value->new Data.Text(value.value());case B value->new Data.Bool(value.value());case Z ignored->new Data.Variant("Null",java.util.List.of());};}
     private static J read(tools.jackson.core.JsonParser input,java.util.ArrayDeque<String> path)throws tools.jackson.core.JacksonException{var token=input.currentToken();if(token==null)token=input.nextToken();return switch(token){case START_OBJECT->{var fields=new java.util.ArrayList<E>();var seen=new java.util.HashSet<String>();while(input.nextToken()!=tools.jackson.core.JsonToken.END_OBJECT){String name=input.currentName();if(!seen.add(name))throw structure("Duplicate JSON object key: "+name);input.nextToken();fields.add(new E(name,read(input,path)));}yield new O(fields);}case START_ARRAY->{var values=new java.util.ArrayList<J>();while(input.nextToken()!=tools.jackson.core.JsonToken.END_ARRAY)values.add(read(input,path));yield new A(values);}case VALUE_STRING->new T(input.getString());case VALUE_NUMBER_INT,VALUE_NUMBER_FLOAT->new N(input.getString());case VALUE_TRUE->new B(true);case VALUE_FALSE->new B(false);case VALUE_NULL->new Z();default->throw structure("Expected a JSON value.");};}
     private static void write(J value,tools.jackson.core.JsonGenerator output)throws tools.jackson.core.JacksonException{switch(value){case O object->{output.writeStartObject();for(E field:object.fields()){output.writeName(field.name());write(field.value(),output);}output.writeEndObject();}case A array->{output.writeStartArray();for(J item:array.values())write(item,output);output.writeEndArray();}case N number->output.writeNumber(number.value());case T text->output.writeString(text.value());case B bool->output.writeBoolean(bool.value());case Z ignored->output.writeNull();}}
+    private static byte[] nativeBytes(J value)throws tools.jackson.core.JacksonException{var sink=new java.io.ByteArrayOutputStream();try(var output=tools.jackson.core.json.JsonFactory.builder().build().createGenerator(tools.jackson.core.ObjectWriteContext.empty(),sink)){write(value,output);}return sink.toByteArray();}
     private static ValidationException structure(String message){return new ValidationException(new Validation.Invalid(java.util.List.of(new Validation.Diagnostic("validation.structure",java.util.List.of(""),"",message)),false));}
 }
 `

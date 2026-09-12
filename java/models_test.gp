@@ -213,7 +213,8 @@ public final class Models {
 `
 
 func TestModelGenerationBoundaries(t *testing.T){
-    for _,source:=range []string{"type Nested = { value :: { inner :: Int } }", "type Contract = Int", "type ModelSupport = Int", "type ModelType = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"}{
+    nested,err:=language.Compile("type Nested = { value :: { inner :: Int } }");if err!=nil{t.Fatal(err)};nestedFiles,err:=GenerateModels(nested,"example","Contract");if err!=nil{t.Fatal(err)};foundParent,foundChild:=false,false;for _,file:=range nestedFiles{if strings.HasSuffix(file.Path,"/Nested.java"){foundParent=strings.Contains(file.Source,"NestedValueRecord value()")};if strings.HasSuffix(file.Path,"/NestedValueRecord.java"){foundChild=strings.Contains(file.Source,"class NestedValueRecord")&&strings.Contains(file.Source,"BigInteger inner()")}};if !foundParent||!foundChild{t.Fatal("nested anonymous record models were not generated with typed accessors")}
+    for _,source:=range []string{"type Unsupported = { callback :: Int -> Int }", "type Contract = Int", "type ModelSupport = Int", "type ModelType = Int", "type Id = Int\ntype ID = Int", "type DATA = Int", "type FooΣ = Int\ntype Fooς = Int"}{
         program,err:=language.Compile(source);if err!=nil{t.Fatal(err)}
         files,err:=GenerateModels(program,"example","Contract");if _,ok:=err.(*GenerationError);!ok||files!=nil{t.Fatalf("unsupported model did not fail atomically: %s: %v",source,err)}
     }

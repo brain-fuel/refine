@@ -56,6 +56,18 @@ func TestUnknownIsNotProof(t *testing.T){
     identity,err:=Compare(b,"T",b,"T",validation.Limits{});if err!=nil||identity.Backward.Outcome!=Yes||identity.Forward.Outcome!=Yes{t.Fatal(identity,err)}
 }
 
+func TestNumericExpansionBudgetIsConservativeUnknown(t *testing.T){
+    huge:=compile(t,"type T = Real where it >= 1e1000000000")
+    for _,source:=range []string{"type T = Real where it >= 1e1000000000","type T = Real where it >= 1e-1000000000","type T = Real where it >= 1e999999999999999999999999999999"}{
+        finding,err:=Satisfiable(compile(t,source),"T",validation.Limits{});if err!=nil||finding.Outcome!=Unknown||finding.Code!="analysis.resource"{t.Fatalf("default resource finding: %+v, %v",finding,err)}
+    }
+    modest:=compile(t,"type T = Real where it >= 1e20")
+    finding,err:=Satisfiable(modest,"T",validation.Limits{Total:10,Clause:10});if err!=nil||finding.Outcome!=Unknown||finding.Code!="analysis.resource"{t.Fatalf("caller resource finding: %+v, %v",finding,err)}
+    broad:=compile(t,"type T = Real")
+    comparison,err:=Compare(broad,"T",huge,"T",validation.Limits{});if err!=nil||comparison.Backward.Outcome!=Unknown||comparison.Backward.Code!="analysis.resource"{t.Fatalf("comparison resource finding: %+v, %v",comparison,err)}
+    identity,err:=Compare(huge,"T",huge,"T",validation.Limits{Total:1});if err!=nil||identity.Backward.Outcome!=Yes||identity.Forward.Outcome!=Yes{t.Fatalf("identity proof lost: %+v, %v",identity,err)}
+}
+
 func TestExactIntegerIntervalProperties(t *testing.T){
     property:=func(a,b,c,d int8)bool{
         loA,hiA,loB,hiB:=int(a),int(b),int(c),int(d)

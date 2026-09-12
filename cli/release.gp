@@ -1,0 +1,180 @@
+package cli
+
+import (
+    "bytes"
+    "crypto/sha256"
+    "encoding/binary"
+    "encoding/json"
+    "flag"
+    "fmt"
+    "io"
+    "os"
+    "path"
+    "path/filepath"
+    "sort"
+    "strconv"
+    "strings"
+
+    "goforge.dev/refine/analysis"
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/native"
+    "goforge.dev/refine/project"
+    "goforge.dev/refine/release"
+    "goforge.dev/refine/schemajson"
+    "goforge.dev/refine/validation"
+)
+
+type releaseProjectPolicy struct { EnforceForward bool `json:"enforceForward"`; Maven *releaseMavenPolicy `json:"maven"` }
+type releaseMavenPolicy struct { Current string `json:"current"`; Intended *string `json:"intended"`; OtherChange string `json:"otherChange"`; PreviouslyGenerated []releaseGeneratedPolicy `json:"previouslyGenerated"` }
+type releaseGeneratedPolicy struct { Family string `json:"family"`; Version string `json:"version"` }
+type releaseFamilyPolicy struct {
+    Change string `json:"change"`
+    Intended *string `json:"intended"`
+    Overrides []releaseOverridePolicy `json:"overrides"`
+    BreakingFixes []releaseFixPolicy `json:"breakingFixes"`
+}
+type releaseComparisonPolicy struct { Baseline string `json:"baseline"`; BaselineSHA256 string `json:"baselineSha256"`; SnapshotSHA256 string `json:"snapshotSha256"`; Direction string `json:"direction"` }
+type releaseOverridePolicy struct { releaseComparisonPolicy; Reason string `json:"reason"` }
+type releaseFixPolicy struct { releaseComparisonPolicy; Justification string `json:"justification"` }
+
+type releaseSchemaEntry struct { family string; basename string; sourcePath string; raw []byte; version *release.Version; kind schemaSourceKind; bundle *language.SourceBundle; nativeProject *native.Project; program *language.Program; content release.ContentID; policyContent release.ContentID }
+type releaseCatalog struct { entries map[string]*releaseSchemaEntry; byFamily map[string][]*releaseSchemaEntry }
+type releaseComparisonReport struct {
+    Baseline string `json:"baseline"`; BaselineSHA256 string `json:"baselineSha256"`; SnapshotSHA256 string `json:"snapshotSha256"`; Direction string `json:"direction"`
+    BaselinePolicySHA256 string `json:"baselinePolicySha256"`; SnapshotPolicySHA256 string `json:"snapshotPolicySha256"`
+    Logical analysis.Finding `json:"logical"`; Native analysis.Finding `json:"nativeWire"`; JavaABI analysis.Finding `json:"javaAbi"`; Result string `json:"result"`; Detail string `json:"detail"`
+}
+type releaseFamilyReport struct { Family string `json:"family"`; Plan release.PlanResult `json:"plan"`; Comparisons []releaseComparisonReport `json:"comparisons"` }
+type releaseWorkflow struct { root string; configPath string; configContent release.ContentID; config projectConfig; catalog releaseCatalog; reports []releaseFamilyReport; maven *release.MavenPlan; snapshots map[string]*releaseSchemaEntry; plans map[string]release.PlanResult; selected []string; preconditions map[string]release.ContentID }
+type releasePlanReport struct { Families []releaseFamilyReport `json:"families"`; Maven *release.MavenPlan `json:"maven,omitempty"` }
+
+func loadReleaseConfig(root *os.Root,name string)(projectConfig,[]byte,error){
+    raw,err:=readWithin(root,filepath.ToSlash(name));if err!=nil{return projectConfig{},nil,err}
+    if _,err=schemajson.Parse(raw,schemajson.Limits{});err!=nil{return projectConfig{},nil,err}
+    config:=projectConfig{SchemaDir:"schemata",Families:map[string]familyConfig{}}
+    decoder:=json.NewDecoder(bytes.NewReader(raw));decoder.DisallowUnknownFields();if err=decoder.Decode(&config);err!=nil{return projectConfig{},nil,err}
+    if config.SchemaDir==""{config.SchemaDir="schemata"};if config.Families==nil{config.Families=map[string]familyConfig{}}
+    if config.SchemaDir=="."||path.Clean(config.SchemaDir)!=config.SchemaDir||path.IsAbs(config.SchemaDir)||strings.HasPrefix(config.SchemaDir,"../")||strings.ContainsAny(config.SchemaDir,"\\:\x00"){return projectConfig{},nil,fmt.Errorf("schemaDir must be a project-relative directory")}
+    return config,raw,nil
+}
+
+func discoverReleaseCatalog(root *os.Root,config projectConfig)(releaseCatalog,error){
+    catalog:=releaseCatalog{entries:map[string]*releaseSchemaEntry{},byFamily:map[string][]*releaseSchemaEntry{}}
+    directory,err:=root.Open(filepath.FromSlash(config.SchemaDir));if err!=nil{return catalog,err};families,err:=directory.ReadDir(-1);directory.Close();if err!=nil{return catalog,err};sort.Slice(families,func(i,j int)bool{return families[i].Name()<families[j].Name()})
+    for _,family:=range families{if !family.IsDir(){continue};name:=family.Name();folder,err:=root.Open(filepath.FromSlash(path.Join(config.SchemaDir,name)));if err!=nil{return catalog,err};files,err:=folder.ReadDir(-1);folder.Close();if err!=nil{return catalog,err};sort.Slice(files,func(i,j int)bool{return files[i].Name()<files[j].Name()});seenVersions:=map[string]string{};for _,file:=range files{
+        if file.IsDir(){continue};basename,kind,recognized:=schemaSourceName(file.Name());if !recognized{continue};var version *release.Version
+        if basename!="SNAPSHOT"{if !strings.HasPrefix(basename,"v"){continue};parsed,e:=release.ParseVersion(basename);if e!=nil{return catalog,e};if basename!="v"+parsed.String(){return catalog,fmt.Errorf("release version filename %s is not canonical",file.Name())};version=&parsed}
+        if prior:=seenVersions[basename];prior!=""{return catalog,fmt.Errorf("family %s version %s is defined by both %s and %s",name,basename,prior,file.Name())};seenVersions[basename]=file.Name()
+        sourcePath:=path.Join(config.SchemaDir,name,file.Name());raw,e:=readWithin(root,sourcePath);if e!=nil{return catalog,e};entry:=&releaseSchemaEntry{family:name,basename:basename,sourcePath:sourcePath,raw:raw,version:version,kind:kind};catalog.entries[sourcePath]=entry;catalog.byFamily[name]=append(catalog.byFamily[name],entry)
+    }}
+    return catalog,nil
+}
+
+func canonicalReleaseSource(file language.SourceFile,catalog releaseCatalog)(string,string,error){
+    canonicalID:="file:"+file.ID;if entry:=catalog.entries[file.ID];entry!=nil{canonicalID="family:"+entry.family}
+    module,err:=language.Parse(file.Source);if err!=nil{return "","",err};if len(module.Imports)!=len(file.Imports){return "","",fmt.Errorf("release identity import metadata mismatch for %s",file.ID)}
+    source:=file.Source
+    for i:=len(module.Imports)-1;i>=0;i--{span:=module.Imports[i].At;start,end:=span.Start.Offset,span.End.Offset;if start<0||end<start||end>len(source){return "","",fmt.Errorf("release identity import span is invalid")};resolved:=file.Imports[i];target:="file:"+resolved;if entry:=catalog.entries[resolved];entry!=nil{target="family:"+entry.family};source=source[:start]+"import "+strconv.Quote(target)+source[end:]}
+    return canonicalID,source,nil
+}
+
+func entryPolicy(entry *releaseSchemaEntry,config projectConfig)string{settings:=config.Families[entry.family];formats:=append([]native.Format(nil),settings.Formats...);if len(formats)==0{formats=[]native.Format{native.JSONSchema,native.Avro,native.OpenAPI}};sort.Slice(formats,func(i,j int)bool{return formats[i]<formats[j]});formatNames:=[]string{};for _,format:=range formats{formatNames=append(formatNames,string(format))};noCodegen:=append([]string(nil),settings.NoCodegen...);sort.Strings(noCodegen);wire,_:=json.Marshal(settings.Wire);return strings.Join([]string{string(wire),entry.family,settings.Root,config.Package,settings.Package,settings.JavaPackage,strings.Join(formatNames,","),strings.Join(noCodegen,","),strconv.FormatBool(versionCodegen(settings,entry.basename)),strconv.FormatBool(config.Release.EnforceForward)},"\x00")}
+
+func comparisonContent(bundle *language.SourceBundle,catalog releaseCatalog,config projectConfig)(release.ContentID,release.ContentID,error){
+    type item struct{id string;source string;policy string};items:=[]item{};seen:=map[string]bool{}
+    for _,file:=range bundle.Files(){id,source,err:=canonicalReleaseSource(file,catalog);if err!=nil{return "","",err};if seen[id]{return "","",fmt.Errorf("release identity reaches multiple versions of %s",id)};seen[id]=true;policy:="";if entry:=catalog.entries[file.ID];entry!=nil{policy=entryPolicy(entry,config)};items=append(items,item{id,source,policy})}
+    sort.Slice(items,func(i,j int)bool{return items[i].id<items[j].id});sourceSum:=sha256.New();policySum:=sha256.New();write:=func(target io.Writer,text string){_ = binary.Write(target,binary.BigEndian,uint64(len(text)));_,_ = io.WriteString(target,text)};write(sourceSum,"refine.release-source.v2");write(policySum,"refine.release-policy.v1")
+    for _,entry:=range items{write(sourceSum,entry.id);write(sourceSum,entry.source);write(policySum,entry.id);write(policySum,entry.policy)};sourceID:=fmt.Sprintf("%x",sourceSum.Sum(nil));policyID:=release.ContentID(fmt.Sprintf("%x",policySum.Sum(nil)));combined:=release.Digest([]byte("refine.release-comparison.v2\x00"+sourceID+"\x00"+string(policyID)));return combined,policyID,nil
+}
+
+func compileReleaseEntry(root *os.Root,entry *releaseSchemaEntry,catalog releaseCatalog,config projectConfig)error{
+    if entry.program!=nil{return nil}
+    if entry.kind==nativeBundleSchema{
+        imported,err:=native.ParseBundle(entry.raw);if err!=nil{return err};settings:=config.Families[entry.family]
+        if !emptyWireMetadata(settings.Wire){return fmt.Errorf("family %s native bundle owns wire metadata; family wire overrides are not allowed",entry.family)}
+        if settings.Root!=""&&settings.Root!=imported.Root().TypeName{return fmt.Errorf("family %s configured root %s does not match native bundle root %s",entry.family,settings.Root,imported.Root().TypeName)}
+        program,err:=language.Compile(imported.EditableSource());if err!=nil{return err};if _,err=program.PayloadType(imported.Root().TypeName);err!=nil{return err}
+        policy:=release.Digest([]byte("refine.release-policy.v1\x00"+entryPolicy(entry,config)));rawIdentity:=release.Digest(append([]byte("refine.native-bundle.v1\x00"),entry.raw...));entry.nativeProject=imported;entry.program=program;entry.policyContent=policy;entry.content=release.Digest([]byte("refine.release-comparison.v2\x00"+string(rawIdentity)+"\x00"+string(policy)));return nil
+    }
+    bundle,err:=loadSources(root,entry.sourcePath);if err!=nil{return err};content,policy,err:=comparisonContent(bundle,catalog,config);if err!=nil{return err};entry.bundle=bundle;entry.program=bundle.Program();entry.content=content;entry.policyContent=policy;return nil
+}
+
+func releaseEntryRoot(entry *releaseSchemaEntry,family string,settings familyConfig)(string,error){if entry.nativeProject!=nil{return entry.nativeProject.Root().TypeName,nil};return configuredRoot(entry.program,family,settings)}
+
+func configuredRoot(program *language.Program,family string,settings familyConfig)(string,error){if settings.Root!=""{if _,err:=program.PayloadType(settings.Root);err!=nil{return "",err};return settings.Root,nil};types:=program.Syntax().Types;if len(types)!=1{return "",fmt.Errorf("family %s requires a root type in refine.project.json",family)};return types[0].Name,nil}
+func parseReleaseChange(text string)(release.ChangeKind,error){switch text{case "","none":return release.NoChange,nil;case "documentation":return release.DocumentationOnly,nil;case "fix":return release.CompatibleFix,nil;case "feature":return release.CompatibleFeature,nil;case "breaking":return release.BreakingChange,nil};return release.NoChange,fmt.Errorf("unknown release change %q",text)}
+func parseArtifactChange(text string)(release.ArtifactChange,error){switch text{case "","none":return release.ArtifactNoChange,nil;case "patch":return release.ArtifactPatchChange,nil;case "feature":return release.ArtifactFeatureChange,nil;case "breaking":return release.ArtifactBreakingChange,nil};return release.ArtifactNoChange,fmt.Errorf("unknown Maven artifact change %q",text)}
+func versionCodegen(settings familyConfig,basename string)bool{for _,name:=range settings.NoCodegen{if name==basename{return false}};return true}
+func parsePolicyVersion(text string)(release.Version,error){version,err:=release.ParseVersion(text);if err!=nil{return version,err};if text!=version.String(){return version,fmt.Errorf("policy version %q must be canonical x.y.z",text)};return version,nil}
+func comparisonDirection(text string)(release.Direction,error){switch text{case "backward":return release.Backward,nil;case "forward":return release.Forward,nil};return 0,fmt.Errorf("unknown comparison direction %q",text)}
+func comparisonResult(outcome analysis.Outcome)release.ComparisonResult{if outcome==analysis.No{return release.ComparisonInvalid};if outcome==analysis.Yes{return release.ComparisonUnknown};return release.ComparisonUnknown}
+func resultName(result release.ComparisonResult)string{return result.String()}
+
+func policyRef(family string,policy releaseComparisonPolicy)(release.ComparisonRef,error){baseline,err:=parsePolicyVersion(policy.Baseline);if err!=nil{return release.ComparisonRef{},err};direction,err:=comparisonDirection(policy.Direction);if err!=nil{return release.ComparisonRef{},err};ref:=release.ComparisonRef{Family:family,Baseline:baseline,BaselineContent:release.ContentID(policy.BaselineSHA256),CandidateContent:release.ContentID(policy.SnapshotSHA256),Direction:direction};if !ref.BaselineContent.Valid()||!ref.CandidateContent.Valid(){return release.ComparisonRef{},fmt.Errorf("comparison policy requires lowercase SHA-256 content identities")};return ref,nil}
+
+func entryImports(root *os.Root,entry *releaseSchemaEntry,catalog releaseCatalog,config projectConfig,intended map[string]release.Version,allowSnapshot bool)([]release.ImportPin,error){
+    if entry.nativeProject!=nil{
+        for _,file:=range entry.nativeProject.LanguageFiles(){for _,resolved:=range file.Imports{if dependency:=catalog.entries[resolved];dependency!=nil{return nil,fmt.Errorf("native bundle %s embeds catalog-relative dependency %s; an exact semantic release pin cannot be proven",entry.sourcePath,dependency.sourcePath)}}}
+        return nil,nil
+    }
+    files:=entry.bundle.Files();var source *language.SourceFile;for i:=range files{if files[i].ID==entry.sourcePath{source=&files[i];break}};if source==nil{return nil,fmt.Errorf("release entry source metadata missing")};pins:=[]release.ImportPin{}
+    for _,resolved:=range source.Imports{dependency:=catalog.entries[resolved];if dependency==nil{continue};if err:=compileReleaseEntry(root,dependency,catalog,config);err!=nil{return nil,err};version:=release.Version{};if dependency.version!=nil{version=*dependency.version}else{if !allowSnapshot{return nil,fmt.Errorf("released schema %s imports mutable SNAPSHOT family %s",entry.basename,dependency.family)};accepted,ok:=intended[dependency.family];if !ok{return nil,fmt.Errorf("snapshot import %s requires an intended exact version",dependency.family)};version=accepted};pins=append(pins,release.ImportPin{Family:dependency.family,Version:version,Content:dependency.content,AffectsContract:true})}
+    return pins,nil
+}
+
+func buildReleaseWorkflow(rootPath,configPath string,selection []string)(releaseWorkflow,error){
+    absolute,err:=filepath.Abs(rootPath);if err!=nil{return releaseWorkflow{},err};root,err:=os.OpenRoot(absolute);if err!=nil{return releaseWorkflow{},err};defer root.Close();config,configRaw,err:=loadReleaseConfig(root,configPath);if err!=nil{return releaseWorkflow{},err};catalog,err:=discoverReleaseCatalog(root,config);if err!=nil{return releaseWorkflow{},err};for family,settings:=range config.Families{entries,ok:=catalog.byFamily[family];if !ok{return releaseWorkflow{},fmt.Errorf("configuration refers to missing schema family %s",family)};available:=map[string]bool{};for _,entry:=range entries{available[entry.basename]=true};prospective:="";if settings.Release.Intended!=nil{if parsed,e:=parsePolicyVersion(*settings.Release.Intended);e==nil{prospective="v"+parsed.String()}};for _,excluded:=range settings.NoCodegen{if !available[excluded]&&excluded!=prospective{return releaseWorkflow{},fmt.Errorf("family %s noCodegen refers to missing version %s",family,excluded)}}}
+    selected:=append([]string(nil),selection...);if len(selected)==0{for family,entries:=range catalog.byFamily{for _,entry:=range entries{if entry.version==nil{selected=append(selected,family);break}}};sort.Strings(selected)};seen:=map[string]bool{};for _,family:=range selected{if seen[family]{return releaseWorkflow{},fmt.Errorf("duplicate selected family %s",family)};seen[family]=true;if _,ok:=config.Families[family];!ok{return releaseWorkflow{},fmt.Errorf("selected family %s is missing from refine.project.json",family)}};if len(selected)==0{return releaseWorkflow{},fmt.Errorf("no SNAPSHOT schema families found")}
+    intended:=map[string]release.Version{};for family,settings:=range config.Families{if settings.Release.Intended!=nil{version,e:=parsePolicyVersion(*settings.Release.Intended);if e!=nil{return releaseWorkflow{},fmt.Errorf("family %s: %w",family,e)};intended[family]=version}}
+    cleanConfig:=filepath.ToSlash(configPath);workflow:=releaseWorkflow{root:absolute,configPath:cleanConfig,configContent:release.Digest(configRaw),config:config,catalog:catalog,snapshots:map[string]*releaseSchemaEntry{},plans:map[string]release.PlanResult{},selected:selected,preconditions:map[string]release.ContentID{cleanConfig:release.Digest(configRaw)}}
+    for _,family:=range selected{settings:=config.Families[family];var snapshot *releaseSchemaEntry;baselines:=[]*releaseSchemaEntry{};for _,entry:=range catalog.byFamily[family]{if entry.version==nil{if snapshot!=nil{return releaseWorkflow{},fmt.Errorf("family %s has duplicate SNAPSHOT",family)};snapshot=entry}else{baselines=append(baselines,entry)}};if snapshot==nil{return releaseWorkflow{},fmt.Errorf("family %s has no SNAPSHOT schema",family)};sort.Slice(baselines,func(i,j int)bool{return baselines[i].version.Compare(*baselines[j].version)<0});if err:=compileReleaseEntry(root,snapshot,catalog,config);err!=nil{return releaseWorkflow{},err};if err=rememberEntryInputs(&workflow,snapshot);err!=nil{return releaseWorkflow{},err};snapshotRoot,err:=releaseEntryRoot(snapshot,family,settings);if err!=nil{return releaseWorkflow{},err};snapshotPins,err:=entryImports(root,snapshot,catalog,config,intended,true);if err!=nil{return releaseWorkflow{},err}
+        planning:=release.PlanningInput{Family:family,SnapshotContent:snapshot.content,SnapshotImports:snapshotPins,EnforceForward:config.Release.EnforceForward};planning.Change,err=parseReleaseChange(settings.Release.Change);if err!=nil{return releaseWorkflow{},fmt.Errorf("family %s: %w",family,err)};if settings.Release.Intended!=nil{version:=intended[family];planning.Intended=&version}
+        comparisons:=[]releaseComparisonReport{}
+        for _,baseline:=range baselines{if err:=compileReleaseEntry(root,baseline,catalog,config);err!=nil{return releaseWorkflow{},err};if err=rememberEntryInputs(&workflow,baseline);err!=nil{return releaseWorkflow{},err};baselineRoot,e:=releaseEntryRoot(baseline,family,settings);if e!=nil{return releaseWorkflow{},e};pins,e:=entryImports(root,baseline,catalog,config,intended,false);if e!=nil{return releaseWorkflow{},e};planning.Releases=append(planning.Releases,release.ReleaseBaseline{Version:*baseline.version,Content:baseline.content,Imports:pins});logical,e:=analysis.Compare(baseline.program,baselineRoot,snapshot.program,snapshotRoot,validation.Limits{});if e!=nil{return releaseWorkflow{},e}
+            for _,direction:=range []release.Direction{release.Backward,release.Forward}{finding:=logical.Backward;if direction==release.Forward{finding=logical.Forward};nativeFinding:=analysis.Finding{Outcome:analysis.Unknown,Code:"analysis.native_unknown",Explanation:"Native wire compatibility has no general proof engine."};abiFinding:=analysis.Finding{Outcome:analysis.Unknown,Code:"analysis.java_abi_unknown",Explanation:"Generated Java source and ABI compatibility have no general proof engine; historical per-version ABI metadata is not available."};result:=comparisonResult(finding.Outcome);detail:=fmt.Sprintf("logical=%s; native-wire=unknown; java-abi=unknown",finding.Outcome);ref:=release.ComparisonRef{Family:family,Baseline:*baseline.version,BaselineContent:baseline.content,CandidateContent:snapshot.content,Direction:direction};planning.Comparisons=append(planning.Comparisons,release.CompatibilityEvidence{Comparison:ref,Result:result,Detail:detail});comparisons=append(comparisons,releaseComparisonReport{Baseline:baseline.version.String(),BaselineSHA256:string(baseline.content),SnapshotSHA256:string(snapshot.content),BaselinePolicySHA256:string(baseline.policyContent),SnapshotPolicySHA256:string(snapshot.policyContent),Direction:direction.String(),Logical:finding,Native:nativeFinding,JavaABI:abiFinding,Result:resultName(result),Detail:detail})}
+        }
+        for _,item:=range settings.Release.Overrides{ref,e:=policyRef(family,item.releaseComparisonPolicy);if e!=nil{return releaseWorkflow{},fmt.Errorf("family %s override: %w",family,e)};planning.Overrides=append(planning.Overrides,release.CompatibilityOverride{Comparison:ref,Reason:item.Reason})};for _,item:=range settings.Release.BreakingFixes{ref,e:=policyRef(family,item.releaseComparisonPolicy);if e!=nil{return releaseWorkflow{},fmt.Errorf("family %s breaking fix: %w",family,e)};planning.BreakingFixes=append(planning.BreakingFixes,release.BreakingFix{Comparison:ref,Justification:item.Justification})}
+        plan:=release.Plan(planning);workflow.snapshots[family]=snapshot;workflow.plans[family]=plan;workflow.reports=append(workflow.reports,releaseFamilyReport{Family:family,Plan:plan,Comparisons:comparisons})
+    }
+    if policy:=config.Release.Maven;policy!=nil{if policy.Current==""{return releaseWorkflow{},fmt.Errorf("release Maven policy requires current artifact version")};current,e:=parsePolicyVersion(policy.Current);if e!=nil{return releaseWorkflow{},fmt.Errorf("Maven current version: %w",e)};other,e:=parseArtifactChange(policy.OtherChange);if e!=nil{return releaseWorkflow{},e};mavenInput:=release.MavenPlanningInput{Current:current,OtherChange:other};if policy.Intended!=nil{version,e:=parsePolicyVersion(*policy.Intended);if e!=nil{return releaseWorkflow{},fmt.Errorf("Maven intended version: %w",e)};mavenInput.Intended=&version};for _,prior:=range policy.PreviouslyGenerated{version,e:=parsePolicyVersion(prior.Version);if e!=nil{return releaseWorkflow{},fmt.Errorf("Maven published version: %w",e)};mavenInput.PreviouslyPublished=append(mavenInput.PreviouslyPublished,release.GeneratedVersion{Family:prior.Family,SchemaVersion:version,Generated:true})};for family,entries:=range catalog.byFamily{settings:=config.Families[family];for _,entry:=range entries{if entry.version!=nil{mavenInput.Next=append(mavenInput.Next,release.GeneratedVersion{Family:family,SchemaVersion:*entry.version,Generated:versionCodegen(settings,entry.basename)})}};if version,ok:=intended[family];ok{exists:=false;for _,entry:=range entries{if entry.version!=nil&&*entry.version==version{exists=true}};if !exists{mavenInput.Next=append(mavenInput.Next,release.GeneratedVersion{Family:family,SchemaVersion:version,Generated:versionCodegen(settings,"v"+version.String())})}}};plan:=release.PlanMavenVersion(mavenInput);workflow.maven=&plan}
+    return workflow,nil
+}
+
+func releaseStatus(workflow releaseWorkflow)int{for _,report:=range workflow.reports{if !report.Plan.Ready{return 1}};if workflow.maven!=nil&&!workflow.maven.Ready{return 1};return 0}
+func releaseDiagnostics(workflow releaseWorkflow)[]diagnostic{out:=[]diagnostic{};for _,report:=range workflow.reports{for _,issue:=range report.Plan.Issues{out=append(out,diagnostic{Code:issue.Code,Message:report.Family+": "+issue.Message})}};if workflow.maven!=nil{for _,issue:=range workflow.maven.Issues{out=append(out,diagnostic{Code:issue.Code,Message:"Maven artifact: "+issue.Message})}};return out}
+func rememberBundleInputs(workflow *releaseWorkflow,bundle *language.SourceBundle)error{if bundle==nil{return nil};for _,file:=range bundle.Files(){digest:=release.ContentID(file.Digest);if !digest.Valid(){return fmt.Errorf("release input %s has invalid source digest",file.ID)};if prior,ok:=workflow.preconditions[file.ID];ok&&prior!=digest{return fmt.Errorf("release input %s changed during planning",file.ID)};workflow.preconditions[file.ID]=digest};return nil}
+func rememberEntryInputs(workflow *releaseWorkflow,entry *releaseSchemaEntry)error{digest:=release.Digest(entry.raw);if prior,ok:=workflow.preconditions[entry.sourcePath];ok&&prior!=digest{return fmt.Errorf("release input %s changed during planning",entry.sourcePath)};workflow.preconditions[entry.sourcePath]=digest;return rememberBundleInputs(workflow,entry.bundle)}
+
+func rewriteReleaseImports(entry *releaseSchemaEntry,catalog releaseCatalog,versions map[string]release.Version)([]byte,[]release.PromotionImport,error){
+    if entry.kind==nativeBundleSchema{return append([]byte(nil),entry.raw...),nil,nil}
+    module,err:=language.Parse(string(entry.raw));if err!=nil{return nil,nil,err};files:=entry.bundle.Files();var source *language.SourceFile;for i:=range files{if files[i].ID==entry.sourcePath{source=&files[i];break}};if source==nil||len(source.Imports)!=len(module.Imports){return nil,nil,fmt.Errorf("release import metadata mismatch")};content:=string(entry.raw);pins:=[]release.PromotionImport{}
+    for i:=len(module.Imports)-1;i>=0;i--{resolved:=source.Imports[i];dependency:=catalog.entries[resolved];if dependency==nil{return nil,nil,fmt.Errorf("release import %s is not an exact schema-family version",module.Imports[i].Path)};version:=release.Version{};targetPath:="";if dependency.version!=nil{version=*dependency.version;targetPath=dependency.sourcePath}else{accepted,ok:=versions[dependency.family];if !ok{return nil,nil,fmt.Errorf("snapshot import %s is not included in the promotion batch",dependency.family)};version=accepted;targetPath=path.Join(path.Dir(dependency.sourcePath),"v"+version.String()+".refine")};targetContent:=dependency.raw;if dependency.version==nil{targetContent=nil};span:=module.Imports[i].At;relative,e:=filepath.Rel(filepath.FromSlash(path.Dir(entry.sourcePath)),filepath.FromSlash(targetPath));if e!=nil{return nil,nil,e};content=content[:span.Start.Offset]+"import "+strconv.Quote(filepath.ToSlash(relative))+content[span.End.Offset:];pins=append(pins,release.PromotionImport{Family:dependency.family,Kind:release.ExactRelease,Version:version,Content:release.Digest(targetContent)})}
+    return []byte(content),pins,nil
+}
+
+func releaseEntryFilename(entry *releaseSchemaEntry,version release.Version)string{extension:=".refine";if entry.kind==nativeBundleSchema{extension=".refined.json"};return "v"+version.String()+extension}
+
+func promoteReleaseWorkflow(workflow releaseWorkflow)(release.PromotionResult,error){
+    versions:=map[string]release.Version{};for _,family:=range workflow.selected{plan:=workflow.plans[family];if !plan.Ready{return release.PromotionResult{},fmt.Errorf("release plan for %s is not ready",family)};if !plan.NoPendingVersion&&plan.Accepted!=nil{versions[family]=*plan.Accepted}}
+    input:=release.PromotionInput{Root:workflow.root};for family,entries:=range workflow.catalog.byFamily{for _,entry:=range entries{if entry.version!=nil{input.Available=append(input.Available,release.PublishedRelease{Family:family,Version:*entry.version,Content:release.Digest(entry.raw)})}}}
+    releaseBytes:=map[string][]byte{};releasePins:=map[string][]release.PromotionImport{};for family:=range versions{entry:=workflow.snapshots[family];content,pins,err:=rewriteReleaseImports(entry,workflow.catalog,versions);if err!=nil{return release.PromotionResult{},err};releaseBytes[family]=content;releasePins[family]=pins}
+    // Resolve same-batch pins after every release has been materialized.
+    for family,pins:=range releasePins{for i:=range pins{if _,batch:=versions[pins[i].Family];batch{pins[i].Content=release.Digest(releaseBytes[pins[i].Family])}};releasePins[family]=pins}
+    for _,family:=range workflow.selected{version,changed:=versions[family];if !changed{continue};entry:=workflow.snapshots[family];input.Families=append(input.Families,release.PromotionFamily{Family:family,Version:version,SnapshotPath:entry.sourcePath,SnapshotFileContent:release.Digest(entry.raw),ReleasePath:path.Join(path.Dir(entry.sourcePath),releaseEntryFilename(entry,version)),ReleaseContent:releaseBytes[family],Imports:releasePins[family]})}
+    if len(input.Families)>0{root,err:=os.OpenRoot(workflow.root);if err!=nil{return release.PromotionResult{},err};defer root.Close();generated:=project.GenerateInput{BaseJavaPackage:workflow.config.Package};addContract:=func(family string,entry *releaseSchemaEntry,version *release.Version)error{settings:=workflow.config.Families[family];if err:=compileReleaseEntry(root,entry,workflow.catalog,workflow.config);err!=nil{return err};if err:=rememberEntryInputs(&workflow,entry);err!=nil{return err};basename:="SNAPSHOT";if version!=nil{basename="v"+version.String()};javaPackage:=settings.JavaPackage
+            if entry.kind==nativeBundleSchema{generated.Contracts=append(generated.Contracts,project.Contract{Family:family,Version:version,NativeProject:entry.nativeProject,RootType:settings.Root,LogicalNamespace:settings.Package,JavaPackage:javaPackage,NoCodegen:!versionCodegen(settings,basename),Formats:settings.Formats});return nil}
+            rootType,err:=configuredRoot(entry.bundle.Program(),family,settings);if err!=nil{return err};namespace:=settings.Package;if namespace==""{namespace=entry.bundle.Program().Syntax().Package};generated.Contracts=append(generated.Contracts,project.Contract{Family:family,Version:version,Program:entry.bundle.Program(),RootType:rootType,LogicalNamespace:namespace,JavaPackage:javaPackage,NoCodegen:!versionCodegen(settings,basename),Formats:settings.Formats,Wire:settings.Wire});return nil};families:=make([]string,0,len(workflow.catalog.byFamily));for family:=range workflow.catalog.byFamily{families=append(families,family)};sort.Strings(families);for _,family:=range families{for _,entry:=range workflow.catalog.byFamily[family]{if err:=addContract(family,entry,entry.version);err!=nil{return release.PromotionResult{},err}}};for _,family:=range workflow.selected{version,changed:=versions[family];if !changed{continue};if err:=addContract(family,workflow.snapshots[family],&version);err!=nil{return release.PromotionResult{},err}};bundle,err:=project.Generate(generated);if err!=nil{return release.PromotionResult{},err};owned,err:=project.PlanOwnedAddition(workflow.root,bundle,"");if err!=nil{return release.PromotionResult{},err};if len(owned.Deletions)>0&&(workflow.maven==nil||workflow.maven.RequiredChange==release.ArtifactNoChange){return release.PromotionResult{},fmt.Errorf("release.maven: removing generated outputs requires an explicit Maven artifact change plan")};input.Families[0].Generated=append(input.Families[0].Generated,owned.Artifacts...);if owned.ManifestCreate!=nil{input.Families[0].Generated=append(input.Families[0].Generated,*owned.ManifestCreate)};input.Replacements=append(input.Replacements,owned.Replacements...);input.Deletions=append(input.Deletions,owned.Deletions...);if owned.ManifestReplacement!=nil{input.Replacements=append(input.Replacements,*owned.ManifestReplacement)};paths:=make([]string,0,len(workflow.preconditions));for name:=range workflow.preconditions{paths=append(paths,name)};sort.Strings(paths);for _,name:=range paths{input.Preconditions=append(input.Preconditions,release.FilePrecondition{Path:name,Content:workflow.preconditions[name]})}}
+    if len(input.Families)==0{return release.PromotionResult{SnapshotPending:map[string]bool{}},nil};return release.Promote(input)
+}
+
+func releaseCommand(args []string,output,errorOutput io.Writer)int{
+    if len(args)==0{fmt.Fprintln(errorOutput,"expected release plan, promote, or recover");return 2};command:=args[0];flags:=flag.NewFlagSet("release "+command,flag.ContinueOnError);flags.SetOutput(errorOutput);rootFlag:=flags.String("root","","project root; defaults to nearest Maven project");configFlag:=flags.String("config","refine.project.json","project-relative configuration path");jsonMode:=flags.Bool("json",false,"emit machine-readable result");if err:=flags.Parse(args[1:]);err!=nil{return 2}
+    rootPath:=*rootFlag;if rootPath==""{cwd,err:=os.Getwd();if err!=nil{fmt.Fprintln(errorOutput,err);return 2};rootPath,err=project.DetectRoot(cwd);if err!=nil{fmt.Fprintln(errorOutput,"no Maven project found; specify --root explicitly");return 2}}
+    if command=="recover"{if len(flags.Args())!=0{fmt.Fprintln(errorOutput,"release recover does not accept family names");return 2};err:=release.Recover(rootPath);if *jsonMode{state:="valid";diagnostics:=[]diagnostic{};if err!=nil{state="invalid";diagnostics=append(diagnostics,diagnostic{Code:"release.recovery",Message:err.Error()})};if encodeErr:=json.NewEncoder(output).Encode(report{Phase:"release.recover",State:state,Summary:"Recovered incomplete release transactions.",Diagnostics:diagnostics});encodeErr!=nil{return 2};if err!=nil{return 1};return 0};if err!=nil{fmt.Fprintln(errorOutput,err);return 1};if _,err=fmt.Fprintln(output,"Recovered incomplete release transactions.");err!=nil{return 2};return 0}
+    if command!="plan"&&command!="promote"{fmt.Fprintln(errorOutput,"unknown release command");return 2};workflow,err:=buildReleaseWorkflow(rootPath,*configFlag,flags.Args());result:=report{Phase:"release."+command,State:"valid",Diagnostics:[]diagnostic{}};status:=0
+    if err==nil{status=releaseStatus(workflow);result.Result=releasePlanReport{Families:workflow.reports,Maven:workflow.maven};result.Diagnostics=releaseDiagnostics(workflow);if status!=0{result.State="invalid"};if command=="promote"&&status==0{var promoted release.PromotionResult;promoted,err=promoteReleaseWorkflow(workflow);if err==nil{result.Result=struct{Families []releaseFamilyReport `json:"families"`;Maven *release.MavenPlan `json:"maven,omitempty"`;Promotion release.PromotionResult `json:"promotion"`;GeneratedOutputsAtomic bool `json:"generatedOutputsAtomic"`}{workflow.reports,workflow.maven,promoted,true};result.Summary="Promoted schema files, exact import pins, generated outputs, and their ownership manifest in one recoverable transaction"}}}
+    if err!=nil{status=1;result.State="invalid";result.Diagnostics=append(result.Diagnostics,diagnostic{Code:"release.workflow",Message:err.Error()})}
+    if command=="plan"&&err==nil{result.Summary=fmt.Sprintf("Planned %d schema families",len(workflow.reports))}
+    if *jsonMode{if err:=json.NewEncoder(output).Encode(result);err!=nil{return 2}}else{writer:=output;if status!=0{writer=errorOutput};if result.Summary!=""{if _,err:=fmt.Fprintln(writer,result.Summary);err!=nil{return 2}};for _,family:=range workflow.reports{version:="none";if family.Plan.Suggested!=nil{version=family.Plan.Suggested.String()};state:="ready";if !family.Plan.Ready{state="not ready"};if family.Plan.NoPendingVersion{state="no pending version"};if _,err:=fmt.Fprintf(writer,"%s: %s; suggested %s\n",family.Family,state,version);err!=nil{return 2};for _,comparison:=range family.Comparisons{if _,err:=fmt.Fprintf(writer,"  %s %s: %s (%s)\n",comparison.Baseline,comparison.Direction,comparison.Result,comparison.Detail);err!=nil{return 2}}};if workflow.maven!=nil{if _,err:=fmt.Fprintf(writer,"Maven artifact: required change %d; suggested %s; ready %t\n",workflow.maven.RequiredChange,workflow.maven.Suggested.String(),workflow.maven.Ready);err!=nil{return 2}};for _,detail:=range result.Diagnostics{if _,err:=fmt.Fprintf(writer,"%s: %s\n",detail.Code,detail.Message);err!=nil{return 2}}}
+    return status
+}

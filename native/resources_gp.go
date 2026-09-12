@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -69,7 +70,11 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	case OpenAPI:
 		document, err = validateOpenAPIResources(byURI, options.Root)
 		if err == nil {
-			source, err = projectJSONResourceRoot(byURI, options.Root, true)
+			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
+				source = annotated
+			} else {
+				source, err = projectJSONResourceRoot(byURI, options.Root, true)
+			}
 		}
 	case Avro:
 		if options.Root.Pointer != "" {
@@ -88,6 +93,12 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 			source += "\ntype " + options.Root.TypeName + " = " + rootName + "\n"
 		}
 	}
+	if annotation, ok := selectedRootAnnotation(document, options.Root); ok {
+		options.Metadata, err = mergeAnnotationMetadata(format, options.Metadata, annotation)
+		if err != nil {
+			return nil, err
+		}
+	}
 	program, err := language.Compile(source)
 	if err != nil {
 		return nil, wrap(format, "native.projection", "", err)
@@ -99,6 +110,8 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 		return nil, wrap(format, "native.metadata", "", err)
 	}
 	origins := make(map[string]*provenance.JSONSchema)
+	units := make(map[string]string)
+	linked := make(map[string]bool)
 	if format == JSONSchema {
 		for _, resource := range ordered {
 			origin, e := provenance.DiscoverJSONSchema([]byte(resource.Source), schemajson.Limits{})
@@ -106,23 +119,40 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 				return nil, wrap(JSONSchema, "native.provenance", resource.URI, e)
 			}
 			origins[resource.URI] = origin
+			if canonical := origin.ConstraintSource(); canonical != "" {
+				units[resource.URI] = canonical
+			}
+		}
+		if rootOrigin := origins[options.Root.Resource]; rootOrigin != nil && nativeConstraintUnitsUnchanged(rootOrigin, source) {
+			linked[options.Root.Resource] = true
 		}
 	}
 	_ = mainBytes
-	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins}, nil
+	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked}, nil
 }
 
-func validateJSONResources(resources map[string][]byte, root ResourceSelector) (*Document, error) {
+func sortedResourceURIs(resources map[string][]byte) []string {
+	uris := make([]string, 0, len(resources))
+	for uri := range resources {
+		uris = append(uris, uri)
+	}
+	sort.Strings(uris)
+	return uris
+}
+func validateJSONResources(resources map[string][]byte, root ResourceSelector) (document *Document, failure error) {
+	defer recoverRegexEvaluation(JSONSchema, &failure)
 	compiler := jsonoracle.NewCompiler()
 	compiler.DefaultDraft(jsonoracle.Draft2020)
 	compiler.UseRegexpEngine(jsonRegexp)
 	var rootDoc schemajson.Document
-	for uri, input := range resources {
+	numericExpansion := 0
+	for _, uri := range sortedResourceURIs(resources) {
+		input := resources[uri]
 		doc, err := schemajson.Parse(input, schemajson.Limits{})
 		if err != nil {
 			return nil, wrap(JSONSchema, "native.syntax", uri, err)
 		}
-		if err := scalarJSON(doc.Root(), ""); err != nil {
+		if err := scalarJSONBudget(doc.Root(), "", DefaultNumericExpansion, &numericExpansion); err != nil {
 			return nil, wrap(JSONSchema, "native.encoding", uri, err)
 		}
 		if err := checkJSONDraft(doc.Root(), uri); err != nil {
@@ -157,12 +187,18 @@ func validateJSONResources(resources map[string][]byte, root ResourceSelector) (
 	return &Document{format: JSONSchema, version: "2020-12", raw: rootDoc.Raw(), annotations: annotations, jsonProvenance: origins}, nil
 }
 
-func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector) (*Document, error) {
+func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector) (document *Document, failure error) {
+	defer recoverRegexEvaluation(OpenAPI, &failure)
+	if !strings.HasPrefix(root.Pointer, "/components/schemas/") {
+		return nil, &Error{Code: "native.root", Format: OpenAPI, Pointer: root.Pointer, Message: "selected OpenAPI root must be a Schema Object under /components/schemas"}
+	}
 	main := resources[root.Resource]
 	l, _ := limits(Options{})
 	var yamlRoot *yaml.Node
-	for uri, input := range resources {
-		node, err := parseYAML(input, l)
+	numericExpansion := 0
+	for _, uri := range sortedResourceURIs(resources) {
+		input := resources[uri]
+		node, err := parseYAMLWithNumericExpansion(input, l, &numericExpansion)
 		if err != nil {
 			return nil, wrap(OpenAPI, "native.syntax", uri, err)
 		}
@@ -171,7 +207,7 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 			if err != nil {
 				return nil, wrap(OpenAPI, "native.syntax", uri, err)
 			}
-			if err := scalarJSON(doc.Root(), ""); err != nil {
+			if err := scalarJSONText(doc.Root(), ""); err != nil {
 				return nil, wrap(OpenAPI, "native.encoding", uri, err)
 			}
 		}

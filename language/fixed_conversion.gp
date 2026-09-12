@@ -1,0 +1,29 @@
+package language
+
+import (
+    "strconv"
+    "strings"
+
+    "goforge.dev/refine/value"
+)
+
+// IntegerConversion identifies the explicit fixed-width built-in families.
+// User-defined functions still take precedence over built-in names.
+type IntegerConversion struct { Mode string; Type string; Bits uint; Signed bool }
+func FixedIntegerConversion(name string)(IntegerConversion,bool){
+    for _,mode:=range []string{"to","from","wrap"}{
+        if !strings.HasPrefix(name,mode){continue};typ:=strings.TrimPrefix(name,mode);signed:=true;digits:=""
+        if strings.HasPrefix(typ,"UInt"){signed=false;digits=strings.TrimPrefix(typ,"UInt")}else if strings.HasPrefix(typ,"Int"){digits=strings.TrimPrefix(typ,"Int")}else{continue}
+        bits,err:=strconv.ParseUint(digits,10,32);if err!=nil||bits==0||bits>65536||strconv.FormatUint(bits,10)!=digits{return IntegerConversion{},false}
+        return IntegerConversion{Mode:mode,Type:typ,Bits:uint(bits),Signed:signed},true
+    };return IntegerConversion{},false
+}
+
+func (e *evaluator) fixedConversion(conversion IntegerConversion,arg evalValue,at Span)evalValue{
+    n,_:=number(arg,at);size:=uint64(len(n.Show()));extra:=uint64(conversion.Bits)+1
+    if size>0&&size>(^uint64(0)-extra)/size{evalError(at,"evaluation.budget","numeric conversion cost exceeds evaluation resources")};e.step(size*size+extra,at)
+    if conversion.Mode=="from"{return numberValue(n,"Int")}
+    if conversion.Mode=="wrap"{wrapped,err:=n.Wrap(conversion.Bits,conversion.Signed);if err!=nil{evalError(at,"evaluation.type","explicit wrapping requires an integer")};return numberValue(wrapped,conversion.Type)}
+    checked,err:=n.FixedWidth(conversion.Bits,conversion.Signed);if err!=nil{text,_:=value.TextFromUTF8("conversion.overflow: value is outside "+conversion.Type+" range");return evalValue{form:EvalVariant("Err",[]evalValue{textValue(text)})}}
+    return evalValue{form:EvalVariant("Ok",[]evalValue{numberValue(checked,conversion.Type)})}
+}

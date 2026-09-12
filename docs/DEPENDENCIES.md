@@ -32,16 +32,30 @@ release gate.
   expansion it does not yet preserve. Upstream license:
   [MIT](https://github.com/getkin/kin-openapi/blob/v0.149.0/LICENSE).
 - `github.com/hamba/avro/v2 v2.31.0`: production Avro 1.12.0 schema parser and
-  structure/default/name validation oracle. Each ingestion gets a private schema
-  cache. The project was archived in 2026, which is a maintenance/replacement
+  structure/default/name validation oracle. Its compiled schema graph also
+  drives Refine's separately implemented bounded binary validator; hamba's
+  generic decoder is not treated as complete logical-type enforcement. Each
+  ingestion gets a private schema cache. The project was archived in 2026, which is a maintenance/replacement
   risk and makes independent Apache conformance coverage especially important.
   Upstream license: [MIT](https://github.com/hamba/avro/blob/v2.31.0/LICENSE).
 - `github.com/dlclark/regexp2 v1.12.0`: production ECMAScript-mode syntax engine
   supplied to JSON Schema and OpenAPI validators instead of silently treating
   Go RE2 syntax as native `pattern` syntax. A 250 ms match timeout bounds schema
-  default/example checks. ECMAScript mode is a compatibility implementation,
+  default/example checks. Timeout or engine failure propagates as
+  `native.enforcement`; it is never converted to a false match result.
+  ECMAScript mode is a compatibility implementation,
   not proof of complete parity with every ECMA-262 edition or JavaScript host.
   Upstream license: [MIT](https://github.com/dlclark/regexp2/blob/v1.12.0/LICENSE).
+- `com.networknt:json-schema-validator:3.0.7`: generated Java's Jackson 3
+  JSON Schema Draft 2020-12/OpenAPI 3.1 validation engine. Generated code
+  supplies an exact `BigDecimal` node factory, a resource loader that cannot
+  fall back to classpath/files/network, strict duplicate/trailing-token parsing,
+  and caller limits, including a whole-request numeric-expansion preflight
+  before either Jackson or networknt can expand a compact exponent. The current bounded profile rejects `pattern` and
+  `patternProperties` until a bounded ECMA-262 Java engine is integrated.
+  Runtime tests pin this artifact and its Jackson 3.2.1, ITU 1.14.0, and SLF4J
+  2.0.17 dependencies by SHA-256. Upstream license:
+  [Apache-2.0](https://github.com/networknt/json-schema-validator/blob/3.0.7/LICENSE).
 - `golang.org/x/text v0.14.0`: a transitive dependency, under Go's BSD-style
   license. Other `golang.org/x/*` entries support the pinned GoPlus module tool;
   see `go.mod`/`go.sum` for the exact graph. `kin-openapi` and `hamba/avro` also

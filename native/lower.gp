@@ -23,6 +23,10 @@ type LowerOptions struct {
     // checked rule with embedded and companion English. The returned Losses
     // enumerate every such rule. Wire-unrepresentable base types always error.
     AllowDocumentedLoss bool
+    // MaxGenericSpecializations bounds distinct closed generic applications.
+    // Zero selects DefaultLowerGenericSpecializations; values above the hard
+    // package maximum are rejected before lowering.
+    MaxGenericSpecializations int
 }
 type Loss struct { Owner string; Location string; Predicate string; Explanation string }
 type Export struct { format Format; version string; data []byte; companion string; losses []Loss }
@@ -51,6 +55,10 @@ type lowerer struct {
     extraFields map[string]ExtraFieldMode
     discriminators map[string]Discriminator
     owner string
+    specializationNames map[string]string
+    nativeNames map[string]string
+    specializationCount int
+    maxSpecializations int
 }
 
 // LowerPayload lowers one immutable checked payload type. It validates the
@@ -67,12 +75,13 @@ func LowerPayloadWithMetadata(format Format,payload *language.PayloadType,metada
 func lowerPayload(format Format,payload *language.PayloadType,metadata WireMetadata,options LowerOptions)(*Export,error){
     if payload==nil{return nil,&Error{Code:"native.lower",Format:format,Message:"a checked payload type is required"}}
     mode:=options.Mode;if mode==""{mode=Ordinary};if mode!=Ordinary&&mode!=Refined{return nil,&Error{Code:"native.lower",Format:format,Message:"mode must be ordinary or refined"}}
+    maxSpecializations:=options.MaxGenericSpecializations;if maxSpecializations==0{maxSpecializations=DefaultLowerGenericSpecializations};if maxSpecializations<1||maxSpecializations>MaximumLowerGenericSpecializations{return nil,&Error{Code:"native.lower",Format:format,Message:fmt.Sprintf("MaxGenericSpecializations must be between 1 and %d, or zero for the default",MaximumLowerGenericSpecializations)}}
     checked:=payload.CheckedSyntax();if checked.Type==nil||checked.Module.Syntax==nil{return nil,&Error{Code:"native.lower",Format:format,Message:"invalid checked payload type"}}
     program,err:=language.Compile(checked.Module.Syntax.Source);if err!=nil{return nil,wrap(format,"native.lower","",err)};if err:=validateMetadata(program,metadata);err!=nil{return nil,wrap(format,"native.metadata","",err)}
     explained,err:=explain.GeneratePayload(payload);if err!=nil{return nil,wrap(format,"native.lower","",err)}
     copiedMetadata:=copyMetadata(metadata);if format==Avro&&(len(copiedMetadata.ExtraFields)>0||len(copiedMetadata.Discriminators)>0){return nil,&Error{Code:"native.unrepresentable",Format:Avro,Message:"JSON extra-field and discriminator policies cannot be represented by Avro lowering"}}
-    l:=&lowerer{format:format,mode:mode,allowLoss:options.AllowDocumentedLoss,module:checked.Module.Syntax,rootSource:payload.Source(),declarations:make(map[string]language.TypeDecl),definitions:make(map[string]any),building:make(map[string]bool),avroDefined:make(map[string]bool),explanation:explained,companion:explained.Markdown(),explanationUsed:make(map[int]bool),encodings:copiedMetadata.Scalars,extraFields:copiedMetadata.ExtraFields,discriminators:copiedMetadata.Discriminators,owner:"$payload"}
-    for _,decl:=range l.module.Types{l.declarations[decl.Name]=decl}
+    l:=&lowerer{format:format,mode:mode,allowLoss:options.AllowDocumentedLoss,module:checked.Module.Syntax,rootSource:payload.Source(),declarations:make(map[string]language.TypeDecl),definitions:make(map[string]any),building:make(map[string]bool),avroDefined:make(map[string]bool),explanation:explained,companion:explained.Markdown(),explanationUsed:make(map[int]bool),encodings:copiedMetadata.Scalars,extraFields:copiedMetadata.ExtraFields,discriminators:copiedMetadata.Discriminators,owner:"$payload",specializationNames:make(map[string]string),nativeNames:make(map[string]string),maxSpecializations:maxSpecializations}
+    l.nativeNames["Anonymous"]="reserved anonymous Avro record";for _,decl:=range l.module.Types{l.declarations[decl.Name]=decl;l.nativeNames[decl.Name]="declaration "+decl.Name};for name,encoding:=range l.encodings{if encoding.Kind==RationalRecord{l.nativeNames[name+"Wire"]="scalar wire "+name}}
     schema,err:=l.typ(checked.Type,false);if err!=nil{return nil,err}
     l.finishCompanion()
     if mode==Ordinary&&len(l.losses)>0&&!options.AllowDocumentedLoss{return nil,&Error{Code:"native.unrepresentable",Format:format,Message:fmt.Sprintf("%d refinement rule(s) have no exact native representation; set AllowDocumentedLoss to embed explanations and receive the loss list",len(l.losses))}}
@@ -119,7 +128,7 @@ func (l *lowerer) typ(t *language.Type,field bool)(any,error){
     case language.AppliedType(_, _):
         if ok,inner:=unwrap(t,"Nullable");ok{value,err:=l.typ(inner,field);if err!=nil{return nil,err};if l.format==Avro{return []any{"null",value},nil};return map[string]any{"anyOf":[]any{map[string]any{"type":"null"},value}},nil}
         if ok,_:=unwrap(t,"Maybe");ok{return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"Maybe represents field absence and is supported only directly on record fields"}}
-        return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"generic/applied type "+language.FormatType(t)+" has no implemented native lowering"}
+        return l.generic(t)
     case language.RefinedType(base,rules):
         result,err:=l.typ(base,field);if err!=nil{return nil,err};for _,rule:=range rules{represented:=false;if l.format!=Avro{represented=l.numericRule(result,rule)};if !represented{if l.mode==Refined||l.allowLoss{l.lose(rule,language.FormatType(base))}else{l.lose(rule,language.FormatType(base))}}};return result,nil
     case language.ArrowType(_,_):return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"function types are not wire payloads"}
@@ -142,6 +151,7 @@ func (l *lowerer) named(name string)(any,error){
     if strings.HasPrefix(name,"Int")||strings.HasPrefix(name,"UInt"){return l.fixedInteger(name)}
     decl,ok:=l.declarations[name];if !ok{return nil,l.unrepresentable(name,"unknown native payload primitive")};if len(decl.Parameters)>0{return nil,l.unrepresentable(name,"generic declarations require concrete substitution")};if decl.Body==nil{wire,ok:=l.discriminators[name];if !ok{return nil,l.unrepresentable(name,"tagged alternatives require explicit wire discriminator metadata")};if l.format==Avro{return nil,l.unrepresentable(name,"tagged discriminator objects cannot be represented as Avro unions")};return l.tagged(name,decl,wire)};if encoding,ok:=l.encodings[name];ok{return l.scalarEncoding(name,encoding)}
     if l.format==Avro{
+        if !genericRecordBody(decl.Body){return l.avroNamed(name,decl.Body)}
         if l.avroDefined[name]{return name,nil};l.avroDefined[name]=true
         result,err:=l.avroNamed(name,decl.Body);if err!=nil{delete(l.avroDefined,name);return nil,err};return result,nil
     }
@@ -196,8 +206,8 @@ func (l *lowerer) numericRule(schema any,rule language.Where)bool{object,ok:=sch
 func putConstraint(object map[string]any,key string,value any){if _,exists:=object[key];!exists{object[key]=value;return};clause:=map[string]any{key:value};if prior,ok:=object["allOf"].([]any);ok{object["allOf"]=append(prior,clause)}else{object["allOf"]=[]any{clause}}}
 
 func comparison(expr *language.Expr)(string,string,bool){match expr.Form{case language.Binary(op,left,right):
-    if isIt(left){if raw,ok:=numberLiteral(right);ok{return op,raw,true}}
-    if isIt(right){if raw,ok:=numberLiteral(left);ok{reverse:=map[string]string{"<":">",">":"<","<=":">=",">=":"<="};if flipped,exists:=reverse[op];exists{return flipped,raw,true}}}
+    if isIt(left){if raw,ok:=loweringNumberLiteral(right);ok{return op,raw,true}}
+    if isIt(right){if raw,ok:=loweringNumberLiteral(left);ok{reverse:=map[string]string{"<":">",">":"<","<=":">=",">=":"<="};if flipped,exists:=reverse[op];exists{return flipped,raw,true}}}
 case _:};return "","",false}
 func isIt(expr *language.Expr)bool{match expr.Form{case language.Variable(name):return name=="it";case _:return false}}
 func numberLiteral(expr *language.Expr)(string,bool){match expr.Form{case language.NumberLiteral(raw):return raw,true;case language.Unary(op,operand):if op=="-"{if raw,ok:=numberLiteral(operand);ok{return "-"+raw,true}};case _:};return "",false}
@@ -209,4 +219,4 @@ func multiple(expr *language.Expr)(string,bool){match expr.Form{case language.Ap
     case _:return "",false}
 case _:};return "",false}
 
-func jsonNumberExpression(expr *language.Expr)(string,bool){if raw,ok:=numberLiteral(expr);ok{return raw,true};match expr.Form{case language.Binary(op,left,right):if op=="/"{a,okA:=numberLiteral(left);b,okB:=numberLiteral(right);if okA&&okB&&b=="1"{return a,true}};case _:};return "",false}
+func jsonNumberExpression(expr *language.Expr)(string,bool){if raw,ok:=loweringNumberLiteral(expr);ok{return raw,true};match expr.Form{case language.Binary(op,left,right):if op=="/"{a,okA:=loweringNumberLiteral(left);b,okB:=loweringNumberLiteral(right);if okA&&okB&&b=="1"{return a,true}};case _:};return "",false}

@@ -25,11 +25,14 @@ type Contract struct {
 	Family           string
 	Version          *release.Version // nil means SNAPSHOT
 	Program          *language.Program
+	NativeProject    *native.Project
 	RootType         string
 	LogicalNamespace string
 	JavaPackage      string
 	NoCodegen        bool
 	Formats          []native.Format
+	Wire             native.WireMetadata
+	PropertyTests    java.PropertyTestOptions
 }
 type Layout struct {
 	SourceDir   string
@@ -105,6 +108,7 @@ func Generate(input GenerateInput) (Bundle, error) {
 	}
 	all := map[string][]byte{}
 	seen := map[string]bool{}
+	testClasses := []string{}
 	contracts := append([]Contract(nil), input.Contracts...)
 	sort.Slice(contracts, func(i, j int) bool {
 		a, b := contracts[i], contracts[j]
@@ -121,6 +125,11 @@ func Generate(input GenerateInput) (Bundle, error) {
 		return av < bv
 	})
 	for _, contract := range contracts {
+		var normalizeErr error
+		contract, normalizeErr = normalizeContract(contract)
+		if normalizeErr != nil {
+			return Bundle{}, normalizeErr
+		}
 		if !validFamilyProject(contract.Family) || contract.Program == nil || contract.RootType == "" {
 			return Bundle{}, fmt.Errorf("project.contract: family, checked program, and root type are required")
 		}
@@ -133,8 +142,19 @@ func Generate(input GenerateInput) (Bundle, error) {
 		}
 		seen[identity] = true
 		namespace := packageFor(contract, input.BaseJavaPackage)
+		formats := append([]native.Format(nil), contract.Formats...)
+		if len(formats) == 0 {
+			formats = []native.Format{native.JSONSchema, native.Avro, native.OpenAPI}
+		}
+		sort.Slice(formats, func(i, j int) bool { return formats[i] < formats[j] })
 		if !contract.NoCodegen {
-			generated, err := java.GenerateModels(contract.Program, namespace, class)
+			jsonWire := false
+			for _, format := range formats {
+				if format == native.JSONSchema || format == native.OpenAPI {
+					jsonWire = true
+				}
+			}
+			generated, err := contractSerde(contract, namespace, class, formats)
 			if err != nil {
 				return Bundle{}, err
 			}
@@ -147,6 +167,38 @@ func Generate(input GenerateInput) (Bundle, error) {
 					return Bundle{}, err
 				}
 			}
+			properties := contract.PropertyTests
+			if len(properties.Targets) == 0 {
+				properties.Targets = []java.PropertyTarget{{Name: contract.RootType}}
+			}
+			if jsonWire {
+				properties.JSONModule = "RefineJSONModule"
+			}
+			if jsonWire && contract.NativeProject != nil {
+				properties.NativeJSONValidator, err = java.JSONNativeValidatorName(contract.Program, class, properties.JSONModule)
+				if err != nil {
+					return Bundle{}, err
+				}
+			}
+			for _, format := range formats {
+				if format == native.Avro {
+					properties.AvroSerde = "RefineAvroSerde"
+				}
+			}
+			tests, err := java.GeneratePropertyTests(contract.Program, namespace, class, properties)
+			if err != nil {
+				return Bundle{}, err
+			}
+			for _, item := range tests {
+				relative := path.Join(layout.TestDir, item.Path)
+				if layout.Flat {
+					relative = path.Join(layout.TestDir, path.Base(item.Path))
+				}
+				if err = addFile(all, relative, []byte(item.Source)); err != nil {
+					return Bundle{}, err
+				}
+			}
+			testClasses = append(testClasses, namespace+"."+class+"GeneratedProperties")
 		}
 		payload, err := contract.Program.PayloadType(contract.RootType)
 		if err != nil {
@@ -172,28 +224,41 @@ func Generate(input GenerateInput) (Bundle, error) {
 		if err = addFile(all, path.Join(resourceBase, "explanation.json"), docJSON); err != nil {
 			return Bundle{}, err
 		}
-		formats := append([]native.Format(nil), contract.Formats...)
-		if len(formats) == 0 {
-			formats = []native.Format{native.JSONSchema, native.Avro, native.OpenAPI}
-		}
-		sort.Slice(formats, func(i, j int) bool { return formats[i] < formats[j] })
-		for _, format := range formats {
-			ext := string(format) + ".json"
-			for _, mode := range []native.ExportMode{native.Ordinary, native.Refined} {
-				export, err := native.LowerPayload(format, payload, native.LowerOptions{Mode: mode, AllowDocumentedLoss: true})
-				if err != nil {
-					return Bundle{}, err
-				}
-				if err = addFile(all, path.Join(resourceBase, string(mode)+"-"+ext), export.Bytes()); err != nil {
-					return Bundle{}, err
-				}
-				if mode == native.Ordinary && export.CompanionMarkdown() != "" {
-					if err = addFile(all, path.Join(resourceBase, "ordinary-"+string(format)+"-companion.md"), []byte(export.CompanionMarkdown())); err != nil {
+		if contract.NativeProject != nil {
+			if err = addNativeResources(all, resourceBase, contract.NativeProject, formats); err != nil {
+				return Bundle{}, err
+			}
+		} else {
+			for _, format := range formats {
+				ext := string(format) + ".json"
+				for _, mode := range []native.ExportMode{native.Ordinary, native.Refined} {
+					export, err := native.LowerPayloadWithMetadata(format, payload, contract.Wire, native.LowerOptions{Mode: mode, AllowDocumentedLoss: true})
+					if err != nil {
 						return Bundle{}, err
+					}
+					if err = addFile(all, path.Join(resourceBase, string(mode)+"-"+ext), export.Bytes()); err != nil {
+						return Bundle{}, err
+					}
+					if mode == native.Ordinary && export.CompanionMarkdown() != "" {
+						if err = addFile(all, path.Join(resourceBase, "ordinary-"+string(format)+"-companion.md"), []byte(export.CompanionMarkdown())); err != nil {
+							return Bundle{}, err
+						}
 					}
 				}
 			}
 		}
+	}
+	launcher := "// Generated by Refine.\npackage refine.generated;\npublic final class RefineGeneratedTests {\n    private RefineGeneratedTests() {}\n    public static void main(String[] args) {\n"
+	for _, name := range testClasses {
+		launcher += "        " + name + ".main(args);\n"
+	}
+	launcher += "    }\n}\n"
+	launcherPath := path.Join(layout.TestDir, "refine/generated/RefineGeneratedTests.java")
+	if layout.Flat {
+		launcherPath = path.Join(layout.TestDir, "RefineGeneratedTests.java")
+	}
+	if err := addFile(all, launcherPath, []byte(launcher)); err != nil {
+		return Bundle{}, err
 	}
 	names := make([]string, 0, len(all))
 	for name := range all {

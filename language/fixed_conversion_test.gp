@@ -1,0 +1,23 @@
+package language
+
+import (
+    "testing"
+    "goforge.dev/refine/validation"
+)
+
+func TestExplicitFixedWidthConversions(t *testing.T){
+    for _,test:=range []struct{typ string;expression string;want string}{
+        {"Result String Int8","toInt8 127","(Ok 127)"},
+        {"Result String Int8","toInt8 128",`(Err "conversion.overflow: value is outside Int8 range")`},
+        {"Result String UInt8","toUInt8 (-1)",`(Err "conversion.overflow: value is outside UInt8 range")`},
+        {"Result String UInt8","toUInt8 255","(Ok 255)"},
+        {"Int8","wrapInt8 128","-128"},{"UInt8","wrapUInt8 (-1)","255"},
+        {"Int","fromInt8 (wrapInt8 255)","-1"},
+        {"Int","fromInt1 (wrapInt1 1)","-1"},
+        {"[Int]","map fromUInt8 (map wrapUInt8 [-1,0,255,256])","[255, 0, 255, 0]"},
+        {"Int","fromInt8 (wrapInt8 (fromInt8 (wrapInt8 127) + 1))","-128"},
+    }{e,result,failure:=execution(t,"entry :: "+test.typ+"\nentry = "+test.expression,validation.Limits{});if failure!=nil{t.Fatal(failure)};if actual:=e.show(result,Span{});actual!=test.want{t.Fatalf("%s got%s want%s",test.expression,actual,test.want)}}
+    for _,source:=range []string{"entry :: Int8\nentry = toInt8 0","entry :: Int\nentry = fromInt8 0","entry :: Int8\nentry = wrapInt8 0.0","entry :: Int\nentry = fromInt08 (wrapInt8 0)","entry :: Int\nentry = fromInt65537 (wrapInt65537 0)"}{if _,err:=Compile(source);err==nil{t.Fatal("invalid fixed conversion accepted")}}
+    e,result,failure:=execution(t,"toInt8 :: Int -> Int\ntoInt8 x = x + 1\nentry :: Int\nentry = toInt8 2",validation.Limits{});if failure!=nil||e.show(result,Span{})!="3"{t.Fatal("built-in shadowed user function",failure)}
+    _,_,overflow:=execution(t,"entry :: Int8\nentry = wrapInt8 127 + wrapInt8 1",validation.Limits{});if overflow==nil{t.Fatal("implicit arithmetic wrapping accepted")}
+}

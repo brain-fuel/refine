@@ -4,6 +4,8 @@
 package value
 
 import (
+	"math"
+	"math/big"
 	"testing"
 	"testing/quick"
 )
@@ -153,5 +155,150 @@ func TestIntegerRemainderSemantics(t *testing.T) {
 	}
 	if _, err := Integer(1).Remainder(mustNumber(t, "1/2")); err == nil {
 		t.Fatal("fractional divisor accepted")
+	}
+}
+
+func TestFiniteBinaryFloatExactAndExplicitRounding(t *testing.T) {
+	smallest32 := mustNumber(t, "1/713623846352979940529142984724747568191373312") // 2^-149
+	largest32 := mustNumber(t, "340282346638528859811704183484516925440")
+	for _, n := range []Number{Number{}, Integer(1), mustNumber(t, "1/2"), smallest32, largest32} {
+		exact, err := n.ExactFloat32()
+		if err != nil || exact.Compare(n) != 0 {
+			t.Fatalf("Float32 exact %s: %s, %v", n.Show(), exact.Show(), err)
+		}
+	}
+	if _, err := mustNumber(t, "1/3").ExactFloat32(); err == nil {
+		t.Fatal("non-dyadic Float32 accepted")
+	}
+	if _, err := mustNumber(t, "16777217").ExactFloat32(); err == nil {
+		t.Fatal("rounded Float32 integer accepted as exact")
+	}
+	rounded, err := mustNumber(t, "16777217").RoundFloat32()
+	if err != nil || rounded.Show() != "16777216" {
+		t.Fatalf("Float32 tie = %s, %v", rounded.Show(), err)
+	}
+	rounded, err = mustNumber(t, "16777219").RoundFloat32()
+	if err != nil || rounded.Show() != "16777220" {
+		t.Fatalf("Float32 odd tie = %s, %v", rounded.Show(), err)
+	}
+	halfSmall, err := smallest32.Divide(Integer(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounded, err = halfSmall.RoundFloat32()
+	if err != nil || rounded.Sign() != 0 {
+		t.Fatalf("Float32 zero tie = %s, %v", rounded.Show(), err)
+	}
+	aboveHalf, err := smallest32.Multiply(mustNumber(t, "3/4")).RoundFloat32()
+	if err != nil || aboveHalf.Compare(smallest32) != 0 {
+		t.Fatalf("Float32 subnormal rounding = %s, %v", aboveHalf.Show(), err)
+	}
+	if _, err := mustNumber(t, "340282356779733661637539395458142568448").RoundFloat32(); err == nil {
+		t.Fatal("Float32 infinity boundary accepted")
+	}
+
+	exact64 := mustNumber(t, "9007199254740992")
+	if _, err := exact64.ExactFloat64(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mustNumber(t, "9007199254740993").ExactFloat64(); err == nil {
+		t.Fatal("rounded Float64 integer accepted as exact")
+	}
+	rounded, err = mustNumber(t, "9007199254740993").RoundFloat64()
+	if err != nil || rounded.Show() != "9007199254740992" {
+		t.Fatalf("Float64 tie = %s, %v", rounded.Show(), err)
+	}
+	negative, err := mustNumber(t, "-9007199254740995").RoundFloat64()
+	if err != nil || negative.Show() != "-9007199254740996" {
+		t.Fatalf("negative Float64 tie = %s, %v", negative.Show(), err)
+	}
+}
+
+func TestBinaryFloatQuantizationMatchesIEEEOracle(t *testing.T) {
+	exact32Bits := func(bits uint32) bool {
+		raw := math.Float32frombits(bits)
+		if math.IsNaN(float64(raw)) || math.IsInf(float64(raw), 0) {
+			return true
+		}
+		rational := new(big.Rat).SetFloat64(float64(raw))
+		n := numberFromRat(rational)
+		exact, err := n.ExactFloat32()
+		return err == nil && exact.Compare(n) == 0
+	}
+	if err := quick.Check(exact32Bits, &quick.Config{MaxCount: 3000}); err != nil {
+		t.Fatal(err)
+	}
+	exactBits := func(bits uint64) bool {
+		raw := math.Float64frombits(bits)
+		if math.IsNaN(raw) || math.IsInf(raw, 0) {
+			return true
+		}
+		rational := new(big.Rat).SetFloat64(raw)
+		if rational == nil {
+			return false
+		}
+		n := numberFromRat(rational)
+		exact, err := n.ExactFloat64()
+		return err == nil && exact.Compare(n) == 0
+	}
+	if err := quick.Check(exactBits, &quick.Config{MaxCount: 3000}); err != nil {
+		t.Fatal(err)
+	}
+	rounded := func(numerator int64, rawDenominator uint32) bool {
+		denominator := int64(rawDenominator) + 1
+		r := new(big.Rat).SetFrac(big.NewInt(numerator), big.NewInt(denominator))
+		n := numberFromRat(r)
+		want32, _ := r.Float32()
+		got32, err32 := n.RoundFloat32()
+		if math.IsInf(float64(want32), 0) {
+			if err32 == nil {
+				return false
+			}
+		} else {
+			expected := numberFromRat(new(big.Rat).SetFloat64(float64(want32)))
+			if err32 != nil || got32.Compare(expected) != 0 {
+				return false
+			}
+		}
+		want64, _ := r.Float64()
+		got64, err64 := n.RoundFloat64()
+		if math.IsInf(want64, 0) {
+			return err64 != nil
+		}
+		expected := numberFromRat(new(big.Rat).SetFloat64(want64))
+		return err64 == nil && got64.Compare(expected) == 0
+	}
+	if err := quick.Check(rounded, &quick.Config{MaxCount: 3000}); err != nil {
+		t.Fatal(err)
+	}
+
+	smallest64 := numberFromRat(new(big.Rat).SetFloat64(math.SmallestNonzeroFloat64))
+	if _, err := smallest64.ExactFloat64(); err != nil {
+		t.Fatal(err)
+	}
+	half64, err := smallest64.Divide(Integer(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := half64.RoundFloat64()
+	if err != nil || zero.Sign() != 0 {
+		t.Fatalf("Float64 zero tie = %s, %v", zero.Show(), err)
+	}
+	above64, err := smallest64.Multiply(mustNumber(t, "3/4")).RoundFloat64()
+	if err != nil || above64.Compare(smallest64) != 0 {
+		t.Fatalf("Float64 subnormal rounding = %s, %v", above64.Show(), err)
+	}
+	maximum := numberFromRat(new(big.Rat).SetFloat64(math.MaxFloat64))
+	if _, err := maximum.ExactFloat64(); err != nil {
+		t.Fatal(err)
+	}
+	previous := numberFromRat(new(big.Rat).SetFloat64(math.Nextafter(math.MaxFloat64, 0)))
+	gap := maximum.Subtract(previous)
+	halfGap, err := gap.Divide(Integer(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maximum.Add(halfGap).RoundFloat64(); err == nil {
+		t.Fatal("Float64 infinity tie accepted")
 	}
 }

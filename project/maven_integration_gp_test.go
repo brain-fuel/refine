@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"goforge.dev/refine/native"
 	"goforge.dev/refine/project"
 )
 
@@ -47,6 +49,30 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(schemaDir, version+".refine"), schema, 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// One native bundle exercises the independent native oracle and candidate
+	// filter in the same four lifecycle builds, not a second Maven campaign.
+	nativeProject, err := native.IngestProject(native.JSONSchema, []byte(`{"type":"integer","multipleOf":3}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Multiple"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeProject, err = nativeProject.WithMetadata(native.WireMetadata{PublicationNamespace: "example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeBundle, err := nativeProject.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeDir := filepath.Join(root, "schemata", "multiple")
+	if err = os.MkdirAll(nativeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(nativeDir, "SNAPSHOT.refined.json"), nativeBundle, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]}}}`), 0600); err != nil {
+		t.Fatal(err)
 	}
 	run := func() {
 		t.Helper()
@@ -91,5 +117,23 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	released, err := os.ReadFile(filepath.Join(schemaDir, "v1.0.0.refine"))
 	if err != nil || !bytes.Equal(released, schema) {
 		t.Fatal("build mutated released schema")
+	}
+	launcher, err := os.ReadFile(filepath.Join(root, "target", "generated-test-sources", "refine", "refine", "generated", "RefineGeneratedTests.java"))
+	if err != nil || !strings.Contains(string(launcher), "greeting.v1_0_0.ContractGeneratedProperties.main") || !strings.Contains(string(launcher), "greeting.snapshot.ContractGeneratedProperties.main") {
+		t.Fatal("all schema versions must execute generated properties", err)
+	}
+	impossible := []byte("package example.test\ntype Greeting = {text :: String where length it > 100}\n")
+	if err := os.WriteFile(filepath.Join(schemaDir, "SNAPSHOT.refine"), impossible, 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(maven, "--batch-mode", "--no-transfer-progress", "package")
+	command.Dir = root
+	command.Env = os.Environ()
+	if javaHome := os.Getenv("REFINE_JAVA_HOME"); javaHome != "" {
+		command.Env = append(command.Env, "JAVA_HOME="+javaHome)
+	}
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "property generation exhausted: valid Greeting") {
+		t.Fatalf("Maven must run generated properties and fail on exhaustion: %v\n%s", err, output)
 	}
 }

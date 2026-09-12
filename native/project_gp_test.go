@@ -4,6 +4,8 @@
 package native
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -130,8 +132,11 @@ func TestOpenAPIAndAvroEditableProjection(t *testing.T) {
 	if !strings.Contains(open.EditableSource(), "type PersonPayload = {id :: Int, label :: Maybe (String)}") {
 		t.Fatal(open.EditableSource())
 	}
-	if err := open.ValidateJSON([]byte(`{}`)); problemCode(err) != "native.enforcement" {
-		t.Fatalf("unsupported OpenAPI native validator not gated: %v", err)
+	if err := open.ValidateJSON([]byte(`{"id":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := open.ValidateJSON([]byte(`{}`)); problemCode(err) != "native.payload" {
+		t.Fatalf("OpenAPI required field not enforced: %v", err)
 	}
 	avro := `{"type":"record","name":"Person","fields":[{"name":"id","type":"long"},{"name":"label","type":["null","string"],"default":null}]}`
 	avroProject, err := IngestProject(Avro, []byte(avro), ProjectOptions{Root: ResourceSelector{TypeName: "PersonPayload"}})
@@ -141,6 +146,21 @@ func TestOpenAPIAndAvroEditableProjection(t *testing.T) {
 	text := avroProject.EditableSource()
 	if !strings.Contains(text, "type Person = {id :: Int64, label :: Nullable (String)}") || !strings.Contains(text, "type PersonPayload = Person") {
 		t.Fatal(text)
+	}
+}
+
+func TestAvroProjectionDoesNotDuplicateSelectedNamedRoot(t *testing.T) {
+	for _, schema := range []string{`{"type":"record","name":"Greeting","fields":[{"name":"message","type":"string"}]}`, `{"type":"enum","name":"Greeting","symbols":["Hello","Goodbye"]}`} {
+		project, err := IngestProject(Avro, []byte(schema), ProjectOptions{Root: ResourceSelector{TypeName: "Greeting"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(project.EditableSource(), "Greeting =") != 1 {
+			t.Fatalf("selected named root duplicated:\n%s", project.EditableSource())
+		}
+		if _, err := project.PayloadType(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -172,6 +192,58 @@ func TestWireMetadataCheckedAndImmutable(t *testing.T) {
 	bad.Discriminators["Payment"] = Discriminator{Field: "kind", Values: map[string]string{"Card": "same", "Bank": "same"}, Arguments: map[string][]string{"Card": {"number"}, "Bank": {"account"}}}
 	if _, err := configured.WithMetadata(bad); problemCode(err) != "native.metadata" {
 		t.Fatalf("duplicate wire tags accepted: %v", err)
+	}
+}
+
+func TestNativeConstraintCommentLookalikeDoesNotGrantEditAuthority(t *testing.T) {
+	baseline := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":1}`
+	first, err := IngestProject(JSONSchema, []byte(baseline), ProjectOptions{Root: ResourceSelector{TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := first.ResourceConstraintSource("urn:refine:root")
+	authored := "type Count = Int\n{- " + canonical + "-}\n"
+	annotated := fmt.Sprintf(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":1,"x-refine":{"source":%q,"root":"Count"}}`, authored)
+	project, err := IngestProject(JSONSchema, []byte(annotated), ProjectOptions{Root: ResourceSelector{TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited, err := project.WithEditedSource("type Count = Int\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := edited.ValidateJSON([]byte(`0`)); problemCode(err) != "native.payload" {
+		t.Fatalf("comment lookalike removed native minimum: %v", err)
+	}
+}
+
+func TestVersionOneBundleWithoutConstraintSourceFieldRestoresCanonicalUnits(t *testing.T) {
+	project, err := IngestProject(JSONSchema, []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":2}`), ProjectOptions{Root: ResourceSelector{TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := project.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(bundle, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "nativeConstraintSources")
+	bundle, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ParseBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.NativeConstraintSources()) != 1 || again.NativeConstraintSources()[0].Source == "" {
+		t.Fatal("legacy bundle did not restore canonical native units")
+	}
+	if err := again.ValidateJSON([]byte(`1`)); problemCode(err) != "native.payload" {
+		t.Fatalf("legacy bundle weakened native minimum: %v", err)
 	}
 }
 
@@ -221,6 +293,124 @@ func TestExternalJSONSchemaProvenanceRemainsResourceScoped(t *testing.T) {
 	}
 	if err := project.ValidateJSON([]byte(`6`)); problemCode(err) != "native.payload" {
 		t.Fatalf("external constraint not enforced: %v", err)
+	}
+}
+
+func TestNativeConstraintUnitSourcesAreExplicitScopedAndBundled(t *testing.T) {
+	annotated := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":1,"x-refine":{"source":"type Count = Int where it < 10","root":"Count"}}`
+	project, err := IngestProject(JSONSchema, []byte(annotated), ProjectOptions{ResourceID: "https://example.test/count.json", Root: ResourceSelector{TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(project.EditableSource(), "Native_") {
+		t.Fatal("annotation unexpectedly received detached provenance declarations")
+	}
+	units := project.NativeConstraintSources()
+	if len(units) != 1 || units[0].URI != "https://example.test/count.json" || !strings.Contains(units[0].Source, "Native_") {
+		t.Fatalf("canonical unit association absent: %+v", units)
+	}
+	rootEdited, err := project.WithEditedSource("type Count = Int where it < 20\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootEdited.NativeConstraintSources()[0].Source != units[0].Source {
+		t.Fatal("missing native units were inferred as removed by a root edit")
+	}
+	removed, err := rootEdited.WithEditedNativeConstraintSource(units[0].URI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.NativeConstraintSources()[0].Source != "" {
+		t.Fatal("explicit unit removal was not retained")
+	}
+	bundle, err := removed.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ParseBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.NativeConstraintSources()) != 1 || again.NativeConstraintSources()[0].Source != "" {
+		t.Fatal("explicit unit edit did not survive bundle round trip")
+	}
+	resources := []Resource{{URI: "https://example.test/main.json", Source: `{"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"dep.json"}`}, {URI: "https://example.test/dep.json", Source: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","maximum":9}`}}
+	external, err := IngestProjectResources(JSONSchema, resources, ProjectOptions{Root: ResourceSelector{Resource: "https://example.test/main.json", TypeName: "Count"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	units = external.NativeConstraintSources()
+	if len(units) != 1 || units[0].URI != "https://example.test/dep.json" {
+		t.Fatalf("external constraint units were not resource-scoped: %+v", units)
+	}
+}
+
+func TestEditedNativeConstraintUnitsDriveEffectiveValidationIndependently(t *testing.T) {
+	resource := "https://example.test/range.json"
+	project, err := IngestProject(JSONSchema, []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":0,"maximum":100}`), ProjectOptions{ResourceID: resource, Root: ResourceSelector{TypeName: "Range"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := project.NativeConstraintSources()
+	if len(units) != 1 {
+		t.Fatal(units)
+	}
+	constraints := project.NativeConstraints()
+	minimumName := ""
+	minimumPredicate := ""
+	for _, item := range constraints {
+		if item.Constraint.Keyword == "minimum" {
+			minimumName = item.Constraint.Name
+			minimumPredicate = item.Constraint.Predicate
+		}
+	}
+	if minimumName == "" {
+		t.Fatal("minimum provenance absent")
+	}
+	changedSource := strings.Replace(units[0].Source, minimumPredicate, "it >= 10", 1)
+	changed, err := project.WithEditedNativeConstraintSource(resource, changedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := changed.ValidateJSON([]byte(`10`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := changed.ValidateJSON([]byte(`5`)); problemCode(err) != "native.payload" {
+		t.Fatalf("edited minimum was not enforced: %v", err)
+	}
+	if err := changed.ValidateJSON([]byte(`101`)); problemCode(err) != "native.payload" {
+		t.Fatalf("untouched maximum was lost: %v", err)
+	}
+	snapshot, err := changed.Export(LowerOptions{Mode: Refined})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(snapshot.Resources()[0].Source, `"minimum": 0`) {
+		t.Fatal("project export retained stale original minimum")
+	}
+	lines := []string{}
+	for _, line := range strings.Split(units[0].Source, "\n") {
+		if !strings.Contains(line, "type "+minimumName+" =") {
+			lines = append(lines, line)
+		}
+	}
+	removed, err := project.WithEditedNativeConstraintSource(resource, strings.Join(lines, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removed.ValidateJSON([]byte(`-100`)); err != nil {
+		t.Fatalf("explicitly removed minimum remained active: %v", err)
+	}
+	if err := removed.ValidateJSON([]byte(`101`)); problemCode(err) != "native.payload" {
+		t.Fatalf("removing minimum invalidated maximum: %v", err)
+	}
+	unsupportedSource := strings.Replace(units[0].Source, minimumPredicate, "it + 1 >= 0", 1)
+	unsupported, err := project.WithEditedNativeConstraintSource(resource, unsupportedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unsupported.ValidateJSON([]byte(`5`)); problemCode(err) != "native.enforcement" {
+		t.Fatalf("unsupported scoped edit did not fail closed: %v", err)
 	}
 }
 

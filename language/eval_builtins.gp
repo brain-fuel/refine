@@ -11,6 +11,8 @@ import (
 )
 
 func (e *evaluator) builtin(name string,args []evalValue,at Span) evalValue {
+    if conversion,ok:=FixedIntegerConversion(name);ok{return e.fixedConversion(conversion,args[0],at)}
+    if conversion,ok:=FixedFloatConversion(name);ok{return e.floatConversion(conversion,args[0],at)}
     switch name {
     case "toReal","toInteger","truncate","floor","ceiling","roundHalfEven":
         n,_:=number(args[0],at);size:=uint64(len(n.Show()));if size>0&&size>(^uint64(0)-1)/size{evalError(at,"evaluation.budget","numeric conversion cost exceeds evaluation resources")};e.step(size*size+1,at)

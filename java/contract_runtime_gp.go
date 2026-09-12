@@ -91,7 +91,7 @@ public final class ContractRuntime {
         return new Type("named", type.name(), arguments, List.of(), List.of());
     }
     private static boolean numericPrimitive(String name) {
-        if (name.equals("Int") || name.equals("Real")) return true;
+        if (name.equals("Int") || name.equals("Real") || name.equals("Float32") || name.equals("Float64")) return true;
         if (!name.matches("U?Int[0-9]+")) return false;
         String digits = name.replace("UInt", "").replace("Int", "");
         BigInteger width = new BigInteger(digits);
@@ -260,6 +260,11 @@ public final class ContractRuntime {
         }
         ` + functionTypesJava + `
         NumberValue checkedNumber(Rational number, String type) {
+            if (type.equals("Float32") || type.equals("Float64")) {
+                try { if (type.equals("Float32")) number.exactFloat32(); else number.exactFloat64(); }
+                catch (ArithmeticException failure) { throw fail("evaluation.precision", "fixed-precision result is not exactly representable"); }
+                return new NumberValue(number, type);
+            }
             if (!type.equals("Int") && !type.equals("Real")) {
                 int width = Integer.parseInt(type.replace("UInt", "").replace("Int", "")); step(width);
                 try { number.fixedWidth(width, !type.startsWith("UInt")); }
@@ -507,6 +512,12 @@ public final class ContractRuntime {
             if (numericPrimitive(name)) {
                 if (!(input instanceof NumberValue n)) { work.complete(done, wrong(path, "Expected an exact number.")); return; }
                 structure.step(n.value().show().length());
+                if (name.equals("Float32") || name.equals("Float64")) {
+                    structure.step(64);
+                    try { if (name.equals("Float32")) n.value().exactFloat32(); else n.value().exactFloat64(); }
+                    catch (ArithmeticException e) { work.complete(done, wrong(path, "Number is not exactly representable as finite " + name + ".")); return; }
+                    work.complete(done, new Checked(new NumberValue(n.value(), name), true)); return;
+                }
                 if (!name.equals("Real") && !n.value().isInteger()) { work.complete(done, wrong(path, "Expected an integer without fractional coercion.")); return; }
                 if (!name.equals("Real") && !name.equals("Int")) {
                     long width = Long.parseLong(name.replace("UInt", "").replace("Int", "")); structure.step(width);
@@ -556,7 +567,7 @@ public final class ContractRuntime {
             }
             String defaultMessage = "Value must satisfy the declared condition: " + rule.predicate() + ".", diagnosticCode = code;
             Eval evaluator = new Eval(enclosing == null ? budget.beginClause(rule.steps()) : enclosing.meter.nested(rule.steps()), definitions, functions);
-            int start = enclosing == null ? 0 : level; var env = Map.of("it", input); Eval.Engine engine = evaluator.new Engine(work);
+            int start = enclosing == null ? 0 : level; evaluator.depth = start; var env = Map.of("it", input); Eval.Engine engine = evaluator.new Engine(work);
             Consumer<String> violated = message -> { checks.add(new Validation.Violated(new Validation.Diagnostic(diagnosticCode, List.of(path), rule.predicate(), message))); work.later(done); };
             work.<Val>attempt(receiver -> engine.visit(rule.expression(), env, types, start, receiver), result -> {
                 if (((BoolValue)result).value()) { checks.add(new Validation.Satisfied()); work.later(done); return; }

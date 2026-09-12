@@ -273,6 +273,13 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 			n := __gp_m9.value
 
 			v.structure.step(uint64(len(n.Show())), at)
+			if name == "Float32" || name == "Float64" {
+				v.structure.step(64, at)
+				if _, err := exactFloat(n, name); err != nil {
+					return v.wrong(path, "Number is not exactly representable as finite "+name+".")
+				}
+				return numberValue(n, name), true
+			}
 			if name != "Real" && !n.IsInteger() {
 				return v.wrong(path, "Expected an integer without fractional coercion.")
 			}

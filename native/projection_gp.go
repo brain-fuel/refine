@@ -251,7 +251,9 @@ func projectAvro(doc schemajson.Document, selector ResourceSelector) (string, er
 	if err != nil {
 		return "", err
 	}
-	p.declarations = append(p.declarations, "type "+selector.TypeName+" = "+expr)
+	if expr != selector.TypeName || !p.emitted[selector.TypeName] {
+		p.declarations = append(p.declarations, "type "+selector.TypeName+" = "+expr)
+	}
 	return strings.Join(p.declarations, "\n\n") + "\n", nil
 }
 

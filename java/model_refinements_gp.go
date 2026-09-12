@@ -7,16 +7,18 @@ package java
 // simultaneously, including inferred expression signatures and local annotations.
 // Incoming argument types are already closed: never capture their variables.
 const modelRefinementJava = `
-    static Type modelRefinement(Definition definition, int[] path, List<Type> arguments) {
+    static Type modelType(Definition definition, int[] path, List<Type> arguments) {
         if (definition == null || definition.parameters().size() != arguments.size()) throw new IllegalArgumentException("invalid generated refinement owner");
         Type type = path[0] < 0 ? definition.body() : definition.alternatives().get(path[0]).arguments().get(path[1]);
         for (int i=path[0] < 0 ? 1 : 2;i<path.length;i++) { int step=path[i]; type = step < 0 ? type.fields().get(-step-1).type() : type.arguments().get(step); }
-        if (!type.kind().equals("refined")) throw new IllegalArgumentException("invalid generated refinement path");
         if (arguments.isEmpty()) return type;
         var bindings = new HashMap<String,Type>();
         for (int i=0;i<arguments.size();i++) bindings.put(definition.parameters().get(i),arguments.get(i));
         for (Scope scope : definition.scopes()) if(bindings.containsKey(scope.parameter())) bindings.put(scope.symbol(),bindings.get(scope.parameter()));
         return new ModelTypeCloser(bindings).close(type);
+    }
+    static Type modelRefinement(Definition definition, int[] path, List<Type> arguments) {
+        Type type=modelType(definition,path,arguments);if (!type.kind().equals("refined")) throw new IllegalArgumentException("invalid generated refinement path");return type;
     }
     private static final class ModelTypeCloser {
         private final Map<String,Type> bindings;

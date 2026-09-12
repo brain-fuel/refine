@@ -17,6 +17,12 @@ func MavenSnippet(options MavenOptions)string{
   <maven.compiler.release>25</maven.compiler.release>
   <project.build.outputTimestamp>1980-01-01T00:00:02Z</project.build.outputTimestamp>
 </properties>
+<dependencies>
+  <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>3.2.1</version></dependency>
+  <dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><version>3.0.7</version></dependency>
+  <dependency><groupId>org.apache.avro</groupId><artifactId>avro</artifactId><version>1.12.0</version></dependency>
+  <dependency><groupId>org.jetbrains</groupId><artifactId>jetCheck</artifactId><version>0.3.0</version><scope>test</scope></dependency>
+</dependencies>
 <build>
   <plugins>
     <plugin>
@@ -27,6 +33,9 @@ func MavenSnippet(options MavenOptions)string{
       <groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.3</version>
       <executions><execution><id>refine-generate</id><phase>generate-sources</phase><goals><goal>exec</goal></goals>
         <configuration><executable>%s</executable>%s</configuration>
+      </execution>
+      <execution><id>refine-properties</id><phase>test</phase><goals><goal>java</goal></goals>
+        <configuration><mainClass>refine.generated.RefineGeneratedTests</mainClass><classpathScope>test</classpathScope><skip>${skipTests}</skip></configuration>
       </execution></executions>
     </plugin>
     <plugin>

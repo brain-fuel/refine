@@ -28,6 +28,9 @@ type modelEmitter struct {
     witnesses map[string]string
     typeLocations map[*language.Type]modelTypeLocation
     genericFamilies map[string]bool
+    anonymous map[*language.Type]string
+    anonymousLocations map[string]modelTypeLocation
+    anonymousDecls []language.TypeDecl
 }
 func unrefined(t *language.Type)*language.Type{for{match t.Form{case language.RefinedType(base,_):t=base;case _:return t}}}
 func integerType(name string)bool{
@@ -59,7 +62,7 @@ func (m *modelEmitter) javaType(t *language.Type)string{
     case language.NamedType(name):
         if parameter:=m.parameters[name];parameter!=""{return parameter}
         if integerType(name){return "java.math.BigInteger"}
-        switch name{case "Real":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean";case "Timestamp":return "Timestamp"}
+        switch name{case "Real","Float32","Float64":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean";case "Timestamp":return "Timestamp"}
         if _,found:=m.declarations[name];found{return m.qualified(name)}
         unsupported(t.At,"unsupported Java model type "+name)
     case language.ListType(element):return "java.util.List<"+m.javaType(element)+">"
@@ -67,7 +70,7 @@ func (m *modelEmitter) javaType(t *language.Type)string{
         name,args:=applied(t);javaName:=""
         switch name{case "Maybe":javaName="ModelMaybe";case "Nullable":javaName="ModelNullable";case "Result":javaName="ModelResult";default:if _,found:=m.declarations[name];!found{unsupported(t.At,"unknown parameterized domain model")};javaName=m.qualified(name)}
         types:=[]string{};for _,arg:=range args{types=append(types,m.javaType(arg))};return javaName+"<"+strings.Join(types,", ")+">"
-    case language.RecordType(_):unsupported(t.At,"anonymous nested record model classes remain required")
+    case language.RecordType(_):if name:=m.anonymous[t];name!=""{decl:=m.declarations[name];types:=[]string{};for _,parameter:=range decl.Parameters{if typ:=m.parameters[parameter];typ!=""{types=append(types,typ)}else{unsupported(t.At,"anonymous record is outside its generic owner scope")}};return m.qualified(name)+genericSuffix(types)};unsupported(t.At,"anonymous record model location is missing")
     case _:unsupported(t.At,"unsupported Java model representation")
     }
     return ""
@@ -77,7 +80,7 @@ func (m *modelEmitter) encode(t *language.Type,input,location string)string{
     match t.Form{
     case language.NamedType(name):
         if witness:=m.witnesses[name];witness!=""{return witness+".encode("+input+","+location+")"}
-        method:="";if integerType(name){method="integer"}else{switch name{case "Real":method="real";case "String":method="text";case "Bool":method="bool";case "Timestamp":method="timestamp"}}
+        method:="";if integerType(name){method="integer"}else{switch name{case "Real":method="real";case "Float32":method="float32";case "Float64":method="float64";case "String":method="text";case "Bool":method="bool";case "Timestamp":method="timestamp"}}
         if method!=""{return "ModelSupport."+method+"("+input+","+location+")"}
         m.javaType(t);return "ModelSupport.nonNull("+input+","+location+").rawData()"
     case language.ListType(element):
@@ -87,6 +90,7 @@ func (m *modelEmitter) encode(t *language.Type,input,location string)string{
         if _,found:=m.declarations[name];found{return "ModelSupport.nonNull("+input+","+location+").rawData()"}
         pieces:=[]string{input};for _,arg:=range args{item,where:=m.fresh(),m.fresh();pieces=append(pieces,"("+item+","+where+") -> "+m.encode(arg,item,where))};pieces=append(pieces,location)
         return "ModelSupport."+method+"("+strings.Join(pieces,",")+")"
+    case language.RecordType(_):m.javaType(t);return "ModelSupport.nonNull("+input+","+location+").rawData()"
     case _:unsupported(t.At,"unsupported model encoder")
     };return ""
 }
@@ -96,13 +100,14 @@ func (m *modelEmitter) decode(t *language.Type,input string)string{
     case language.NamedType(name):
         if witness:=m.witnesses[name];witness!=""{return witness+".decode("+input+")"}
         if integerType(name){return "((Data.Number)"+input+").value().numerator()"}
-        switch name{case "Real":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())"}
+        switch name{case "Real","Float32","Float64":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())"}
         m.javaType(t);if m.genericFamilies[m.modelRoot(name)]&&m.parents[name]!=""{return m.witness(t)+".decode("+input+")"};return m.qualified(name)+".fromDataWithoutValidation("+input+")"
     case language.ListType(element):item:=m.fresh();return "ModelSupport.list("+input+","+item+" -> "+m.decode(element,item)+")"
     case language.AppliedType(_,_):
         name,args:=applied(t);m.javaType(t);pieces:=[]string{input};for _,arg:=range args{item:=m.fresh();pieces=append(pieces,item+" -> "+m.decode(arg,item))}
         if _,found:=m.declarations[name];found{return m.witness(t)+".decode("+input+")"}
         return "ModelSupport."+strings.ToLower(name)+"("+strings.Join(pieces,",")+")"
+    case language.RecordType(_):name:=m.anonymous[t];if name==""{unsupported(t.At,"anonymous record model location is missing")};decl:=m.declarations[name];if len(decl.Parameters)==0{return m.qualified(name)+".fromDataWithoutValidation("+input+")"};arguments:=[]string{};for _,parameter:=range decl.Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"anonymous record is outside its generic owner scope")};arguments=append(arguments,witness)};return m.factoryInstance(decl,arguments)+".fromDataWithoutValidation("+input+")"
     case _:unsupported(t.At,"unsupported model decoder")
     };return ""
 }
@@ -118,6 +123,15 @@ func sourceNameKey(name string)string{
     for _,r:=range name{smallest:=r;for next:=unicode.SimpleFold(r);next!=r;next=unicode.SimpleFold(next){if next<smallest{smallest=next}};out.WriteRune(smallest)}
     return out.String()
 }
+func (m *modelEmitter) anonymousName(base string)string{name:=base+"Record";reserved:=map[string]bool{};for _,item:=range []string{m.contract,"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes","Data","Budget","Validation","ValidationException"}{reserved[sourceNameKey(item+".java")]=true};for {collision:=reserved[sourceNameKey(name+".java")];if _,found:=m.declarations[name];found{collision=true};if !collision{key:=sourceNameKey(name+".java");for existing:=range m.declarations{if sourceNameKey(existing+".java")==key{collision=true;break}}};if !collision{return name};name+="_"}}
+func (m *modelEmitter) discoverAnonymous(owner string,t *language.Type,steps []int,hint string,nested bool){if t==nil{return};m.typeLocations[t]=modelTypeLocation{owner,append([]int(nil),steps...)};child:=func(next *language.Type,step int,label string){m.discoverAnonymous(owner,next,append(append([]int(nil),steps...),step),label,true)}
+    match t.Form{
+    case language.RefinedType(base,_):m.discoverAnonymous(owner,base,append(append([]int(nil),steps...),0),hint,nested)
+    case language.ListType(element):child(element,0,hint+"Item")
+    case language.AppliedType(fn,arg):child(fn,0,hint+"Constructor");child(arg,1,hint+"Value")
+    case language.RecordType(fields):current:=hint;if nested{if found:=m.anonymous[t];found!=""{current=found}else{name:=m.anonymousName(hint);decl:=language.TypeDecl{Name:name,Parameters:append([]string(nil),m.declarations[owner].Parameters...),Body:t,At:t.At};m.anonymous[t]=name;m.anonymousLocations[name]=modelTypeLocation{owner,append([]int(nil),steps...)};m.anonymousDecls=append(m.anonymousDecls,decl);m.declarations[name]=decl;current=name}};for i,field:=range fields{child(field.Type,-i-1,current+upperFirst(fieldIdentifier(field.Name)))}
+    case _:
+    }}
 func (m *modelEmitter) recordFields(root string,t *language.Type)[]modelField{
     if fields,found:=m.fields[root];found{return fields}
     reserved:=" rawData validate fromData fromDataWithoutValidation create createWithoutValidation update updateWithoutValidation validateData read showWithoutValidation equals hashCode toString getClass wait notify notifyAll draft newDraft freeze caller raw change evidence source "
@@ -214,7 +228,7 @@ func (m *modelEmitter) model(decl language.TypeDecl)string{
 func GenerateModels(program *language.Program,namespace,contractName string)(files []File,failure error){
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     files,failure=GenerateValidator(program,namespace,contractName);if failure!=nil{return nil,failure}
-    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{},genericFamilies:map[string]bool{}}
+    m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{},genericFamilies:map[string]bool{},anonymous:map[*language.Type]string{},anonymousLocations:map[string]modelTypeLocation{}}
     sourceNames:=map[string]bool{}
     for _,file:=range files{sourceNames[sourceNameKey(path.Base(file.Path))]=true}
     for _,name:=range []string{"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes"}{sourceNames[sourceNameKey(name+".java")]=true}
@@ -223,9 +237,8 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         if decl.Name==contractName{unsupported(decl.At,"model name conflicts with the chosen contract class")}
         folded:=sourceNameKey(decl.Name+".java");if sourceNames[folded]{unsupported(decl.At,"model source names collide on a case-insensitive filesystem")};sourceNames[folded]=true
         m.declarations[decl.Name]=decl
-        if decl.Body!=nil{m.locateModelTypes(decl.Name,decl.Body,[]int{-1})}
-        for i,variant:=range decl.Variants{for j,arg:=range variant.Arguments{m.locateModelTypes(decl.Name,arg,[]int{i,j})}}
     }
+    for _,decl:=range m.module.Types{if decl.Body!=nil{m.discoverAnonymous(decl.Name,decl.Body,[]int{-1},decl.Name,false)};for i,variant:=range decl.Variants{for j,arg:=range variant.Arguments{m.discoverAnonymous(decl.Name,arg,[]int{i,j},decl.Name+upperFirst(fieldIdentifier(variant.Name))+fmt.Sprintf("Argument%d",j+1),true)}}}
     for _,decl:=range m.module.Types{
         if decl.Body==nil{continue}
         m.genericContext(decl)
@@ -234,6 +247,7 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         match unrefined(decl.Body).Form{case language.NamedType(parent):if _,found:=m.declarations[parent];found{m.parents[decl.Name]=parent;m.children[parent]=append(m.children[parent],decl.Name)};case _:}
     }
     for _,decl:=range m.module.Types{root:=m.modelRoot(decl.Name);if len(decl.Parameters)>0{m.genericFamilies[root]=true};m.shape(decl.Name)}
+    for _,decl:=range m.anonymousDecls{if len(decl.Parameters)>0{m.genericFamilies[decl.Name]=true};m.shape(decl.Name)}
     // Populate every field spelling before allocating lambda-local names.
     for _,decl:=range m.module.Types{
         root:=decl.Name;for m.parents[root]!=""{root=m.parents[root]};shape:=m.shape(root)
@@ -241,6 +255,7 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         if shape==nil{m.unionNames(root);continue}
         match shape.Form{case language.RecordType(_):m.recordFields(root,shape);case _:}
     }
+    for _,decl:=range m.anonymousDecls{m.genericContext(decl);m.recordFields(decl.Name,unrefined(decl.Body))}
     header:="// Generated by Refine: development Java 25 models. MIT licensed.\n";if namespace!=""{header+="package "+namespace+";\n"}
     prefix:=strings.ReplaceAll(namespace,".","/");parents:=[]string{}
     for _,decl:=range m.module.Types{if parent:=m.parents[decl.Name];parent!=""{parents=append(parents,"java.util.Map.entry("+javaQuote(decl.Name)+","+javaQuote(parent)+")")}}
@@ -252,5 +267,6 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         source:="";if m.genericFamilies[m.modelRoot(decl.Name)]{if m.shape(decl.Name)==nil{source=m.genericUnionModel(decl)}else{source=m.genericModel(decl)}}else if m.shape(decl.Name)==nil{source=m.unionModel(decl)}else{source=m.model(decl)}
         files=append(files,File{Path:path.Join(prefix,decl.Name+".java"),Source:header+source})
     }
+    for _,decl:=range m.anonymousDecls{m.genericContext(decl);files=append(files,File{Path:path.Join(prefix,decl.Name+".java"),Source:header+m.genericModel(decl)})}
     return files,nil
 }

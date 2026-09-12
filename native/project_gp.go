@@ -37,15 +37,17 @@ type Resource struct {
 // sidecar. The sidecar remains authoritative for constraints not represented by
 // the language projection.
 type Project struct {
-	document      *Document
-	root          ResourceSelector
-	source        string
-	program       *language.Program
-	metadata      WireMetadata
-	resources     []Resource
-	languageEntry string
-	languageFiles []language.SourceFile
-	jsonOrigins   map[string]*provenance.JSONSchema
+	document              *Document
+	root                  ResourceSelector
+	source                string
+	program               *language.Program
+	metadata              WireMetadata
+	resources             []Resource
+	languageEntry         string
+	languageFiles         []language.SourceFile
+	jsonOrigins           map[string]*provenance.JSONSchema
+	nativeUnitSources     map[string]string
+	nativeUnitsInEditable map[string]bool
 }
 
 func (p *Project) Format() Format {
@@ -132,6 +134,45 @@ func (p *Project) ResourceConstraintSource(resource string) string {
 	}
 	return p.jsonOrigins[resource].ConstraintSource()
 }
+
+// NativeConstraintSources returns the independently editable, resource-scoped
+// canonical constraint units. Unlike EditableSource, every resource is
+// represented and colliding generated declaration names never share a module.
+func (p *Project) NativeConstraintSources() []Resource {
+	if p == nil {
+		return nil
+	}
+	out := []Resource{}
+	for _, resource := range p.resources {
+		if _, ok := p.nativeUnitSources[resource.URI]; ok {
+			out = append(out, Resource{URI: resource.URI, Source: p.nativeUnitSources[resource.URI]})
+		}
+	}
+	return out
+}
+
+// WithEditedNativeConstraintSource explicitly edits one resource's provenance
+// units. Empty source is an authored removal; a missing call is never inferred
+// as removal. The source is checked and audited before replacing project state.
+func (p *Project) WithEditedNativeConstraintSource(resource, source string) (*Project, error) {
+	if p == nil || p.jsonOrigins[resource] == nil {
+		return nil, &Error{Code: "native.provenance", Format: p.Format(), Pointer: resource, Message: "resource has no JSON Schema provenance"}
+	}
+	if _, editable := p.nativeUnitSources[resource]; !editable {
+		return nil, &Error{Code: "native.provenance", Format: p.Format(), Pointer: resource, Message: "resource has no editable native constraint units"}
+	}
+	if _, err := p.jsonOrigins[resource].AuditSource(source); err != nil {
+		return nil, wrap(p.Format(), "native.provenance", resource, err)
+	}
+	copy := *p
+	copy.nativeUnitSources = copyStringMap(p.nativeUnitSources)
+	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
+	copy.nativeUnitSources[resource] = source
+	copy.nativeUnitsInEditable[resource] = false
+	copy.resources = append([]Resource(nil), p.resources...)
+	copy.metadata = copyMetadata(p.metadata)
+	return &copy, nil
+}
 func (p *Project) AuditResourceSource(resource, source string) ([]provenance.Finding, error) {
 	if p == nil || p.jsonOrigins[resource] == nil {
 		return nil, &Error{Code: "native.provenance", Format: p.Format(), Pointer: resource, Message: "resource has no JSON Schema provenance"}
@@ -215,18 +256,25 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 		if options.Root.Pointer == "" {
 			options.Root.Pointer = "/components/schemas/" + escapePointer(options.Root.TypeName)
 		}
+		if !strings.HasPrefix(options.Root.Pointer, "/components/schemas/") {
+			return nil, &Error{Code: "native.root", Format: OpenAPI, Pointer: options.Root.Pointer, Message: "selected OpenAPI root must be a Schema Object under /components/schemas"}
+		}
 		document, err = ParseOpenAPI(input, Options{})
 		if err == nil {
-			l, _ := limits(Options{})
-			rootNode, parseErr := parseYAML(input, l)
-			if parseErr != nil {
-				err = parseErr
+			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
+				source = annotated
 			} else {
-				jsonDoc, convertErr := yamlToJSONDocument(rootNode)
-				if convertErr != nil {
-					err = convertErr
+				l, _ := limits(Options{})
+				rootNode, parseErr := parseYAML(input, l)
+				if parseErr != nil {
+					err = parseErr
 				} else {
-					source, err = projectJSON(jsonDoc, options.Root, true)
+					jsonDoc, convertErr := yamlToJSONDocument(rootNode)
+					if convertErr != nil {
+						err = convertErr
+					} else {
+						source, err = projectJSON(jsonDoc, options.Root, true)
+					}
 				}
 			}
 		}
@@ -242,6 +290,12 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 			source += "\ntype " + options.Root.TypeName + " = " + rootName + "\n"
 		}
 	}
+	if annotation, ok := selectedRootAnnotation(document, options.Root); ok {
+		options.Metadata, err = mergeAnnotationMetadata(format, options.Metadata, annotation)
+		if err != nil {
+			return nil, err
+		}
+	}
 	program, err := language.Compile(source)
 	if err != nil {
 		return nil, wrap(format, "native.projection", "", err)
@@ -253,10 +307,60 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 		return nil, wrap(format, "native.metadata", "", err)
 	}
 	origins := make(map[string]*provenance.JSONSchema)
+	units := make(map[string]string)
+	linked := make(map[string]bool)
 	if document.jsonProvenance != nil {
 		origins[options.ResourceID] = document.jsonProvenance
+		canonical := document.ConstraintSource()
+		if canonical != "" {
+			units[options.ResourceID] = canonical
+			linked[options.ResourceID] = nativeConstraintUnitsUnchanged(document.jsonProvenance, source)
+		}
 	}
-	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: []Resource{{URI: options.ResourceID, Source: document.Original()}}, jsonOrigins: origins}, nil
+	return &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: []Resource{{URI: options.ResourceID, Source: document.Original()}}, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked}, nil
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, item := range in {
+		out[key] = item
+	}
+	return out
+}
+func copyBoolMap(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for key, item := range in {
+		out[key] = item
+	}
+	return out
+}
+
+// nativeConstraintUnitsUnchanged uses checked declarations and source spans
+// from provenance. Lexical lookalikes in comments or strings never establish
+// editable authority over the immutable native units.
+func nativeConstraintUnitsUnchanged(origin *provenance.JSONSchema, source string) bool {
+	if origin == nil {
+		return false
+	}
+	findings, err := origin.AuditSource(source)
+	if err != nil || len(findings) == 0 {
+		return false
+	}
+	for _, finding := range findings {
+		if provenance.StatusName(finding.Status) != "unchanged" {
+			return false
+		}
+	}
+	return true
+}
+func (p *Project) editedUnitSources(source string) map[string]string {
+	result := copyStringMap(p.nativeUnitSources)
+	for resource, linked := range p.nativeUnitsInEditable {
+		if linked {
+			result[resource] = source
+		}
+	}
+	return result
 }
 
 func rootAnnotation(document *Document, root ResourceSelector) (string, string, bool) {
@@ -273,6 +377,33 @@ func rootAnnotation(document *Document, root ResourceSelector) (string, string, 
 		}
 	}
 	return "", "", false
+}
+func selectedRootAnnotation(document *Document, root ResourceSelector) (Annotation, bool) {
+	if document == nil {
+		return Annotation{}, false
+	}
+	wanted := root.Pointer + "/x-refine"
+	if document.Format() == OpenAPI {
+		wanted = "/x-refine"
+	}
+	for _, annotation := range document.Annotations() {
+		if annotation.Pointer == wanted && annotation.Root != "" && checkedTypeName(annotation.Root) {
+			return annotation, true
+		}
+	}
+	return Annotation{}, false
+}
+func mergeAnnotationMetadata(format Format, configured WireMetadata, annotation Annotation) (WireMetadata, error) {
+	if !annotation.HasMetadata {
+		return configured, nil
+	}
+	if metadataEmpty(configured) {
+		return annotation.Metadata, nil
+	}
+	if !metadataEqual(configured, annotation.Metadata) {
+		return WireMetadata{}, &Error{Code: "native.metadata", Format: format, Pointer: annotation.Pointer + "/metadata", Message: "configured wire metadata conflicts with the embedded refined metadata"}
+	}
+	return configured, nil
 }
 
 // WithEditedSource checks an author's refinements while retaining the exact
@@ -298,6 +429,8 @@ func (p *Project) WithEditedSource(source string) (*Project, error) {
 	copy.languageFiles = nil
 	copy.metadata = copyMetadata(p.metadata)
 	copy.resources = append([]Resource(nil), p.resources...)
+	copy.nativeUnitSources = p.editedUnitSources(source)
+	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
 	return &copy, nil
 }
 
@@ -325,6 +458,8 @@ func (p *Project) WithEditedSources(entry string, sources map[string]string) (*P
 	copy.languageFiles = bundle.Files()
 	copy.metadata = copyMetadata(p.metadata)
 	copy.resources = append([]Resource(nil), p.resources...)
+	copy.nativeUnitSources = p.editedUnitSources(copy.source)
+	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
 	return &copy, nil
 }
 
@@ -338,24 +473,30 @@ func (p *Project) WithMetadata(metadata WireMetadata) (*Project, error) {
 	copy := *p
 	copy.metadata = copyMetadata(metadata)
 	copy.resources = append([]Resource(nil), p.resources...)
+	copy.nativeUnitSources = copyStringMap(p.nativeUnitSources)
+	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
 	return &copy, nil
 }
 
-// ValidateJSON enforces every retained JSON Schema keyword at the selected
-// root. Other native payload validators are explicitly gated for now.
-func (p *Project) ValidateJSON(input []byte) error {
+// ValidateJSON performs native-only validation at a JSON Schema or supported
+// OpenAPI Schema Object root. It does not run the editable language refinements.
+func (p *Project) ValidateJSON(input []byte) (failure error) {
+	defer recoverRegexEvaluation(p.Format(), &failure)
 	if p == nil || p.document == nil {
 		return &Error{Code: "native.project", Message: "a project is required"}
 	}
+	if p.Format() == OpenAPI {
+		return p.validateOpenAPIJSON(input)
+	}
 	if p.Format() != JSONSchema {
-		return &Error{Code: "native.enforcement", Format: p.Format(), Message: "native payload validation is not implemented for this format"}
+		return &Error{Code: "native.enforcement", Format: p.Format(), Message: "JSON payload validation is not implemented for this format"}
 	}
 	instance, err := schemajson.Parse(input, schemajson.Limits{})
 	if err != nil {
 		return wrap(JSONSchema, "native.payload", "", err)
 	}
-	if err := scalarJSON(instance.Root(), ""); err != nil {
-		return wrap(JSONSchema, "native.payload", "", err)
+	if err := scalarJSONWithNumericExpansion(instance.Root(), "", p.metadata.NumericExpansionLimit()); err != nil {
+		return wrap(JSONSchema, "native.limit", "", err)
 	}
 	value, err := jsonoracle.UnmarshalJSON(strings.NewReader(instance.Raw()))
 	if err != nil {
@@ -364,7 +505,11 @@ func (p *Project) ValidateJSON(input []byte) error {
 	compiler := jsonoracle.NewCompiler()
 	compiler.DefaultDraft(jsonoracle.Draft2020)
 	compiler.UseRegexpEngine(jsonRegexp)
-	for _, resource := range p.resources {
+	resources, err := p.CanonicalJSONResources()
+	if err != nil {
+		return err
+	}
+	for _, resource := range resources {
 		schemaValue, err := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
 		if err != nil {
 			return wrap(JSONSchema, "native.structure", resource.URI, err)

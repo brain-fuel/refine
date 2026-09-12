@@ -121,7 +121,8 @@ func generate(program *language.Program, payload *language.Type) (document Docum
 	if program == nil {
 		return Document{}, fmt.Errorf("explain: a checked program is required")
 	}
-	module := program.Syntax()
+	checked := program.CheckedSyntax()
+	module := checked.Syntax
 	b := builder{functions: map[string]bool{}, locals: map[string]bool{}}
 	for _, fn := range module.Functions {
 		b.functions[fn.Name] = true
@@ -157,7 +158,16 @@ func generate(program *language.Program, payload *language.Type) (document Docum
 	}
 	for _, fn := range module.Functions {
 		b.locals = map[string]bool{}
-		b.doc.definitions = append(b.doc.definitions, Definition{Name: fn.Name, Signature: language.FormatType(fn.Signature), English: "A named function. Match its arguments against the following equations in source order and evaluate the first matching body in the pattern bindings. Recursive calls use the same rules and shared evaluation budget; termination is not promised."})
+		capabilities := checked.FunctionCapabilities[fn.Name]
+		capabilityEnglish := ""
+		if len(capabilities) > 0 {
+			parts := []string{}
+			for _, item := range capabilities {
+				parts = append(parts, item.Capability+" for "+item.Variable)
+			}
+			capabilityEnglish = " Its effective statically required capabilities are " + strings.Join(parts, ", ") + "."
+		}
+		b.doc.definitions = append(b.doc.definitions, Definition{Name: fn.Name, Signature: language.FormatQualifiedType(capabilities, fn.Signature), English: "A named function. Match its arguments against the following equations in source order and evaluate the first matching body in the pattern bindings. Recursive calls use the same rules and shared evaluation budget; termination is not promised." + capabilityEnglish})
 		b.typ(fn.Name, "signature", fn.Signature)
 		for _, eq := range fn.Equations {
 			patterns, words := []string{}, []string{}
@@ -195,6 +205,10 @@ func describeType(t *language.Type) string {
 			return "an arbitrary-precision integer"
 		case "Real":
 			return "an exact rational number (rounding is never implicit)"
+		case "Float32":
+			return "a finite IEEE-754 binary32 value represented exactly (with no distinct signed-zero identity and no implicit rounding)"
+		case "Float64":
+			return "a finite IEEE-754 binary64 value represented exactly (with no distinct signed-zero identity and no implicit rounding)"
 		case "String":
 			return "text compared by exact Unicode sequence, with length measured in UTF-16 code units"
 		case "Bool":

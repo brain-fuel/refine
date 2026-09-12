@@ -19,6 +19,17 @@ authors do not provide Java generator classes or method names.
   indeterminate outcomes and optional required diagnostic codes.
 - `Replays`: a serialized jetCheck counterexample bound to one valid property,
   or to one invalid property by target and diagnostic code.
+- `JSONModule`: the generated Jackson module for a single target, enabling
+  wire round-trip and no-bytes-on-invalid-write checks. Project generation sets
+  this automatically for JSON Schema/OpenAPI outputs.
+- `AvroSerde`: the generated Apache Avro adapter for a single target. Project
+  generation sets this automatically for Avro outputs; it can coexist with the
+  JSON module in the same suite.
+- `NativeJSONValidator`: the explicit generated native-validator helper name.
+  Together with `JSONModule`, it enables that module's native-only candidate
+  predicate before positive-property refinement filtering. Native-invalid
+  structure returns false; limits, indeterminate outcomes, unexpected runtime
+  failures, and errors propagate instead of becoming discarded candidates.
 
 For every target, the emitted suite derives a structural `Data` generator. A
 valid candidate must pass the contract filter, the normal generated model
@@ -32,21 +43,32 @@ the raw value and retain the same diagnostic on validation. Thus a property is
 not satisfied merely because the validator used to select candidates returns
 the same result a second time.
 
-The generator supports booleans, strings, exact rational reals, integers,
-lists, records, nominal aliases, closed applications of generic aliases,
-refinements, and `Maybe`/`Nullable` payload constructors. Record fields may
-contain tagged unions, including directly recursive unions with at least one
-finite base alternative; jetCheck's bounded recursive generator controls their
-depth. Real generation includes genuine fractions rather than only integer-valued
-reals. Integer refinements mix broad random values with arbitrary-precision
+The generator supports booleans, strings, exact rational reals, finite exact
+`Float32`/`Float64`, RFC 3339 timestamps, arbitrary and fixed-width integers
+(through the backend's 65,536-bit resource bound), lists, records, nominal
+aliases, closed applications of generic aliases and tagged unions, refinements,
+and `Maybe`/`Nullable`/`Result` payload constructors. Closed recursive generic
+unions and records use a derived finite-base strategy: lists cut to empty,
+optional/nullable values cut to their empty constructor, unions retain finite
+alternatives, and required record fields must themselves have a finite base.
+jetCheck's bounded recursive generator controls subsequent growth. Real
+generation includes genuine fractions rather than only integer-valued reals.
+Float strategies mix exact dyadic samples with zero, subnormal/normal edges,
+precision boundaries, maximum finite values, and rejected halfway/overflow/
+non-dyadic probes; values are constructed as rationals without a host-floating
+conversion. Timestamp samples cover epoch,
+offset, long-fraction, leap-second, and upper civil-date forms. Integer
+refinements mix broad random values with arbitrary-precision
 predicate literals and their adjacent boundary values. Generated Java constructs
 those samples from decimal `BigInteger` strings, so a schema bound is not
 silently truncated to Java `int`. Lists are bounded to eight elements and
 generated strings currently use printable ASCII up to 24 characters. These are
 generation distributions, not restrictions on the schema or runtime.
 
-Top-level tagged-union targets, recursion outside the direct-union strategy,
-recursive unions without a finite base, functions as payloads, open generic
+Distinct expanding specializations are capped at 512 while deriving a strategy,
+so a family such as `Grow [a]` fails closed instead of exhausting the generator
+process. Top-level closed tagged unions also use their generated validating factories
+and readers. Recursive structures without a finite base, functions as payloads, open generic
 targets, and unknown type constructors are currently rejected before any file
 is returned. They are not replaced with fixed examples, raw `Object`, or a
 vacuously passing property. Arbitrary refinements that are structurally
@@ -88,3 +110,17 @@ The generated class has a `main` method so it can run under a plain Java test
 execution as well as a Maven-bound launcher. A generation caller should combine
 it with the matching `GenerateModels` output for the same program, namespace,
 and contract class.
+
+With a JSON module, every valid case also crosses Jackson write/read/write and
+must preserve the raw payload and stable wire text. Each targeted invalid case
+must throw a validation exception carrying the targeted diagnostic (possibly
+wrapped by Jackson) and leave the caller's byte buffer empty. These checks run
+automatically in the Maven-bound project launcher.
+
+With an Avro adapter, valid cases cross both binary and Avro JSON codecs and
+must preserve raw payloads and stable re-encoded bytes/text. Targeted invalid
+binary writes must report the intended refinement and leave the output empty.
+Before selecting a positive case, the adapter's native-only candidate predicate
+also rejects values that cannot inhabit the Avro reader schema. Codec resource
+limits and unexpected failures propagate rather than being filtered out.
+These are properties of the generated adapter, not merely compilation checks.

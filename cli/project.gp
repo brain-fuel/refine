@@ -24,6 +24,7 @@ type projectConfig struct {
     SchemaDir string `json:"schemaDir"`
     Package string `json:"package"`
     Families map[string]familyConfig `json:"families"`
+    Release releaseProjectPolicy `json:"release"`
 }
 type familyConfig struct {
     Root string `json:"root"`
@@ -31,6 +32,8 @@ type familyConfig struct {
     JavaPackage string `json:"javaPackage"`
     NoCodegen []string `json:"noCodegen"`
     Formats []native.Format `json:"formats"`
+    Wire native.WireMetadata `json:"wire"`
+    Release releaseFamilyPolicy `json:"release"`
 }
 
 func projectCommand(args []string,output,errorOutput io.Writer)int{
@@ -78,6 +81,15 @@ func readWithin(root *os.Root,name string)([]byte,error){
     data,err:=io.ReadAll(io.LimitReader(file,(16<<20)+1));if err!=nil{return nil,err};if len(data)>16<<20{return nil,fmt.Errorf("project input exceeds 16 MiB")};return data,nil
 }
 
+type schemaSourceKind uint8
+const (refineSchema schemaSourceKind=iota+1;nativeBundleSchema)
+func schemaSourceName(name string)(string,schemaSourceKind,bool){
+    if strings.HasSuffix(name,".refined.json"){return strings.TrimSuffix(name,".refined.json"),nativeBundleSchema,true}
+    if strings.HasSuffix(name,".refine"){return strings.TrimSuffix(name,".refine"),refineSchema,true}
+    return "",0,false
+}
+func emptyWireMetadata(metadata native.WireMetadata)bool{return len(metadata.ExtraFields)==0&&len(metadata.Scalars)==0&&len(metadata.Discriminators)==0&&metadata.PublicationNamespace==""&&metadata.NumericExpansion==0}
+
 func loadProject(rootPath,configPath,packageOverride string)(project.GenerateInput,error){
     root,err:=os.OpenRoot(rootPath);if err!=nil{return project.GenerateInput{},err};defer root.Close()
     config:=projectConfig{SchemaDir:"schemata",Families:map[string]familyConfig{}}
@@ -94,20 +106,28 @@ func loadProject(rootPath,configPath,packageOverride string)(project.GenerateInp
     for _,family:=range families{
         if !family.IsDir(){continue};name:=family.Name();settings:=config.Families[name];seenFamilies[name]=true
         dirName:=path.Join(config.SchemaDir,name);folder,err:=root.Open(filepath.FromSlash(dirName));if err!=nil{return input,err};entries,err:=folder.ReadDir(-1);folder.Close();if err!=nil{return input,err};sort.Slice(entries,func(i,j int)bool{return entries[i].Name()<entries[j].Name()})
-        seenVersions:=map[string]bool{}
+        seenVersions:=map[string]string{}
         for _,entry:=range entries{
-            if entry.IsDir()||!strings.HasSuffix(entry.Name(),".refine"){continue}
-            basename:=strings.TrimSuffix(entry.Name(),".refine");var version *release.Version
-            if basename!="SNAPSHOT"{if !strings.HasPrefix(basename,"v"){continue};parsed,err:=release.ParseVersion(basename);if err!=nil{return input,err};version=&parsed}
-            seenVersions[basename]=true
-            sourceID:=path.Join(dirName,entry.Name());bundle,err:=loadSources(root,sourceID);if err!=nil{return input,err}
+            if entry.IsDir(){continue};basename,kind,recognized:=schemaSourceName(entry.Name());if !recognized{continue};var version *release.Version
+            if basename!="SNAPSHOT"{if !strings.HasPrefix(basename,"v"){continue};parsed,err:=release.ParseVersion(basename);if err!=nil{return input,err};if basename!="v"+parsed.String(){return input,fmt.Errorf("schema version filename %s is not canonical",entry.Name())};version=&parsed}
+            if prior:=seenVersions[basename];prior!=""{return input,fmt.Errorf("family %s version %s is defined by both %s and %s",name,basename,prior,entry.Name())};seenVersions[basename]=entry.Name()
+            sourceID:=path.Join(dirName,entry.Name())
+            noCodegen:=false;for _,excluded:=range settings.NoCodegen{if excluded==basename{noCodegen=true}}
+            javaPackage:=settings.JavaPackage;if packageOverride!=""{javaPackage=packageOverride}
+            if kind==nativeBundleSchema{
+                raw,readErr:=readWithin(root,sourceID);if readErr!=nil{return input,readErr};imported,parseErr:=native.ParseBundle(raw);if parseErr!=nil{return input,parseErr}
+                if !emptyWireMetadata(settings.Wire){return input,fmt.Errorf("family %s native bundle owns wire metadata; family wire overrides are not allowed",name)}
+                if settings.Root!=""&&settings.Root!=imported.Root().TypeName{return input,fmt.Errorf("family %s configured root %s does not match native bundle root %s",name,settings.Root,imported.Root().TypeName)}
+                input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,NativeProject:imported,RootType:settings.Root,LogicalNamespace:settings.Package,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:settings.Formats});continue
+            }
+            bundle,err:=loadSources(root,sourceID);if err!=nil{return input,err}
             program:=bundle.Program();target:=settings.Root
             if target==""{types:=program.Syntax().Types;if len(types)==1{target=types[0].Name}else{return input,fmt.Errorf("family %s requires a root type in refine.project.json",name)}}
-            namespace:=settings.Package;if namespace==""{namespace=program.Syntax().Package};javaPackage:=settings.JavaPackage;if packageOverride!=""{javaPackage=packageOverride}
-            noCodegen:=false;for _,excluded:=range settings.NoCodegen{if excluded==basename{noCodegen=true}}
-            input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,Program:program,RootType:target,LogicalNamespace:namespace,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:settings.Formats})
+            namespace:=settings.Package;if namespace==""{namespace=program.Syntax().Package}
+            input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,Program:program,RootType:target,LogicalNamespace:namespace,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:settings.Formats,Wire:settings.Wire})
         }
-        for _,excluded:=range settings.NoCodegen{if !seenVersions[excluded]{return input,fmt.Errorf("family %s noCodegen refers to missing version %s",name,excluded)}}
+        prospective:="";if settings.Release.Intended!=nil{if parsed,e:=parsePolicyVersion(*settings.Release.Intended);e==nil{prospective="v"+parsed.String()}}
+        for _,excluded:=range settings.NoCodegen{if seenVersions[excluded]==""&&excluded!=prospective{return input,fmt.Errorf("family %s noCodegen refers to missing version %s",name,excluded)}}
     }
     for name:=range config.Families{if !seenFamilies[name]{return input,fmt.Errorf("configuration refers to missing schema family %s",name)}}
     if len(input.Contracts)==0{return input,fmt.Errorf("no schemata/<family>/{vX.Y.Z,SNAPSHOT}.refine files found")}

@@ -7,6 +7,7 @@ package project
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,11 +58,143 @@ func TestGenerateVersionedAndSnapshotDeterministic(t *testing.T) {
 	}
 }
 
+func TestGenerateAppliesExplicitWireMetadata(t *testing.T) {
+	p, err := language.Compile("type Identifier = Int\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := native.WireMetadata{Scalars: map[string]native.ScalarEncoding{"Identifier": {Kind: native.DecimalString}}}
+	input := GenerateInput{Contracts: []Contract{{Family: "id", Program: p, RootType: "Identifier", Formats: []native.Format{native.JSONSchema}, Wire: wire}}}
+	bundle, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSchema, foundSerde := false, false
+	for _, file := range bundle.Files {
+		if strings.HasSuffix(file.Path, "ordinary-json-schema.json") {
+			foundSchema = true
+			if !strings.Contains(string(file.Content), `"type": "string"`) {
+				t.Fatal("ordinary schema ignored decimal-string wire policy")
+			}
+		}
+		if strings.HasSuffix(file.Path, "RefineJSONModule.java") {
+			foundSerde = true
+			if !strings.Contains(string(file.Content), "INTEGER_STRING=true") {
+				t.Fatal("JSON serde ignored decimal-string wire policy")
+			}
+		}
+	}
+	if !foundSchema || !foundSerde {
+		t.Fatal("missing wire outputs")
+	}
+	input.Contracts[0].Wire.Scalars["Missing"] = native.ScalarEncoding{Kind: native.DecimalString}
+	if partial, err := Generate(input); err == nil || len(partial.Files) != 0 {
+		t.Fatal("invalid wire metadata emitted partial output", err)
+	}
+}
+
+func TestGenerateDefaultAndAvroOnlyAdapters(t *testing.T) {
+	for _, formats := range [][]native.Format{nil, {native.Avro}} {
+		t.Run(fmt.Sprint(formats), func(t *testing.T) {
+			p, err := language.Compile("type Greeting = { text :: String where length it > 0 }\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := Generate(GenerateInput{Contracts: []Contract{{Family: "greeting", Program: p, RootType: "Greeting", Formats: formats}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundAvro, foundProperties, foundJSON := false, false, false
+			for _, file := range bundle.Files {
+				if strings.HasSuffix(file.Path, "RefineAvroSerde.java") {
+					foundAvro = true
+				}
+				if strings.HasSuffix(file.Path, "RefineJSONModule.java") {
+					foundJSON = true
+				}
+				if strings.HasSuffix(file.Path, "ContractGeneratedProperties.java") {
+					foundProperties = true
+					source := string(file.Content)
+					for _, call := range []string{"avroWireValid(data,model)", "avroWireInvalid(bypass,code)", "AVRO.writeBinary(value)", "AVRO.readJson(json)"} {
+						if !strings.Contains(source, call) {
+							t.Fatalf("Avro property hook missing %s", call)
+						}
+					}
+				}
+			}
+			if !foundAvro || !foundProperties || foundJSON != (len(formats) == 0) {
+				t.Fatal("requested wire adapters/properties missing")
+			}
+		})
+	}
+}
+
 func TestGenerateFlatDetectsClassCollisions(t *testing.T) {
 	p := program(t)
 	_, err := Generate(GenerateInput{Layout: Layout{Flat: true}, Contracts: []Contract{{Family: "a", Program: p, RootType: "Name", Formats: []native.Format{native.JSONSchema}}, {Family: "b", Program: p, RootType: "Name", Formats: []native.Format{native.JSONSchema}}}})
 	if err == nil {
 		t.Fatal("flat class collision accepted")
+	}
+}
+
+func TestGeneratedTestsAndNoCodegen(t *testing.T) {
+	bundle, err := Generate(GenerateInput{Contracts: []Contract{{Family: "yes", Program: program(t), RootType: "Name", Formats: []native.Format{native.JSONSchema}}, {Family: "no", Program: program(t), RootType: "Name", NoCodegen: true, Formats: []native.Format{native.JSONSchema}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suite, launcher := false, false
+	for _, file := range bundle.Files {
+		if strings.HasSuffix(file.Path, "ContractGeneratedProperties.java") {
+			suite = true
+			if strings.Contains(file.Path, "/no/") {
+				t.Fatal("no-codegen emitted Java properties")
+			}
+		}
+		if strings.HasSuffix(file.Path, "RefineGeneratedTests.java") {
+			launcher = true
+			if !strings.Contains(string(file.Content), "yes.snapshot.ContractGeneratedProperties.main(args)") || strings.Contains(string(file.Content), "no.snapshot") {
+				t.Fatal("launcher selection mismatch")
+			}
+		}
+	}
+	if !suite || !launcher {
+		t.Fatal("missing schema-derived tests or executable launcher")
+	}
+	snippet := MavenSnippet(MavenOptions{})
+	for _, required := range []string{"<artifactId>jetCheck</artifactId>", "<phase>test</phase>", "<goal>java</goal>", "refine.generated.RefineGeneratedTests", "<classpathScope>test</classpathScope>"} {
+		if !strings.Contains(snippet, required) {
+			t.Fatalf("missing executable Maven integration %s", required)
+		}
+	}
+}
+
+func TestProjectAndPromotionShareMutationLock(t *testing.T) {
+	root := t.TempDir()
+	held := filepath.Join(root, release.TransactionLockName)
+	if err := os.WriteFile(held, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteOwned(root, Bundle{Files: []File{{Path: "out.java", Content: []byte("x")}}}, ""); err == nil || !strings.Contains(err.Error(), "project.lock") {
+		t.Fatal("project ignored promotion lock", err)
+	}
+	if err := os.Remove(held); err != nil {
+		t.Fatal(err)
+	}
+	original := linkOwned
+	defer func() { linkOwned = original }()
+	checked := false
+	linkOwned = func(old, new string) error {
+		checked = true
+		if _, err := release.Promote(release.PromotionInput{Root: root}); err == nil || !strings.Contains(err.Error(), "release.lock") {
+			t.Fatal("promotion ignored project lock", err)
+		}
+		return os.Link(old, new)
+	}
+	if err := WriteOwned(root, Bundle{Files: []File{{Path: "out.java", Content: []byte("x")}}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("lock overlap was not tested")
 	}
 }
 
@@ -208,5 +341,37 @@ func TestWriteOwnedRejectsStaleSymlinkSwap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "X.java")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("outside file touched")
+	}
+}
+
+func TestPlanOwnedAdditionAdoptsNewFilesAndReplacesOnlyOwnedSharedOutput(t *testing.T) {
+	root := t.TempDir()
+	if err := WriteOwned(root, Bundle{Files: []File{{Path: "shared.java", Content: []byte("old")}, {Path: "stale.java", Content: []byte("stale")}}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanOwnedAddition(root, Bundle{Files: []File{{Path: "shared.java", Content: []byte("new")}, {Path: "versioned.java", Content: []byte("versioned")}}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Artifacts) != 1 || len(plan.Replacements) != 1 || len(plan.Deletions) != 1 || plan.Deletions[0].Path != "stale.java" || plan.ManifestReplacement == nil || plan.ManifestCreate != nil {
+		t.Fatalf("unexpected ownership plan: %+v", plan)
+	}
+	if err := os.WriteFile(filepath.Join(root, "shared.java"), []byte("user edit"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PlanOwnedAddition(root, Bundle{Files: []File{{Path: "other.java", Content: []byte("other")}}}, ""); err == nil {
+		t.Fatal("edited owned output was accepted")
+	}
+}
+
+func TestPlanOwnedAdditionRejectsUnownedAndCaseFoldCollisions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "mine.java"), []byte("mine"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []Bundle{{Files: []File{{Path: "mine.java", Content: []byte("new")}}}, {Files: []File{{Path: "A.java", Content: []byte("a")}, {Path: "a.java", Content: []byte("b")}}}} {
+		if _, err := PlanOwnedAddition(root, bundle, ""); err == nil {
+			t.Fatal("unsafe ownership addition accepted")
+		}
 	}
 }

@@ -160,6 +160,88 @@ func (n Number) Wrap(bits uint, signed bool) (Number, error) {
 	return numberFromRat(new(big.Rat).SetInt(v)), nil
 }
 
+// ExactFloat32 and ExactFloat64 admit only finite IEEE-754 values whose
+// mathematical value is exactly n. They do not convert through a host float,
+// so their result is deterministic and retains the exact rational value.
+func (n Number) ExactFloat32() (Number, error) { return n.exactBinaryFloat(24, -126, 127, "Float32") }
+func (n Number) ExactFloat64() (Number, error) { return n.exactBinaryFloat(53, -1022, 1023, "Float64") }
+
+// RoundFloat32 and RoundFloat64 explicitly round to the nearest finite IEEE
+// value, resolving ties toward an even significand. A result which would be an
+// infinity is rejected. IEEE signed zero has no distinct language identity.
+func (n Number) RoundFloat32() (Number, error) { return n.roundBinaryFloat(24, -126, 127) }
+func (n Number) RoundFloat64() (Number, error) { return n.roundBinaryFloat(53, -1022, 1023) }
+
+func (n Number) exactBinaryFloat(precision uint, minExponent, maxExponent int, name string) (Number, error) {
+	rounded, err := n.roundBinaryFloat(precision, minExponent, maxExponent)
+	if err != nil {
+		return Number{}, err
+	}
+	if rounded.Compare(n) != 0 {
+		return Number{}, errors.New("number is not exactly representable as " + name)
+	}
+	return n, nil
+}
+
+// roundBinaryFloat quantizes an exact rational directly onto the IEEE normal
+// or subnormal grid. Work to locate its binary exponent is proportional to the
+// already-materialized input; callers must apply the same resource discipline
+// required by ParseNumber before invoking this unmetered value primitive.
+func (n Number) roundBinaryFloat(precision uint, minExponent, maxExponent int) (Number, error) {
+	source := n.rat()
+	sign := source.Sign()
+	if sign == 0 {
+		return Number{}, nil
+	}
+	numerator := new(big.Int).Abs(source.Num())
+	denominator := source.Denom()
+	exponent := numerator.BitLen() - denominator.BitLen()
+	if exponent >= 0 {
+		if numerator.Cmp(new(big.Int).Lsh(new(big.Int).Set(denominator), uint(exponent))) < 0 {
+			exponent--
+		}
+	} else if new(big.Int).Lsh(new(big.Int).Set(numerator), uint(-exponent)).Cmp(denominator) < 0 {
+		exponent--
+	}
+	if exponent > maxExponent {
+		return Number{}, errors.New("binary floating-point overflow")
+	}
+	step := minExponent - int(precision-1)
+	if exponent >= minExponent {
+		step = exponent - int(precision-1)
+	}
+	scaledNumerator := new(big.Int).Set(numerator)
+	scaledDenominator := new(big.Int).Set(denominator)
+	if step < 0 {
+		scaledNumerator.Lsh(scaledNumerator, uint(-step))
+	} else {
+		scaledDenominator.Lsh(scaledDenominator, uint(step))
+	}
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(scaledNumerator, scaledDenominator, remainder)
+	distance := new(big.Int).Lsh(new(big.Int).Set(remainder), 1).Cmp(scaledDenominator)
+	if distance > 0 || distance == 0 && quotient.Bit(0) == 1 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	if exponent >= minExponent && exponent == maxExponent && quotient.BitLen() > int(precision) {
+		return Number{}, errors.New("binary floating-point overflow")
+	}
+	if quotient.Sign() == 0 {
+		return Number{}, nil
+	}
+	roundedNumerator := new(big.Int).Set(quotient)
+	roundedDenominator := big.NewInt(1)
+	if step < 0 {
+		roundedDenominator.Lsh(roundedDenominator, uint(-step))
+	} else {
+		roundedNumerator.Lsh(roundedNumerator, uint(step))
+	}
+	if sign < 0 {
+		roundedNumerator.Neg(roundedNumerator)
+	}
+	return numberFromRat(new(big.Rat).SetFrac(roundedNumerator, roundedDenominator)), nil
+}
+
 // Decimal returns an exact finite decimal for wire encodings which support it.
 // Nonterminating fractions fail instead of silently rounding (e.g. 1/3).
 func (n Number) Decimal() (string, error) {

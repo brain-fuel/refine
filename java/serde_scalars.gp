@@ -1,0 +1,24 @@
+package java
+
+import (
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/native"
+)
+
+// Named wire policies stay attached to named references rather than changing
+// unrelated primitive fields through a module-wide encoding switch.
+func (e *jsonShapeEmitter) namedScalar(name string,at language.Span)(string,bool){
+    encoding,ok:=e.options.Scalars[name];if !ok{return "",false}
+    kind:="";switch encoding.Kind{case native.JSONNumber:kind="integer-number";case native.DecimalString:kind="integer-string";case native.RationalRecord:kind="rational-record";case native.TimestampString:kind="timestamp";default:unsupported(at,"unsupported named JSON scalar encoding for "+name)}
+    return "new S(\""+kind+"\",null,null,null,false,null)",true
+}
+
+func validateJSONScalarTypes(options JSONSerdeOptions,decls map[string]language.TypeDecl){
+    for name,encoding:=range options.Scalars{
+        decl,ok:=decls[name];if !ok||decl.Body==nil||len(decl.Parameters)!=0{unsupported(language.Span{},"JSON scalar policy requires a closed scalar declaration: "+name)}
+        if encoding.Precision!=0||encoding.Scale!=0{unsupported(decl.At,"precision and scale are not JSON scalar policy parameters")}
+        base:=jsonResolve(decl.Body,decls,map[string]bool{});primitive:="";match base.Form{case language.NamedType(value):primitive=value;case _:}
+        valid:=false;switch encoding.Kind{case native.JSONNumber,native.DecimalString:valid=integerType(primitive);case native.RationalRecord:valid=primitive=="Real";case native.TimestampString:valid=primitive=="Timestamp"}
+        if !valid{unsupported(decl.At,"JSON scalar policy does not match the underlying type of "+name)}
+    }
+}

@@ -172,7 +172,7 @@ func lex(source string) []token {
 			continue
 		}
 		found := false
-		for _, operator := range []string{"::", "->", ">=", "<=", "==", "/=", "&&", "||", "++"} {
+		for _, operator := range []string{"::", "->", "=>", ">=", "<=", "==", "/=", "&&", "||", "++"} {
 			if strings.HasPrefix(source[s.offset:], operator) {
 				s.advance()
 				s.advance()

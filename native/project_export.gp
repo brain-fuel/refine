@@ -1,0 +1,55 @@
+package native
+
+import (
+    "crypto/sha256"
+    "encoding/json"
+    "fmt"
+    "strings"
+
+    "goforge.dev/refine/explain"
+)
+
+// ProjectExport is an immutable same-format SNAPSHOT. Resource URI/order and
+// checked wire metadata remain explicit; Project.Resources remains the exact
+// immutable baseline.
+type ProjectExport struct{format Format;version string;root ResourceSelector;metadata WireMetadata;resources []Resource;nativeConstraintSources []Resource;companion string;losses []Loss}
+func (e *ProjectExport) Format()Format{if e==nil{return ""};return e.format}
+func (e *ProjectExport) Version()string{if e==nil{return ""};return e.version}
+func (e *ProjectExport) Root()ResourceSelector{if e==nil{return ResourceSelector{}};return e.root}
+func (e *ProjectExport) Metadata()WireMetadata{if e==nil{return WireMetadata{}};return copyMetadata(e.metadata)}
+func (e *ProjectExport) Resources()[]Resource{if e==nil{return nil};return append([]Resource(nil),e.resources...)}
+func (e *ProjectExport) NativeConstraintSources()[]Resource{if e==nil{return nil};return append([]Resource(nil),e.nativeConstraintSources...)}
+func (e *ProjectExport) CompanionMarkdown()string{if e==nil{return ""};return e.companion}
+func (e *ProjectExport) Losses()[]Loss{if e==nil{return nil};return append([]Loss(nil),e.losses...)}
+
+// Export emits the project's effective same-format resource set. Refined mode
+// embeds checked source; ordinary mode requires explicit documented-loss
+// permission for rules that the native format cannot enforce. Cross-format
+// conversion remains the separate LowerPayload API and never consumes opaque
+// project constraints.
+func (p *Project) Export(options LowerOptions)(*ProjectExport,error){
+    if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};mode:=options.Mode;if mode==""{mode=Ordinary};if mode!=Ordinary&&mode!=Refined{return nil,&Error{Code:"native.export",Format:p.Format(),Message:"mode must be ordinary or refined"}}
+    payload,err:=p.PayloadType();if err!=nil{return nil,err};explained,err:=explain.GeneratePayload(payload);if err!=nil{return nil,wrap(p.Format(),"native.export","",err)};companion:=explained.Markdown();losses:=[]Loss{};var addition map[string]any
+    canCompose:=p.Format()==JSONSchema||p.Format()==OpenAPI&&!strings.HasPrefix(p.Version(),"3.0.")
+    if canCompose{lowered,lowerErr:=LowerPayloadWithMetadata(JSONSchema,payload,p.metadata,LowerOptions{Mode:Ordinary,AllowDocumentedLoss:true});if lowerErr!=nil{if mode==Ordinary{return nil,&Error{Code:"native.unrepresentable",Format:p.Format(),Message:"editable payload cannot be composed with the native project",Cause:lowerErr}};losses=projectExplanationLosses(explained)}else{losses=lowered.Losses();addition,err=projectExportObject(lowered.Bytes());if err!=nil{return nil,err};digest:=sha256.Sum256(lowered.Bytes());addition["$id"]=fmt.Sprintf("urn:refine:snapshot:%x",digest[:16]);companion=lowered.CompanionMarkdown()}}
+    if !canCompose{lowered,lowerErr:=LowerPayloadWithMetadata(p.Format(),payload,p.metadata,LowerOptions{Mode:Ordinary,AllowDocumentedLoss:true,OpenAPIVersion:p.Version()});if lowerErr==nil{losses=lowered.Losses()}else{losses=projectExplanationLosses(explained)};losses=append(losses,projectUncomposedPayloadLoss(p));companion=projectUncomposedCompanion(companion,p)}
+    if mode==Ordinary&&len(losses)>0&&!options.AllowDocumentedLoss{return nil,&Error{Code:"native.unrepresentable",Format:p.Format(),Message:fmt.Sprintf("%d refinement rule(s) require documented-loss permission in an ordinary project export",len(losses))}}
+    resources:=p.Resources();if p.Format()==JSONSchema{resources,err=p.CanonicalJSONResources();if err!=nil{return nil,err}}
+    rootIndex:=-1;for i,resource:=range resources{if resource.URI==p.root.Resource{rootIndex=i;break}};if rootIndex<0{return nil,&Error{Code:"native.root",Format:p.Format(),Pointer:p.root.Resource,Message:"root resource is absent"}}
+    raw:=[]byte(resources[rootIndex].Source);if p.Format()==OpenAPI{raw,err=openAPIResourceJSON(raw);if err!=nil{return nil,wrap(OpenAPI,"native.export",p.root.Resource,err)}};var document any;decoder:=json.NewDecoder(strings.NewReader(string(raw)));decoder.UseNumber();if err:=decoder.Decode(&document);err!=nil{return nil,wrap(p.Format(),"native.export",p.root.Resource,err)}
+    targetPointer:=p.root.Pointer;if p.Format()==OpenAPI&&targetPointer==""{return nil,&Error{Code:"native.root",Format:OpenAPI,Message:"OpenAPI project export requires a selected Schema Object"}}
+    if p.Format()==Avro{if _,ok:=document.(map[string]any);!ok{if name,scalar:=document.(string);scalar{document=map[string]any{"type":name}}else{return nil,&Error{Code:"native.unrepresentable",Format:Avro,Message:"an Avro union root cannot carry embedded Refine documentation without changing its wire schema"}}};targetPointer=""}
+    target,err:=effectiveSchemaObject(document,targetPointer);if err!=nil{return nil,&Error{Code:"native.export",Format:p.Format(),Pointer:targetPointer,Message:"selected schema cannot be updated",Cause:err}}
+    if addition!=nil{delete(addition,"description");existing,ok:=target["allOf"].([]any);if !ok&&target["allOf"]!=nil{return nil,&Error{Code:"native.export",Format:p.Format(),Pointer:targetPointer,Message:"selected schema has malformed allOf"}};target["allOf"]=append(existing,addition)}
+    projectEmbedExplanation(target,p.Format(),companion,losses)
+    if mode==Refined{annotation:=map[string]any{"source":p.source,"root":p.root.TypeName,"metadata":p.Metadata()};if p.Format()==OpenAPI{top,ok:=document.(map[string]any);if !ok{return nil,&Error{Code:"native.export",Format:OpenAPI,Message:"OpenAPI root is not an object"}};top["x-refine"]=annotation}else{target["x-refine"]=annotation}}
+    encoded,err:=json.MarshalIndent(document,"","  ");if err!=nil{return nil,wrap(p.Format(),"native.export",p.root.Resource,err)};encoded=append(encoded,'\n');resources[rootIndex]=Resource{URI:resources[rootIndex].URI,Source:string(encoded)}
+    if _,err:=IngestProjectResources(p.Format(),resources,ProjectOptions{ResourceID:p.root.Resource,Root:p.root,Metadata:p.metadata});err!=nil{return nil,&Error{Code:"native.export-invalid",Format:p.Format(),Message:"exported resource set failed native ingestion: "+err.Error(),Cause:err}}
+    return &ProjectExport{format:p.Format(),version:p.Version(),root:p.root,metadata:copyMetadata(p.metadata),resources:resources,nativeConstraintSources:p.NativeConstraintSources(),companion:companion,losses:append([]Loss(nil),losses...)},nil
+}
+
+func projectExportObject(input []byte)(map[string]any,error){decoder:=json.NewDecoder(strings.NewReader(string(input)));decoder.UseNumber();var root map[string]any;if err:=decoder.Decode(&root);err!=nil{return nil,err};return root,nil}
+func projectExplanationLosses(document explain.Document)[]Loss{rules:=document.Rules();losses:=make([]Loss,len(rules));for i,rule:=range rules{message:="Evaluate the Refine predicate "+rule.Predicate+".";if rule.Message!=""{message+=" On failure, evaluate the author-defined message "+rule.Message+"."};losses[i]=Loss{Owner:rule.Owner,Location:rule.Location,Predicate:rule.Predicate,Explanation:message}};return losses}
+func projectUncomposedPayloadLoss(p *Project)Loss{return Loss{Owner:p.root.TypeName,Location:"$payload",Predicate:"the complete edited payload type and structure",Explanation:"This same-format export retains the native "+string(p.Format())+" resource but cannot compose the edited payload structure into that format exactly. A refinement-aware consumer must load the embedded checked source, root selector, wire metadata, and native sidecar together."}}
+func projectUncomposedCompanion(companion string,p *Project)string{notice:="## Same-format enforcement boundary\n\nThe exported "+string(p.Format())+" resource retains its native wire schema, but this format path cannot compose the complete edited payload structure. The embedded Refine source and checked wire metadata remain authoritative and must be enforced together with the native sidecar.\n";if companion==""{return notice};return companion+"\n\n"+notice}
+func projectEmbedExplanation(schema map[string]any,format Format,companion string,losses []Loss){if companion==""{return};summary:="Refine contract explanation:\n\n"+companion;if len(losses)>0{summary="Some Refine rules below are not machine-enforced by this ordinary schema. Refinement-aware validators enforce them.\n\n"+summary};field:="description";if format==Avro{field="doc"};if existing,ok:=schema[field].(string);ok&&existing!=""{summary=existing+"\n\n"+summary};schema[field]=summary}

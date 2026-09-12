@@ -29,6 +29,14 @@ Usage:
   refine compare-payload [--json] <old.refine|-> <old-type> <new.refine|-> <new-type>
   refine project generate [--root DIR] [--config FILE] [--package NAME] [--output DIR] [--flat] [--check] [--json]
   refine project maven [--executable PATH]
+  refine release plan [--root DIR] [--config FILE] [--json] [family...]
+  refine release promote [--root DIR] [--config FILE] [--json] [family...]
+  refine release recover [--root DIR]
+  refine native ingest [--resource URI] [--pointer PTR] [--type NAME] [--resources FILE] <json-schema|avro|openapi> <schema|->
+  refine native source <bundle|->
+  refine native update <bundle|-> <source.refine|->
+  refine native original <bundle|->
+  refine native validate-payload [--native-only] [--json] [--total-steps N] [--clause-steps N] <bundle|-> <payload|->
 
 typecheck checks the language's static rules; it is not yet native schema,
 satisfiability, compatibility, or payload validation.
@@ -85,6 +93,12 @@ func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	command := args[0]
 	if command == "project" {
 		return projectCommand(args[1:], output, errorOutput)
+	}
+	if command == "release" {
+		return releaseCommand(args[1:], output, errorOutput)
+	}
+	if command == "native" {
+		return nativeCommand(args[1:], input, output, errorOutput)
 	}
 	switch command {
 	case "explain", "validate", "validate-native", "satisfiable", "compare-payload":

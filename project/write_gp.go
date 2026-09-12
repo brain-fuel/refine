@@ -20,6 +20,13 @@ type ownedManifest struct {
 	Version int                          `json:"version"`
 	Files   map[string]release.ContentID `json:"files"`
 }
+type OwnedAddition struct {
+	Artifacts           []release.Artifact
+	Replacements        []release.ReplacementArtifact
+	Deletions           []release.DeletionArtifact
+	ManifestCreate      *release.Artifact
+	ManifestReplacement *release.ReplacementArtifact
+}
 
 var linkOwned = os.Link
 
@@ -30,6 +37,9 @@ func safeRelative(name string) (string, error) {
 	clean := filepath.Clean(name)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("project.path: path escapes root")
+	}
+	if release.ReservedTransactionPath(clean) {
+		return "", fmt.Errorf("project.path: reserved transaction path")
 	}
 	return clean, nil
 }
@@ -82,6 +92,119 @@ func readManifest(root, name string) (ownedManifest, error) {
 	return manifest, nil
 }
 
+// PlanOwnedAddition validates a complete generated bundle and prepares its
+// immutable additions, content-bound replacements/deletions, and exact
+// ownership-manifest transition for release.Promote. It does not write.
+func PlanOwnedAddition(rootPath string, bundle Bundle, manifestPath string) (OwnedAddition, error) {
+	root, err := filepath.Abs(rootPath)
+	if err != nil {
+		return OwnedAddition{}, err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return OwnedAddition{}, fmt.Errorf("project.root: existing non-symlink directory required")
+	}
+	if manifestPath == "" {
+		manifestPath = ".refine-generated.json"
+	}
+	manifestPath, err = safeRelative(manifestPath)
+	if err != nil {
+		return OwnedAddition{}, err
+	}
+	if err = noSymlink(root, manifestPath, true); err != nil {
+		return OwnedAddition{}, err
+	}
+	old, err := readManifest(root, manifestPath)
+	if err != nil {
+		return OwnedAddition{}, err
+	}
+	next := map[string]release.ContentID{}
+	folded := map[string]string{strings.ToLower(filepath.ToSlash(manifestPath)): manifestPath}
+	for name, digest := range old.Files {
+		portable := strings.ToLower(filepath.ToSlash(name))
+		if prior, ok := folded[portable]; ok {
+			return OwnedAddition{}, fmt.Errorf("project.collision: portable path %s collides with %s", name, prior)
+		}
+		folded[portable] = name
+		if err = noSymlink(root, name, true); err != nil {
+			return OwnedAddition{}, err
+		}
+		info, e := os.Lstat(filepath.Join(root, name))
+		if e != nil || !info.Mode().IsRegular() {
+			return OwnedAddition{}, fmt.Errorf("project.owned_missing: generated file %s disappeared", name)
+		}
+		data, e := os.ReadFile(filepath.Join(root, name))
+		if e != nil {
+			return OwnedAddition{}, e
+		}
+		if release.Digest(data) != digest {
+			return OwnedAddition{}, fmt.Errorf("project.modified: generated file %s was edited", name)
+		}
+	}
+	result := OwnedAddition{}
+	desired := map[string]bool{}
+	for _, file := range bundle.Files {
+		relative, e := safeRelative(file.Path)
+		if e != nil {
+			return OwnedAddition{}, e
+		}
+		if desired[relative] {
+			return OwnedAddition{}, fmt.Errorf("project.collision: duplicate output %s", relative)
+		}
+		desired[relative] = true
+		if relative == manifestPath {
+			return OwnedAddition{}, fmt.Errorf("project.collision: output cannot replace its ownership manifest")
+		}
+		portable := strings.ToLower(filepath.ToSlash(relative))
+		if prior, ok := folded[portable]; ok && prior != relative {
+			return OwnedAddition{}, fmt.Errorf("project.collision: portable path %s collides with %s", relative, prior)
+		}
+		folded[portable] = relative
+		if e = noSymlink(root, relative, false); e != nil {
+			return OwnedAddition{}, e
+		}
+		content := append([]byte(nil), file.Content...)
+		digest := release.Digest(content)
+		if oldDigest, owned := old.Files[relative]; owned {
+			if oldDigest != digest {
+				result.Replacements = append(result.Replacements, release.ReplacementArtifact{Path: relative, ExpectedContent: oldDigest, Content: content})
+			}
+			next[relative] = digest
+			continue
+		}
+		if _, e = os.Lstat(filepath.Join(root, relative)); e == nil {
+			return OwnedAddition{}, fmt.Errorf("project.collision: refusing existing output %s", relative)
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return OwnedAddition{}, e
+		}
+		next[relative] = digest
+		result.Artifacts = append(result.Artifacts, release.Artifact{Path: relative, Content: content})
+	}
+	for name, digest := range old.Files {
+		if !desired[name] {
+			result.Deletions = append(result.Deletions, release.DeletionArtifact{Path: name, ExpectedContent: digest})
+		}
+	}
+	sort.Slice(result.Deletions, func(i, j int) bool { return result.Deletions[i].Path < result.Deletions[j].Path })
+	manifestData, err := json.MarshalIndent(ownedManifest{Version: 1, Files: next}, "", "  ")
+	if err != nil {
+		return OwnedAddition{}, err
+	}
+	manifestData = append(manifestData, '\n')
+	manifestFull := filepath.Join(root, manifestPath)
+	current, err := os.ReadFile(manifestFull)
+	if errors.Is(err, os.ErrNotExist) {
+		created := release.Artifact{Path: manifestPath, Content: manifestData}
+		result.ManifestCreate = &created
+	} else if err != nil {
+		return OwnedAddition{}, err
+	} else {
+		replacement := release.ReplacementArtifact{Path: manifestPath, ExpectedContent: release.Digest(current), Content: manifestData}
+		result.ManifestReplacement = &replacement
+	}
+	return result, nil
+}
+
 // WriteOwned replaces only files proven unchanged since the preceding generated
 // manifest. All new bytes are staged before any output changes. Returned install
 // failures restore backups; process-crash atomicity is not promised.
@@ -94,7 +217,7 @@ func WriteOwned(rootPath string, bundle Bundle, manifestPath string) error {
 	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("project.root: existing non-symlink directory required")
 	}
-	lock := filepath.Join(root, ".refine-project.lock")
+	lock := filepath.Join(root, release.TransactionLockName)
 	lockFile, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("project.lock: %w", err)

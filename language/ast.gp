@@ -19,11 +19,16 @@ type Module struct {
     inferred map[*Expr]*Type
     functionScopes map[string]map[string]string
     declarationScopes map[string]map[string]string
+    functionCapabilities map[string][]CapabilityConstraint
 }
 type Import struct { Path string; At Span }
 type TypeDecl struct { Name string; Parameters []string; Body *Type; Variants []Variant; At Span }
 type Variant struct { Name string; Arguments []*Type; At Span }
-type Function struct { Name string; Signature *Type; Equations []Equation; At Span }
+// CapabilityConstraint is an authored type-class requirement on one of a
+// function signature's type variables. The checked snapshot separately exposes
+// the complete explicit plus inferred capability set.
+type CapabilityConstraint struct { Capability string; Variable string; At Span }
+type Function struct { Name string; Constraints []CapabilityConstraint; Signature *Type; Equations []Equation; At Span }
 type Equation struct { Patterns []*Pattern; Body *Expr; At Span }
 
 type Type struct { Form TypeForm; At Span }

@@ -73,7 +73,7 @@ func TestEvaluatorExplainedFailures(t *testing.T) {
         {"ignored eager argument","ignore :: Real -> Bool\nignore _ = True\nentry :: Bool\nentry = ignore (1 / 0)","evaluation.divide",validation.Limits{}},
         {"eager let","entry :: Bool\nentry = let ignored = 1 / 0 in True","evaluation.divide",validation.Limits{}},
         {"recursion budget","loop :: Int -> Bool\nloop n = loop n\nentry :: Bool\nentry = loop 0","evaluation.budget",validation.Limits{Clause:60}},
-        {"recursion nesting","loop :: Int -> Bool\nloop n = loop n\nentry :: Bool\nentry = loop 0","evaluation.depth",validation.Limits{}},
+        {"recursive loop exhausts logical budget","loop :: Int -> Bool\nloop n = loop n\nentry :: Bool\nentry = loop 0","evaluation.budget",validation.Limits{}},
         {"literal expansion","entry :: Real\nentry = 1e9999999999999999999999999","evaluation.budget",validation.Limits{}},
         {"unsupported regex","entry :: Bool\nentry = matches \"(?=secret-payload)\" \"secret-payload\"","regex.syntax",validation.Limits{}},
     }

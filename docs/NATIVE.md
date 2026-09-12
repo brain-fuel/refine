@@ -115,8 +115,17 @@ OpenAPI 3.0 ingestion is supported, but generation currently requires 3.1.x or
 without a separate 3.0 nullable/keyword adapter.
 
 Implemented Avro mappings include `Int32`, `Int64`, `String`, `Bool`, lists,
-records, `Nullable` unions, non-generic aliases, and recursive named records.
+records, `Nullable` unions, aliases, closed generic record applications, and
+recursive named records. Closed applications use simultaneous substitution, so
+transformed generic aliases retain their argument order. Generated
+specialization names are deterministic and cannot overwrite authored names.
 Record and union ordering is deterministic and is validated after generation.
+
+Native lowering permits at most 512 distinct closed generic specializations by
+default. `LowerOptions.MaxGenericSpecializations` can select a smaller bound or
+raise it to the hard maximum of 4,096. Recursive uses of the same specialization
+reuse its definition; families such as `Grow [a]` that continually construct a
+new specialization fail with `native.limit` instead of expanding indefinitely.
 
 `Ordinary` is the default export mode. A rule with no exact native keyword causes
 `native.unrepresentable`. A caller may explicitly set `AllowDocumentedLoss`; the
@@ -132,9 +141,10 @@ fail, even in Refined mode and even when documented loss is allowed. Current
 examples are exact `Real` values such as `1/3`, arbitrary-precision `Int` in Avro,
 and `Timestamp` without an explicit offset/spelling wire policy. Other explicit
 gaps include tagged unions without declared discriminator metadata, tagged
-discriminator objects in Avro, generic specialization, OpenAPI operations
+discriminator objects in Avro, open generic roots, OpenAPI operations
 authored from standalone language source, Avro/OpenAPI native-constraint
-provenance, and native payload validation/serde.
+provenance, OpenAPI 3.0 lowering, Avro JSON encoding, and refinement-aware Avro
+serde composition.
 The package reports these as errors and does not narrow, round, add discriminators,
 turn absence into null/default, or strip constraints silently.
 
@@ -146,6 +156,11 @@ does the same for an ordered, explicit resource set. Resource IDs must be
 absolute URIs without fragments. Resolution is confined to supplied bytes:
 there is no filesystem or network fallback. A bundle accepts at most 10,000
 resources and 64 MiB total, in addition to each parser's per-document limits.
+Before any exact-number or schema oracle parsing, JSON and YAML documents also
+receive an aggregate numeric-expansion budget. Each numeric token costs its
+source length plus the absolute decimal exponent; the hard schema/resource-set
+budget is 65,536. This rejects compact inputs such as `1e1000000000` before a
+large `big.Rat`/`BigDecimal` allocation.
 
 The initial safe structural projection covers:
 
@@ -171,12 +186,88 @@ resource; callers must not concatenate colliding resource projections. Numeric
 rules under `not`, `allOf`, conditionals, or other applicators are emitted only
 as provenance units and are never attached unconditionally to the projected
 root. `Project.ValidateJSON` evaluates the selected schema with every explicit
-resource installed, enforcing retained opaque JSON Schema keywords. OpenAPI and
-Avro payload validators are still gated with `native.enforcement`; generated
-language-only validators report `GeneratedEnforcement().Supported == false`
-until native validation is composed into those runtime paths.
+resource installed, enforcing retained opaque JSON Schema keywords.
+`NativeConstraintSources` exposes the canonical units as an ordered,
+resource-scoped editable snapshot, including units from external resources and
+units omitted from an annotation-authored root module.
+`WithEditedNativeConstraintSource` is the explicit edit boundary; absence of a
+unit from `EditableSource` is never inferred as removal. Bundles retain these
+edits, while older bundles with no unit field reconstruct the canonical defaults.
+Untouched units keep their original keyword. Explicit removal deletes only that
+keyword from the effective validator. A changed unit currently must retain its
+numeric scope and lower to exactly one native numeric assertion at its original
+Schema Object position; unsupported scoped edits fail `native.enforcement`
+instead of leaving the stale original constraint active. Arbitrary refinements
+should be added to the payload type until scoped evaluation under native
+applicators is implemented.
+`Project.ValidateAvroBinary` validates exactly one binary datum against the
+selected writer schema and its ordered named dependencies. Its independent byte
+cursor enforces exact EOF, Boolean/int/enum/union encodings, declared collection
+block sizes, duplicate map keys, UTF-8, decimal precision, UUID text, time-of-day
+ranges, and caller-bounded bytes, depth, values, and string/bytes sizes. Avro
+1.12 nanos timestamps retain their exact signed `long`; unknown or invalid
+logical types use their underlying type as the Avro specification requires.
+The known `big-decimal` logical type remains explicitly gated with
+`native.enforcement` until its value-carried scale encoding is implemented.
 
-`WithEditedSource` checks a new single-module root while retaining the sidecar.
+Avro binary validation is native-only: it does not decode into `language.Data`
+or run edited refinements. For OpenAPI 3.1 and 3.2, `ValidateJSON` compiles the
+selected Schema Object and all explicit resources with the exact-number Draft
+2020-12 oracle. YAML scalars are converted to an exact JSON value without a
+`float64` intermediary, including hexadecimal integers. The standard OAS 3.1
+base dialect (also used by OAS 3.2) is supported because its OAS-specific
+vocabulary contributes annotations rather than assertions. Draft 2020-12 is
+also accepted explicitly. Other dialects are gated instead of having required
+vocabularies ignored.
+
+For every published OpenAPI 3.0 patch version, validation first uses kin-openapi
+as the complete structural oracle, then rewrites only actual reachable Schema
+Object positions to equivalent Draft 2020-12 assertions. The adapter converts
+3.0 Boolean exclusive bounds and `nullable`, retains exact numeric source text,
+and gives Reference Object siblings their specified non-asserting behavior.
+`nullable` does not override `enum`, `allOf`, or another constraint that rejects
+null. Documentation/default/example objects are never traversed as schemas.
+This implements the normative [OpenAPI 3.0.4 Schema Object](https://spec.openapis.org/oas/v3.0.4.html#schema-object)
+subset; OpenAPI extensions remain annotations unless a separately supported
+extension contract says otherwise.
+
+`Project.ValidateJSON` is intentionally native-only. The complete Go boundary is
+`Project.DecodeAndValidateJSON`: it first runs `ValidateJSON`, decodes the
+checked JSON wire shape directly from `schemajson.Node` (never through
+`float64`), and returns the editable root's three-state refinement report.
+Missing required properties, malformed explicit scalar encodings, unknown union
+tags, and other wire/type mismatches are `native.decode` errors. Optional record
+properties become explicit `Nothing`; present ones become `Just`. Nullable
+values, preserved extras, rational records, named scalar encodings, and explicit
+union discriminators are decoded according to checked `WireMetadata`. Avro has
+a distinct binary representation and is rejected by this JSON API.
+
+Generated language-only validators report `GeneratedEnforcement().Supported ==
+false`. `java.GenerateProjectJSONSerde` is the narrower composed path: for
+projects whose native Schema Object contains no `pattern` or
+`patternProperties`, it emits an offline networknt validator and invokes it on
+reads before model construction and on staged writes before bytes reach the
+caller's generator. Jackson decoding/model construction then runs the editable
+Refine rules. The module constructor accepts native JSON resource limits; there
+is no implicit native-validation bypass. Its numeric-expansion limit is checked
+over the whole request before Jackson or networknt materializes exact numbers.
+Standalone `GenerateJSONSerde` remains
+language-only and makes no native-sidecar claim. Regex-bearing generated native
+validation is explicitly gated until a bounded ECMA-262 runtime is available.
+
+Schema keyword and dialect scans traverse only real Schema Object positions and
+follow bundled JSON Pointer references. A payload property named `pattern` or
+`$schema`, or the same spelling inside `examples`/`default`, is ordinary data and
+does not affect the schema scan. OpenAPI roots must select a Schema Object under
+`/components/schemas`; arbitrary example/default objects cannot be promoted to
+payload schemas.
+
+`WithEditedSource` replaces the complete single-module source, not merely the
+root declaration. A provenance unit is linked to that module only when every
+corresponding declaration is present and canonically unchanged according to the
+checked AST; matching text in a comment or string grants no edit authority. To
+add a root refinement while retaining linked native units, edit the existing
+`EditableSource` rather than replacing it with a root-only module.
 `WithEditedSources` uses `language.CompileSources` to resolve reusable language
 imports only from the supplied bounded source map. `PayloadType` exposes the
 checked root to Java and other generators.
@@ -185,7 +276,25 @@ checked root to Java and other generators.
 of every native resource and its URI, root selector, editable source, original
 language import graph where present, and wire metadata. `ParseBundle` revalidates
 native resources, rebuilds and checks the language graph, verifies its flattened
-source, and rechecks metadata. Bundle JSON duplicate keys are rejected.
+source, restores explicit per-resource native constraint-unit edits, and
+rechecks metadata. Bundle JSON duplicate keys are rejected.
+
+`Project.Export(LowerOptions)` emits an immutable same-format `ProjectExport`.
+The result retains resource URI/order, root selector, metadata, the exact
+resource-scoped native constraint sources, complete English companion text, and
+an explicit loss list. JSON Schema exports start from the
+effective provenance-aware resources; opaque and untouched native keywords are
+retained. JSON Schema and OpenAPI 3.1/3.2 conjunctively embed exactly lowerable
+root rules in a collision-isolated embedded schema. Refined exports also embed
+the checked source and checked wire metadata as `x-refine`; re-ingestion restores
+that metadata and rejects a conflicting caller override. OpenAPI 3.0 and Avro
+retain their native schema and embed Refine source/documentation without
+claiming unsupported ordinary assertions. Because the edited payload structure
+is not composed on those paths, they always report an explicit structural loss;
+ordinary exports require `AllowDocumentedLoss`. An Avro union root is rejected because adding properties would
+change its wire schema. Cross-format conversion remains a separate,
+fail-closed `LowerPayload` operation and never silently consumes a project's
+opaque native sidecar.
 
 ## Wire metadata
 
@@ -205,6 +314,10 @@ boundary:
   constructor argument. Coverage and arity must be exact; names may not collide
   with the discriminator;
 - `PublicationNamespace` is a dot-separated logical namespace.
+- `NumericExpansion` is the aggregate JSON numeric-expansion budget for one
+  payload. Zero selects 65,536; explicit values are checked and capped at
+  1,000,000. Go native validation and generated Java native validation use the
+  same metadata value.
 
 The APIs never derive discriminator fields, constructor argument names, numeric
 rounding, timestamp conversion, or unknown-field preservation from naming

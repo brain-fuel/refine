@@ -45,10 +45,24 @@ type WireMetadata struct {
 	Scalars              map[string]ScalarEncoding
 	Discriminators       map[string]Discriminator
 	PublicationNamespace string
+	// NumericExpansion is the aggregate decimal expansion budget for one JSON
+	// payload. Zero selects DefaultNumericExpansion; explicit values are
+	// bounded so metadata cannot disable resource protection accidentally.
+	NumericExpansion int
+}
+
+const DefaultNumericExpansion = 65536
+const MaxNumericExpansion = 1000000
+
+func (m WireMetadata) NumericExpansionLimit() int {
+	if m.NumericExpansion == 0 {
+		return DefaultNumericExpansion
+	}
+	return m.NumericExpansion
 }
 
 func copyMetadata(in WireMetadata) WireMetadata {
-	out := WireMetadata{PublicationNamespace: in.PublicationNamespace, ExtraFields: make(map[string]ExtraFieldMode), Scalars: make(map[string]ScalarEncoding), Discriminators: make(map[string]Discriminator)}
+	out := WireMetadata{PublicationNamespace: in.PublicationNamespace, NumericExpansion: in.NumericExpansion, ExtraFields: make(map[string]ExtraFieldMode), Scalars: make(map[string]ScalarEncoding), Discriminators: make(map[string]Discriminator)}
 	for k, v := range in.ExtraFields {
 		out.ExtraFields[k] = v
 	}
@@ -68,10 +82,55 @@ func copyMetadata(in WireMetadata) WireMetadata {
 	return out
 }
 
+func metadataEmpty(value WireMetadata) bool {
+	return value.PublicationNamespace == "" && value.NumericExpansion == 0 && len(value.ExtraFields) == 0 && len(value.Scalars) == 0 && len(value.Discriminators) == 0
+}
+func metadataEqual(a, b WireMetadata) bool {
+	if a.PublicationNamespace != b.PublicationNamespace || a.NumericExpansion != b.NumericExpansion || len(a.ExtraFields) != len(b.ExtraFields) || len(a.Scalars) != len(b.Scalars) || len(a.Discriminators) != len(b.Discriminators) {
+		return false
+	}
+	for key, value := range a.ExtraFields {
+		if b.ExtraFields[key] != value {
+			return false
+		}
+	}
+	for key, value := range a.Scalars {
+		if b.Scalars[key] != value {
+			return false
+		}
+	}
+	for key, value := range a.Discriminators {
+		other, ok := b.Discriminators[key]
+		if !ok || value.Field != other.Field || len(value.Values) != len(other.Values) || len(value.Arguments) != len(other.Arguments) {
+			return false
+		}
+		for name, tag := range value.Values {
+			if other.Values[name] != tag {
+				return false
+			}
+		}
+		for name, args := range value.Arguments {
+			otherArgs, ok := other.Arguments[name]
+			if !ok || len(args) != len(otherArgs) {
+				return false
+			}
+			for i := range args {
+				if args[i] != otherArgs[i] {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 var namespacePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$`)
 var memberPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validateMetadata(program *language.Program, metadata WireMetadata) error {
+	if metadata.NumericExpansion < 0 || metadata.NumericExpansion > MaxNumericExpansion {
+		return fmt.Errorf("numeric expansion must be zero or between 1 and %d", MaxNumericExpansion)
+	}
 	if metadata.PublicationNamespace != "" && !namespacePattern.MatchString(metadata.PublicationNamespace) {
 		return fmt.Errorf("publication namespace must contain dot-separated identifiers")
 	}

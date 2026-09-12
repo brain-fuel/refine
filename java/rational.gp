@@ -109,6 +109,42 @@ public record Rational(BigInteger numerator, BigInteger denominator)
         if (signed && wrapped.compareTo(modulus.shiftRight(1)) >= 0) wrapped = wrapped.subtract(modulus);
         return of(wrapped);
     }
+    /** Exact finite IEEE boundaries; no method converts through host float arithmetic. */
+    public Rational exactFloat32() { return exactBinaryFloat(24, -126, 127, "Float32"); }
+    public Rational exactFloat64() { return exactBinaryFloat(53, -1022, 1023, "Float64"); }
+    public Rational roundFloat32() { return roundBinaryFloat(24, -126, 127); }
+    public Rational roundFloat64() { return roundBinaryFloat(53, -1022, 1023); }
+    private Rational exactBinaryFloat(int precision, int minExponent, int maxExponent, String name) {
+        Rational rounded = roundBinaryFloat(precision, minExponent, maxExponent);
+        if (!rounded.equals(this)) throw new ArithmeticException("number is not exactly representable as " + name);
+        return this;
+    }
+    private Rational roundBinaryFloat(int precision, int minExponent, int maxExponent) {
+        int sign = numerator.signum(); if (sign == 0) return ZERO;
+        BigInteger absolute = numerator.abs();
+        int exponent = absolute.bitLength() - denominator.bitLength();
+        if (exponent >= 0) {
+            if (absolute.compareTo(denominator.shiftLeft(exponent)) < 0) exponent--;
+        } else if (absolute.shiftLeft(-exponent).compareTo(denominator) < 0) exponent--;
+        if (exponent > maxExponent) throw new ArithmeticException("binary floating-point overflow");
+        int step = minExponent - (precision - 1);
+        if (exponent >= minExponent) step = exponent - (precision - 1);
+        BigInteger scaledNumerator = absolute, scaledDenominator = denominator;
+        if (step < 0) scaledNumerator = scaledNumerator.shiftLeft(-step);
+        else scaledDenominator = scaledDenominator.shiftLeft(step);
+        BigInteger[] division = scaledNumerator.divideAndRemainder(scaledDenominator);
+        int distance = division[1].shiftLeft(1).compareTo(scaledDenominator);
+        BigInteger quotient = division[0];
+        if (distance > 0 || distance == 0 && quotient.testBit(0)) quotient = quotient.add(BigInteger.ONE);
+        if (exponent >= minExponent && exponent == maxExponent && quotient.bitLength() > precision)
+            throw new ArithmeticException("binary floating-point overflow");
+        if (quotient.signum() == 0) return ZERO;
+        BigInteger roundedNumerator = quotient, roundedDenominator = BigInteger.ONE;
+        if (step < 0) roundedDenominator = roundedDenominator.shiftLeft(-step);
+        else roundedNumerator = roundedNumerator.shiftLeft(step);
+        if (sign < 0) roundedNumerator = roundedNumerator.negate();
+        return new Rational(roundedNumerator, roundedDenominator);
+    }
     public String decimal() {
         try { return new BigDecimal(numerator).divide(new BigDecimal(denominator)).stripTrailingZeros().toPlainString(); }
         catch (ArithmeticException failure) { throw new ArithmeticException("number has no exact finite decimal encoding"); }

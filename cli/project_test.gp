@@ -6,7 +6,13 @@ import (
     "path/filepath"
     "strings"
     "testing"
+
+    "goforge.dev/refine/native"
 )
+
+func nativeBundleFixture(t *testing.T,namespace string)string{
+    t.Helper();schema:=`{"$id":"https://example.test/thing.json","title":"Thing","type":"string"}`;imported,err:=native.IngestProject(native.JSONSchema,[]byte(schema),native.ProjectOptions{ResourceID:"https://example.test/thing.json",Root:native.ResourceSelector{TypeName:"Thing"},Metadata:native.WireMetadata{PublicationNamespace:namespace}});if err!=nil{t.Fatal(err)};bundle,err:=imported.Bundle();if err!=nil{t.Fatal(err)};return string(bundle)
+}
 
 func projectFixture(t *testing.T)string{
     t.Helper();root:=t.TempDir()
@@ -43,6 +49,12 @@ func TestProjectCLIConfigNoCodegenAndOverrides(t *testing.T){
     if _,err:=os.Stat(filepath.Join(root,"target","generated-resources","refine","refine","foo","v0_1_0","contract.refine"));err!=nil{t.Fatal("no-codegen incorrectly removed schema resources",err)}
 }
 
+func TestProjectCLIConfiguredWireMetadata(t *testing.T){
+    root:=releaseFixture(t,map[string]string{"schemata/id/SNAPSHOT.refine":"type Identifier = Int\n"},`{"families":{"id":{"formats":["json-schema"],"wire":{"Scalars":{"Identifier":{"Kind":"decimal-string"}}}}}}`)
+    var output,errors bytes.Buffer;if status:=Run([]string{"project","generate","--root",root},nil,&output,&errors);status!=0{t.Fatalf("wire configuration failed %d: %s %s",status,output.String(),errors.String())}
+    schema,err:=os.ReadFile(filepath.Join(root,"target/generated-resources/refine/refine/id/snapshot/ordinary-json-schema.json"));if err!=nil||!strings.Contains(string(schema),`"type": "string"`){t.Fatalf("wire policy missing from native export: %s %v",schema,err)}
+}
+
 func TestProjectCLIInputAndConfigFailures(t *testing.T){
     for _,config:=range []string{`{"schemaDir":"../escape"}`,`{"families":{},"families":{}}`,`{"unsupported":true}`,`{"families":{"missing":{"root":"T"}}}`,`{"families":{"foo":{"noCodegen":["v99.0.0"]}}}`} {
         root:=projectFixture(t);if err:=os.WriteFile(filepath.Join(root,"refine.project.json"),[]byte(config),0600);err!=nil{t.Fatal(err)}
@@ -57,6 +69,27 @@ func TestProjectCLILoadsOfflineImports(t *testing.T){
     for name,source:=range files{if err:=os.WriteFile(filepath.Join(root,filepath.FromSlash(name)),[]byte(source),0600);err!=nil{t.Fatal(err)}}
     var out,stderr bytes.Buffer;if Run([]string{"project","generate","--root",root},nil,&out,&stderr)!=0{t.Fatal(out.String(),stderr.String())}
     data,err:=os.ReadFile(filepath.Join(root,"target","generated-resources","refine","refine","foo","snapshot","contract.refine"));if err!=nil||!strings.Contains(string(data),"type ID")||strings.Contains(string(data),"import "){t.Fatal("imports not bundled",err)}
+}
+
+func TestProjectLoaderIncludesNativeBundlesAndRejectsAmbiguousVersions(t *testing.T){
+    config:=`{"package":"base.pkg","families":{"foo":{"formats":["json-schema"]}}}`;root:=releaseFixture(t,map[string]string{"schemata/foo/v1.0.0.refine":"type Thing = String\n","schemata/foo/SNAPSHOT.refined.json":nativeBundleFixture(t,"native.published")},config)
+    input,err:=loadProject(root,"refine.project.json","override.pkg");if err!=nil{t.Fatal(err)};if len(input.Contracts)!=2{t.Fatalf("native bundle was silently omitted: %+v",input.Contracts)};var found bool;for _,contract:=range input.Contracts{if contract.Version==nil{found=true;if contract.NativeProject==nil||contract.Program!=nil||contract.RootType!=""{t.Fatalf("native contract was flattened or given an invented root: %+v",contract)};if contract.JavaPackage!="override.pkg"||contract.LogicalNamespace!=""{t.Fatalf("native package override priority changed: %+v",contract)};if len(contract.Formats)!=1||contract.Formats[0]!=native.JSONSchema{t.Fatalf("native origin format lost: %+v",contract.Formats)}}};if !found{t.Fatal("native snapshot missing")}
+    if err=os.WriteFile(filepath.Join(root,"schemata/foo/SNAPSHOT.refine"),[]byte("type Thing = String\n"),0600);err!=nil{t.Fatal(err)};if _,err=loadProject(root,"refine.project.json","");err==nil||!strings.Contains(err.Error(),"defined by both"){t.Fatalf("multi-extension version collision accepted: %v",err)}
+}
+
+func TestProjectLoaderNativeBundleOwnsRootAndWireMetadata(t *testing.T){
+    files:=map[string]string{"schemata/foo/SNAPSHOT.refined.json":nativeBundleFixture(t,"native.published")}
+    configs:=[]string{`{"families":{"foo":{"root":"Other","formats":["json-schema"]}}}`,`{"families":{"foo":{"formats":["json-schema"],"wire":{"PublicationNamespace":"override"}}}}`}
+    for _,config:=range configs{root:=releaseFixture(t,files,config);if _,err:=loadProject(root,"refine.project.json","");err==nil{t.Fatalf("native bundle authority override accepted: %s",config)}}
+}
+
+func TestProjectLoaderAllowsProspectiveNativeNoCodegenVersion(t *testing.T){
+    config:=`{"families":{"foo":{"formats":["json-schema"],"noCodegen":["v0.1.0"],"release":{"change":"feature","intended":"0.1.0"}}}}`;root:=releaseFixture(t,map[string]string{"schemata/foo/SNAPSHOT.refined.json":nativeBundleFixture(t,"native.published")},config);input,err:=loadProject(root,"refine.project.json","");if err!=nil{t.Fatal(err)};if len(input.Contracts)!=1||input.Contracts[0].NoCodegen{t.Fatalf("prospective exclusion incorrectly suppressed the snapshot: %+v",input.Contracts)}
+}
+
+func TestProjectCLIGeneratesNativeBundleWithoutDiscardingIt(t *testing.T){
+    original:=nativeBundleFixture(t,"published.contracts");config:=`{"families":{"foo":{"formats":["json-schema"]}}}`;root:=releaseFixture(t,map[string]string{"schemata/foo/SNAPSHOT.refined.json":original},config);var out,stderr bytes.Buffer;if code:=Run([]string{"project","generate","--root",root},nil,&out,&stderr);code!=0{t.Fatalf("native project generation %d: %s / %s",code,&out,&stderr)}
+    copied,err:=os.ReadFile(filepath.Join(root,"target/generated-resources/refine/refine/foo/snapshot/contract.refined.json"));if err!=nil||string(copied)!=original{t.Fatalf("native bundle resource changed: %v",err)};if _,err=os.Stat(filepath.Join(root,"target/generated-sources/refine/published/contracts/foo/snapshot/Thing.java"));err!=nil{t.Fatal("native publication namespace was not used",err)}
 }
 
 func TestMavenCLIIsOptInOutputOnly(t *testing.T){

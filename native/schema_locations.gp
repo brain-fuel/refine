@@ -1,0 +1,21 @@
+package native
+
+import (
+    "fmt"
+    "net/url"
+    "strings"
+
+    "goforge.dev/refine/schemajson"
+)
+
+// JSONSchemaKeywordLocations returns keyword locations only from actual Schema
+// Objects reachable from the selected root (or complete JSON Schema resources).
+// Object members in examples/defaults are never reinterpreted as keywords.
+func (p *Project) JSONSchemaKeywordLocations(keywords ...string)([]string,error){resources,err:=p.canonicalJSONResources();if err!=nil{return nil,err};wanted:=map[string]bool{};for _,keyword:=range keywords{wanted[keyword]=true};locations:=[]string{};err=p.walkJSONSchemaLocations(resources,func(resource,path string,node schemajson.Node)error{for keyword:=range wanted{if _,ok:=node.Lookup(keyword);ok{locations=append(locations,resource+"#"+path+"/"+escapePointer(keyword))}};return nil});return locations,err}
+
+func (p *Project) walkJSONSchemaLocations(resources []Resource,visit func(string,string,schemajson.Node)error)error{docs:=map[string]schemajson.Document{};for _,resource:=range resources{doc,err:=schemajson.Parse([]byte(resource.Source),schemajson.Limits{});if err!=nil{return err};docs[resource.URI]=doc};seen:=map[string]bool{}
+    var walk func(string,string,schemajson.Node)error;walk=func(resource,path string,node schemajson.Node)error{key:=resource+"#"+path;if seen[key]{return nil};seen[key]=true;if kind:=schemajson.KindName(node.Kind());kind!="object"&&kind!="boolean"{return fmt.Errorf("schema at %s is not an object or Boolean",key)};if schemajson.KindName(node.Kind())=="boolean"{return nil};if err:=visit(resource,path,node);err!=nil{return err}
+        if refNode,ok:=node.Lookup("$ref");ok{raw,ok:=nodeString(refNode);if !ok{return fmt.Errorf("reference at %s/$ref is not a string",key)};base,err:=url.Parse(resource);if err!=nil{return err};relative,err:=url.Parse(raw);if err!=nil{return err};resolved:=base.ResolveReference(relative);pointer:=resolved.Fragment;resolved.Fragment="";targetDoc,ok:=docs[resolved.String()];if !ok{return fmt.Errorf("schema reference %s is absent from explicit resources",resolved.String())};if pointer!=""&&!strings.HasPrefix(pointer,"/"){return fmt.Errorf("schema anchor reference %s cannot yet be indexed exactly",raw)};target,err:=targetDoc.At(pointer);if err!=nil{return err};if err:=walk(resolved.String(),pointer,target);err!=nil{return err}}
+        for _,name:=range []string{"additionalProperties","unevaluatedProperties","propertyNames","contains","items","additionalItems","unevaluatedItems","if","then","else","not","contentSchema"}{if child,ok:=node.Lookup(name);ok{if err:=walk(resource,path+"/"+name,child);err!=nil{return err}}};for _,name:=range []string{"$defs","definitions","properties","patternProperties","dependentSchemas"}{if children,ok:=node.Lookup(name);ok&&schemajson.KindName(children.Kind())=="object"{for _,member:=range children.Members(){memberName,_:=member.Key.UTF8();if err:=walk(resource,path+"/"+name+"/"+escapePointer(memberName),member.Value);err!=nil{return err}}}};for _,name:=range []string{"allOf","anyOf","oneOf","prefixItems"}{if children,ok:=node.Lookup(name);ok&&schemajson.KindName(children.Kind())=="array"{for i,child:=range children.Elements(){if err:=walk(resource,fmt.Sprintf("%s/%s/%d",path,name,i),child);err!=nil{return err}}}};return nil}
+    if p.Format()==JSONSchema{for uri,doc:=range docs{if err:=walk(uri,"",doc.Root());err!=nil{return err}};return nil};rootDoc,ok:=docs[p.root.Resource];if !ok{return fmt.Errorf("root resource is absent")};rootIsOpenAPI:=false;if _,ok:=rootDoc.Root().Lookup("openapi");ok{rootIsOpenAPI=true};if rootIsOpenAPI&&!strings.HasPrefix(p.root.Pointer,"/components/schemas/"){return fmt.Errorf("selected OpenAPI root must be a Schema Object under /components/schemas")};target,err:=rootDoc.At(p.root.Pointer);if err!=nil{return err};if err:=walk(p.root.Resource,p.root.Pointer,target);err!=nil{return err};for uri,doc:=range docs{if uri==p.root.Resource{continue};if _,isOpenAPI:=doc.Root().Lookup("openapi");!isOpenAPI{if err:=walk(uri,"",doc.Root());err!=nil{return err}}};return nil
+}

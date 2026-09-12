@@ -38,29 +38,32 @@ func (m *modelEmitter) witness(t *language.Type)string{
         if found:=m.witnesses[name];found!=""{return found}
         if name=="Int"{return "ModelTypes.integer()"}
         if integerType(name){method:="integer";digits:=strings.TrimPrefix(name,"Int");if strings.HasPrefix(name,"UInt"){method="unsignedInteger";digits=strings.TrimPrefix(name,"UInt")};return "ModelTypes."+method+"("+digits+"L)"}
-        switch name{case "String":return "ModelTypes.text()";case "Bool":return "ModelTypes.bool()";case "Real":return "ModelTypes.real()";case "Timestamp":return "ModelTypes.timestamp()"}
+        switch name{case "String":return "ModelTypes.text()";case "Bool":return "ModelTypes.bool()";case "Real":return "ModelTypes.real()";case "Float32":return "ModelTypes.float32()";case "Float64":return "ModelTypes.float64()";case "Timestamp":return "ModelTypes.timestamp()"}
         if _,found:=m.declarations[name];found{return "ModelTypes.for"+name+"()"}
     case language.ListType(element):return "ModelTypes.list("+m.witness(element)+")"
     case language.AppliedType(_,_):
         name,args:=applied(t);parts:=[]string{};for _,arg:=range args{parts=append(parts,m.witness(arg))}
         method:=strings.ToLower(name);if _,found:=m.declarations[name];found{method="for"+name}
         return "ModelTypes."+method+"("+strings.Join(parts,",")+")"
+    case language.RecordType(_):name:=m.anonymous[t];if name!=""{decl:=m.declarations[name];parts:=[]string{};for _,parameter:=range decl.Parameters{witness:=m.witnesses[parameter];if witness==""{unsupported(t.At,"anonymous record is outside its generic owner scope")};parts=append(parts,witness)};return "ModelTypes.for"+name+"("+strings.Join(parts,",")+")"}
     case _:
     };unsupported(t.At,"unsupported model type witness");return ""
 }
 func (m *modelEmitter) modelTypes()string{
     var out strings.Builder;out.WriteString(modelTypesJava)
-    for _,decl:=range m.module.Types{
+    declarations:=append([]language.TypeDecl(nil),m.module.Types...);declarations=append(declarations,m.anonymousDecls...)
+    for _,decl:=range declarations{
         m.genericContext(decl);types,parameters,arguments:=m.genericParts(decl);suffix:=genericSuffix(types);full:=m.qualified(decl.Name)+suffix
         prefix:="";if suffix!=""{prefix=suffix+" "}
-        rawType:="ModelType.named("+javaQuote(decl.Name)+")"
+        rawType:="ModelType.named("+javaQuote(decl.Name)+")";method:="of";identity:=""
         for _,arg:=range arguments{rawType="ModelType.applied("+rawType+",java.util.Objects.requireNonNull("+arg+").type)"}
+        if location,anonymous:=m.anonymousLocations[decl.Name];anonymous{steps:=[]string{};types:=[]string{};for _,step:=range location.steps{steps=append(steps,fmt.Sprint(step))};for _,arg:=range arguments{types=append(types,arg+".type")};rawType=m.contract+".modelType("+javaQuote(location.owner)+",new int[]{"+strings.Join(steps,",")+"},"+javaList(types)+")";method="inline";identity=javaQuote(location.owner+":"+strings.Join(steps,","))+","}
         callArgs:=append(append([]string{},arguments...),"raw")
         decoder:=m.qualified(decl.Name)+".fromDataWithoutValidation("+strings.Join(callArgs,",")+")"
         if m.genericFamilies[m.modelRoot(decl.Name)]&&m.parents[decl.Name]!=""{decoder=m.factoryInstance(decl,arguments)+".fromDataWithoutValidation(raw)"}
         extra:="";if len(arguments)>0{extra=","+strings.Join(arguments,",")}
         parent:="";if m.parents[decl.Name]!=""{parent=".withParent(() -> "+m.witness(unrefined(decl.Body))+")"}
-        fmt.Fprintf(&out,"    public static %sModelType<%s> for%s(%s) { return ModelType.<%s>of(%s,(value,where) -> ModelSupport.nonNull(value,where).rawData(),raw -> %s%s)%s; }\n",prefix,full,decl.Name,strings.Join(parameters,","),full,rawType,decoder,extra,parent)
+        fmt.Fprintf(&out,"    public static %sModelType<%s> for%s(%s) { return ModelType.<%s>%s(%s%s,(value,where) -> ModelSupport.nonNull(value,where).rawData(),raw -> %s%s)%s; }\n",prefix,full,decl.Name,strings.Join(parameters,","),full,method,identity,rawType,decoder,extra,parent)
     }
     out.WriteString("}\n");return out.String()
 }
@@ -84,6 +87,10 @@ public final class ModelType<T> {
         var keys=new java.util.ArrayList<Key>();for(var argument:arguments)keys.add(argument.key);
         var head=type;while(head.kind().equals("applied"))head=head.arguments().getFirst();
         return new ModelType<>(type,new Key(type.kind(),head.name(),keys),encoder,decoder,null);
+    }
+    static <T> ModelType<T> inline(String identity,ContractRuntime.Type type,java.util.function.BiFunction<T,String,Data> encoder,java.util.function.Function<Data,T> decoder,ModelType<?>... arguments) {
+        var keys=new java.util.ArrayList<Key>();for(var argument:arguments)keys.add(argument.key);
+        return new ModelType<>(type,new Key("inline",java.util.Objects.requireNonNull(identity),keys),encoder,decoder,null);
     }
     static <T> ModelType<T> refined(ModelType<T> base, ContractRuntime.Type type,String origin,ModelType<?>... bindings) {
         var keys=new java.util.ArrayList<Key>();keys.add(base.key);for(var binding:bindings)keys.add(binding.key);
@@ -120,6 +127,8 @@ public final class ModelTypes {
     public static ModelType<String> text() { return ModelType.of(ModelType.named("String"),ModelSupport::text,raw -> ((Data.Text)raw).value()); }
     public static ModelType<Boolean> bool() { return ModelType.of(ModelType.named("Bool"),ModelSupport::bool,raw -> ((Data.Bool)raw).value()); }
     public static ModelType<Rational> real() { return ModelType.of(ModelType.named("Real"),ModelSupport::real,raw -> ((Data.Number)raw).value()); }
+    public static ModelType<Rational> float32() { return ModelType.of(ModelType.named("Float32"),ModelSupport::float32,raw -> ((Data.Number)raw).value()); }
+    public static ModelType<Rational> float64() { return ModelType.of(ModelType.named("Float64"),ModelSupport::float64,raw -> ((Data.Number)raw).value()); }
     public static ModelType<Timestamp> timestamp() { return ModelType.of(ModelType.named("Timestamp"),ModelSupport::timestamp,raw -> Timestamp.parse(((Data.Text)raw).value())); }
     public static <T> ModelType<java.util.List<T>> list(ModelType<T> element) {
         java.util.Objects.requireNonNull(element);

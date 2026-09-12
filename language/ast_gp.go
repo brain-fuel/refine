@@ -33,9 +33,10 @@ type Module struct {
 	Types     []TypeDecl
 	Functions []Function
 	// Immutable after Compile; deliberately absent from fresh Syntax() copies.
-	inferred          map[*Expr]*Type
-	functionScopes    map[string]map[string]string
-	declarationScopes map[string]map[string]string
+	inferred             map[*Expr]*Type
+	functionScopes       map[string]map[string]string
+	declarationScopes    map[string]map[string]string
+	functionCapabilities map[string][]CapabilityConstraint
 }
 type Import struct {
 	Path string
@@ -53,11 +54,21 @@ type Variant struct {
 	Arguments []*Type
 	At        Span
 }
+
+// CapabilityConstraint is an authored type-class requirement on one of a
+// function signature's type variables. The checked snapshot separately exposes
+// the complete explicit plus inferred capability set.
+type CapabilityConstraint struct {
+	Capability string
+	Variable   string
+	At         Span
+}
 type Function struct {
-	Name      string
-	Signature *Type
-	Equations []Equation
-	At        Span
+	Name        string
+	Constraints []CapabilityConstraint
+	Signature   *Type
+	Equations   []Equation
+	At          Span
 }
 type Equation struct {
 	Patterns []*Pattern

@@ -1,6 +1,7 @@
 package native
 
 import (
+    "fmt"
     "time"
 
     "github.com/dlclark/regexp2"
@@ -12,9 +13,13 @@ import (
 // syntax than Go regexp. It is still an implementation oracle, not a proof of
 // parity with every edition/host behavior of ECMAScript RegExp.
 type ecmaRegexp struct { compiled *regexp2.Regexp }
-func (r *ecmaRegexp) MatchString(input string)bool{matched,err:=r.compiled.MatchString(input);return err==nil&&matched}
+type regexEvaluationFailure struct { cause error }
+func (r *ecmaRegexp) MatchString(input string)bool{matched,err:=r.compiled.MatchString(input);if err!=nil{panic(regexEvaluationFailure{cause:err})};return matched}
 func (r *ecmaRegexp) String()string{return r.compiled.String()}
 
-func compileECMA(source string)(*ecmaRegexp,error){compiled,err:=regexp2.Compile(source,regexp2.ECMAScript);if err!=nil{return nil,err};compiled.MatchTimeout=250*time.Millisecond;return &ecmaRegexp{compiled:compiled},nil}
+var ecmaMatchTimeout=250*time.Millisecond
+func compileECMA(source string)(*ecmaRegexp,error){compiled,err:=regexp2.Compile(source,regexp2.ECMAScript);if err!=nil{return nil,err};compiled.MatchTimeout=ecmaMatchTimeout;return &ecmaRegexp{compiled:compiled},nil}
 func jsonRegexp(source string)(jsonoracle.Regexp,error){return compileECMA(source)}
 func openAPIRegexp(source string)(openapi3.RegexMatcher,error){return compileECMA(source)}
+
+func recoverRegexEvaluation(format Format,failure *error){if caught:=recover();caught!=nil{if problem,ok:=caught.(regexEvaluationFailure);ok{*failure=&Error{Code:"native.enforcement",Format:format,Message:"ECMA-262 regular expression evaluation did not complete",Cause:fmt.Errorf("regular expression engine: %w",problem.cause)};return};panic(caught)}}

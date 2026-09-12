@@ -1,6 +1,18 @@
 package java
 
 const functionExecutionJava = `
+                private String fixedConversionType(String name) {
+                    String type=name.startsWith("from")||name.startsWith("wrap")?name.substring(4):name.startsWith("to")?name.substring(2):"";
+                    String digits=type.startsWith("UInt")?type.substring(4):type.startsWith("Int")?type.substring(3):"";
+                    try { int bits=Integer.parseInt(digits); return bits>0 && bits<=65536 && Integer.toString(bits).equals(digits) ? type : null; }
+                    catch (NumberFormatException ignored) { return null; }
+                }
+                private String floatConversionType(String name) {
+                    for (String prefix : List.of("roundTo", "to", "from")) if (name.startsWith(prefix)) {
+                        String type = name.substring(prefix.length()); if (type.equals("Float32") || type.equals("Float64")) return type;
+                    }
+                    return null;
+                }
                 void resolve(String name, Type signature, Map<String, Binding> types, int level, Consumer<Val> done) {
                     FunctionDef function = functions.get(name);
                     if (function != null) {
@@ -22,7 +34,7 @@ const functionExecutionJava = `
                         case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search" -> 2;
                         case "foldl" -> 3;
                         case "civilSecondsUntil", "siSecondsUntil" -> 2;
-                        default -> null;
+                        default -> fixedConversionType(name) == null && floatConversionType(name) == null ? null : 1;
                     };
                     if (arity == null) throw fail("evaluation.name", "unresolved function or variable");
                     work.complete(done, new FunctionValue(name, arity, List.of(), signature));
@@ -53,7 +65,10 @@ const functionExecutionJava = `
                                     if (index == function.equations().size()) throw fail("evaluation.pattern", "no function equation matched");
                                     Equation equation = function.equations().get(index++); var env = new HashMap<String, Val>();
                                     patterns(equation.patterns(), args, env, types, level + 1, matched -> {
-                                        if (matched) visit(equation.body(), env, types, level + 1, result -> {
+                                        // A named call is a new queued evaluator frame. Reset
+                                        // expression-tree depth so recursion consumes budget,
+                                        // not one logical/host nesting frame per call.
+                                        if (matched) visit(equation.body(), env, types, 0, result -> {
                                             if (args.isEmpty() && hasInline(function.signature())) assertInline(function.signature(), result, types, level + 1, done);
                                             else work.complete(done, result);
                                         }); else work.later(this);
@@ -61,7 +76,10 @@ const functionExecutionJava = `
                                 }
                             });
                         } else if (constructors.containsKey(name)) work.complete(done, new VariantValue(name, args));
-                        else if (name.equals("read")) typedRead(signature, args.getFirst(), callerTypes, level + 1, done);
+                        // Literal decoding inherits the enclosing structural
+                        // frame, not ordinary expression-call syntax. Nested
+                        // validating reads must still share the data-depth cap.
+                        else if (name.equals("read")) typedRead(signature, args.getFirst(), callerTypes, Eval.this.depth, done);
                         else builtin(name, args, callerTypes, level + 1, done);
                     });
                 }
@@ -105,6 +123,35 @@ const functionExecutionJava = `
                     });
                 }
                 void builtin(String name, List<Val> args, Map<String, Binding> types, int level, Consumer<Val> done) {
+                    String fixed=fixedConversionType(name);
+                    if (fixed != null) {
+                        boolean signed=!fixed.startsWith("UInt"); int bits=Integer.parseInt(fixed.substring(signed?3:4));
+                        Rational number=((NumberValue)args.getFirst()).value(); long size=number.show().length(); step(size*size+bits+1);
+                        if (name.startsWith("from")) work.complete(done,new NumberValue(number,"Int"));
+                        else if (name.startsWith("wrap")) work.complete(done,new NumberValue(number.wrap(bits,signed),fixed));
+                        else {
+                            try { work.complete(done,new VariantValue("Ok",List.of(new NumberValue(number.fixedWidth(bits,signed),fixed)))); }
+                            catch (ArithmeticException failure) { work.complete(done,new VariantValue("Err",List.of(new TextValue("conversion.overflow: value is outside "+fixed+" range")))); }
+                        }
+                        return;
+                    }
+                    String floating=floatConversionType(name);
+                    if (floating != null) {
+                        Rational number=((NumberValue)args.getFirst()).value(); long size=number.show().length(); step(size*size+64);
+                        if (name.startsWith("from")) { work.complete(done,new NumberValue(number,"Real")); return; }
+                        try {
+                            Rational converted=floating.equals("Float32")
+                                ? (name.startsWith("roundTo") ? number.roundFloat32() : number.exactFloat32())
+                                : (name.startsWith("roundTo") ? number.roundFloat64() : number.exactFloat64());
+                            work.complete(done,new VariantValue("Ok",List.of(new NumberValue(converted,floating))));
+                        } catch (ArithmeticException failure) {
+                            String message=name.startsWith("roundTo")
+                                ? "conversion.overflow: rounded value is outside finite "+floating+" range"
+                                : "conversion.precision: value is not exactly representable as finite "+floating;
+                            work.complete(done,new VariantValue("Err",List.of(new TextValue(message))));
+                        }
+                        return;
+                    }
                     switch (name) {
                         case "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven" -> {
                             Rational number = ((NumberValue)args.getFirst()).value(); long size = number.show().length(); step(size * size + 1);

@@ -40,22 +40,24 @@ type bound struct {
 	strict bool
 }
 type interval struct {
-	lower   *bound
-	upper   *bound
-	integer bool
-	numeric bool
-	exact   bool
-	empty   bool
+	lower           *bound
+	upper           *bound
+	integer         bool
+	numeric         bool
+	exact           bool
+	empty           bool
+	resourceLimited bool
 }
 type inspector struct {
-	types  map[string]language.TypeDecl
-	active map[string]bool
+	types          map[string]language.TypeDecl
+	active         map[string]bool
+	expansionLimit uint64
 }
 
 // Satisfiable proves contradictions in numeric bounds or validates a concrete
 // candidate. Failure to find a candidate is unknown, never unsatisfiable.
 func Satisfiable(program *language.Program, root string, limits validation.Limits) (Finding, error) {
-	target, domain, err := inspect(program, root)
+	target, domain, err := inspect(program, root, limits)
 	if err != nil {
 		return Finding{}, err
 	}
@@ -67,6 +69,9 @@ func Satisfiable(program *language.Program, root string, limits validation.Limit
 			return Finding{Yes, "analysis.witness", "A concrete candidate passed the complete checked contract. The candidate is not included in this report."}, nil
 		}
 	}
+	if domain.resourceLimited {
+		return Finding{Unknown, "analysis.resource", "Numeric proof discovery declined to expand a literal beyond its deterministic resource budget. This is not a proof of impossibility."}, nil
+	}
 	return Finding{Unknown, "analysis.unknown", "No satisfiability proof was found within the supported numeric-bound fragment and candidate validation budget. This is not a proof of impossibility."}, nil
 }
 
@@ -75,11 +80,11 @@ func Satisfiable(program *language.Program, root string, limits validation.Limit
 // sufficient resources; equal budgets do not imply equal execution costs.
 // Native format, API context and publication policy require their own analysis.
 func Compare(oldProgram *language.Program, oldRoot string, newProgram *language.Program, newRoot string, limits validation.Limits) (Compatibility, error) {
-	oldTarget, oldDomain, err := inspect(oldProgram, oldRoot)
+	oldTarget, oldDomain, err := inspect(oldProgram, oldRoot, limits)
 	if err != nil {
 		return Compatibility{}, err
 	}
-	newTarget, newDomain, err := inspect(newProgram, newRoot)
+	newTarget, newDomain, err := inspect(newProgram, newRoot, limits)
 	if err != nil {
 		return Compatibility{}, err
 	}
@@ -88,7 +93,21 @@ func Compare(oldProgram *language.Program, oldRoot string, newProgram *language.
 	return Compatibility{Fingerprint: fingerprint, Backward: includes(oldTarget, oldDomain, newTarget, newDomain, same, limits), Forward: includes(newTarget, newDomain, oldTarget, oldDomain, same, limits)}, nil
 }
 
-func inspect(program *language.Program, root string) (*language.PayloadType, interval, error) {
+func analysisExpansionLimit(limits validation.Limits) uint64 {
+	total, clause := uint64(validation.DefaultTotalSteps), uint64(validation.DefaultClauseSteps)
+	if limits.Total != 0 && limits.Total < total {
+		total = limits.Total
+	}
+	if limits.Clause != 0 && limits.Clause < clause {
+		clause = limits.Clause
+	}
+	if total < clause {
+		return total
+	}
+	return clause
+}
+
+func inspect(program *language.Program, root string, limits validation.Limits) (*language.PayloadType, interval, error) {
 	if program == nil {
 		return nil, interval{}, fmt.Errorf("analysis: a checked program is required")
 	}
@@ -96,7 +115,7 @@ func inspect(program *language.Program, root string) (*language.PayloadType, int
 	if err != nil {
 		return nil, interval{}, err
 	}
-	i := inspector{types: map[string]language.TypeDecl{}, active: map[string]bool{}}
+	i := inspector{types: map[string]language.TypeDecl{}, active: map[string]bool{}, expansionLimit: analysisExpansionLimit(limits)}
 	for _, decl := range program.Syntax().Types {
 		i.types[decl.Name] = decl
 	}
@@ -116,7 +135,7 @@ func (i *inspector) typ(t *language.Type, depth int) interval {
 
 		domain := i.typ(base, depth+1)
 		for _, rule := range rules {
-			domain.predicate(rule.Predicate)
+			i.predicate(&domain, rule.Predicate)
 		}
 		domain.normalize()
 		return domain
@@ -171,38 +190,38 @@ func current(e *language.Expr) bool {
 		return false
 	}
 }
-func literal(e *language.Expr) (value.Number, bool) {
+func literal(e *language.Expr, limit uint64) (value.Number, bool, bool) {
 	switch __gp_m2 := any(e.Form).(type) {
 	case language.NumberLiteral:
 		text := __gp_m2.Text
 
-		// Avoid expanding hostile exponents during proof discovery. Exceeding
-		// this proof resource profile is unknown, not a schema rejection.
-		if len(text) > 10000 {
-			return value.Number{}, false
+		cost := uint64(len(text))
+		if cost > limit {
+			return value.Number{}, false, true
 		}
 		if pos := strings.IndexAny(text, "eE"); pos >= 0 {
-			exp, err := strconv.Atoi(text[pos+1:])
-			if err != nil || exp > 10000 || exp < -10000 {
-				return value.Number{}, false
+			exponent := strings.TrimPrefix(strings.TrimPrefix(text[pos+1:], "+"), "-")
+			expanded, err := strconv.ParseUint(exponent, 10, 64)
+			if err != nil || expanded > limit-cost {
+				return value.Number{}, false, true
 			}
 		}
 		n, err := value.ParseNumber(text)
-		return n, err == nil
+		return n, err == nil, false
 	case language.Unary:
 		op := __gp_m2.Operator
 		arg := __gp_m2.Operand
 		if op != "-" {
-			return value.Number{}, false
+			return value.Number{}, false, false
 		}
-		n, ok := literal(arg)
-		return n.Negate(), ok
+		n, ok, limited := literal(arg, limit)
+		return n.Negate(), ok, limited
 	default:
-		return value.Number{}, false
+		return value.Number{}, false, false
 	}
 }
 
-func (d *interval) predicate(e *language.Expr) {
+func (i *inspector) predicate(d *interval, e *language.Expr) {
 	switch __gp_m3 := any(e.Form).(type) {
 	case language.BoolLiteral:
 		v := __gp_m3.Value
@@ -215,13 +234,20 @@ func (d *interval) predicate(e *language.Expr) {
 		right := __gp_m3.Right
 
 		if op == "&&" {
-			d.predicate(left)
-			d.predicate(right)
+			i.predicate(d, left)
+			i.predicate(d, right)
 			return
 		}
-		number, ok := literal(right)
+		number, ok, limited := literal(right, i.expansionLimit)
+		if limited {
+			d.resourceLimited = true
+		}
 		if !current(left) || !ok {
-			number, ok = literal(left)
+			var otherLimited bool
+			number, ok, otherLimited = literal(left, i.expansionLimit)
+			if otherLimited {
+				d.resourceLimited = true
+			}
 			if !current(right) || !ok {
 				d.exact = false
 				return
@@ -393,6 +419,9 @@ func includes(from *language.PayloadType, a interval, to *language.PayloadType, 
 		if validation.StateName(to.ValidateData(data, limits).State()) == "invalid" {
 			return Finding{No, "analysis.counterexample", "A concrete candidate is valid under the source contract and invalid under the target. The candidate is not included in this report."}
 		}
+	}
+	if a.resourceLimited || b.resourceLimited {
+		return Finding{Unknown, "analysis.resource", "Numeric proof discovery declined to expand a literal beyond its deterministic resource budget. This is not a compatibility proof or a counterexample."}
 	}
 	return Finding{Unknown, "analysis.unknown", "The supported proof fragment and candidate checks do not establish inclusion or a counterexample. An enforced comparison must not treat this result as compatible."}
 }

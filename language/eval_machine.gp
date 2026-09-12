@@ -1,0 +1,164 @@
+package language
+
+import "goforge.dev/refine/value"
+
+// evalWork is a deterministic LIFO continuation queue. It makes named calls,
+// including mutual and non-tail recursion, consume logical budget without
+// consuming one Go stack frame per language call.
+type evalWork struct { tasks []func(); traps []evalTrap }
+type evalTrap struct { remaining int; failed func(*evalFailure) }
+
+func (w *evalWork) later(task func()){w.tasks=append(w.tasks,task)}
+func (w *evalWork) complete(done func(evalValue),value evalValue){w.later(func(){done(value)})}
+func (w *evalWork) attempt(start func(func(evalValue)),done func(evalValue),failed func(*evalFailure)){
+    w.traps=append(w.traps,evalTrap{remaining:len(w.tasks),failed:failed})
+    start(func(value evalValue){w.traps=w.traps[:len(w.traps)-1];w.complete(done,value)})
+}
+func evalTaskFailure(task func())(failure *evalFailure){
+    defer func(){if caught:=recover();caught!=nil{if explained,ok:=caught.(*evalFailure);ok{failure=explained}else{panic(caught)}}}()
+    task();return nil
+}
+func (w *evalWork) run(){
+    for len(w.tasks)>0{
+        last:=len(w.tasks)-1;task:=w.tasks[last];w.tasks=w.tasks[:last]
+        failure:=evalTaskFailure(task);if failure==nil{continue}
+        if len(w.traps)==0{panic(failure)}
+        trap:=w.traps[len(w.traps)-1];w.traps=w.traps[:len(w.traps)-1]
+        if len(w.tasks)>trap.remaining{w.tasks=w.tasks[:trap.remaining]}
+        w.later(func(){trap.failed(failure)})
+    }
+}
+
+type evalMachine struct { evaluator *evaluator; work *evalWork }
+
+func (e *evaluator) expression(expr *Expr,env map[string]evalValue)evalValue {
+    work:=&evalWork{};machine:=evalMachine{evaluator:e,work:work};var result evalValue
+    machine.visit(expr,env,e.typeEnvironment,func(value evalValue){result=value});work.run();return result
+}
+
+func (m evalMachine) visit(expr *Expr,env map[string]evalValue,types map[string]typeBinding,done func(evalValue)) {
+    m.work.later(func(){
+        e:=m.evaluator;e.step(1,expr.At)
+        match expr.Form {
+        case NumberLiteral(raw):m.work.complete(done,e.literalNumber(raw,expr.At))
+        case TextLiteral(raw):
+            e.step(uint64(len(raw)),expr.At);text,err:=readSourceText(raw);if err!=nil{evalError(expr.At,"evaluation.text","invalid text literal")};m.work.complete(done,textValue(text))
+        case BoolLiteral(value):m.work.complete(done,boolValue(value))
+        case Variable(name):
+            if value,found:=env[name];found{m.work.complete(done,value);return}
+            signature:=e.instantiate(e.module.inferred[expr],types,0);m.resolve(name,signature,types,expr.At,done)
+        case ListLiteral(items):m.values(items,env,types,expr.At,func(values []evalValue){m.work.complete(done,evalValue{form:EvalList(values)})})
+        case RecordLiteral(fields):
+            expressions:=make([]*Expr,len(fields));for i,field:=range fields{expressions[i]=field.Value}
+            m.values(expressions,env,types,expr.At,func(values []evalValue){out:=make([]evalField,len(values));for i,value:=range values{out[i]=evalField{name:fields[i].Name,value:value}};m.work.complete(done,evalValue{form:EvalRecord(out)})})
+        case Apply(fn,arg):m.visit(fn,env,types,func(function evalValue){m.visit(arg,env,types,func(argument evalValue){m.apply(function,argument,types,expr.At,done)})})
+        case Project(record,field):m.visit(record,env,types,func(value evalValue){
+            match value.form{case EvalRecord(fields):for _,member:=range fields{e.step(1,expr.At);if member.name==field{m.work.complete(done,member.value);return}};evalError(expr.At,"evaluation.field","record field is missing");case _:evalError(expr.At,"evaluation.type","projection requires a record")}
+        })
+        case Unary(_,operand):m.visit(operand,env,types,func(value evalValue){number,typ:=number(value,expr.At);e.step(uint64(len(number.Show())),expr.At);m.work.complete(done,e.checkedNumber(number.Negate(),typ,expr.At))})
+        case Binary(operator,left,right):m.visit(left,env,types,func(a evalValue){
+            if operator=="&&"&&!boolean(a,left.At){m.work.complete(done,boolValue(false));return}
+            if operator=="||"&&boolean(a,left.At){m.work.complete(done,boolValue(true));return}
+            m.visit(right,env,types,func(b evalValue){m.work.complete(done,e.binary(operator,a,b,expr.At))})
+        })
+        case Conditional(condition,yes,no):m.visit(condition,env,types,func(value evalValue){if boolean(value,condition.At){m.visit(yes,env,types,done)}else{m.visit(no,env,types,done)}})
+        case Let(name,annotation,bound,body):m.visit(bound,env,types,func(value evalValue){
+            if annotation!=nil&&hasInlineRefinement(annotation){value=e.assertInline(annotation,value,types)}
+            local:=cloneEvalEnvironment(env);local[name]=value;m.visit(body,local,types,done)
+        })
+        case Case(subject,arms):m.visit(subject,env,types,func(value evalValue){
+            index:=0;var next func();next=func(){if index==len(arms){evalError(expr.At,"evaluation.pattern","no pattern matched the value")};arm:=arms[index];index++;local:=cloneEvalEnvironment(env);if e.pattern(arm.Pattern,value,local){m.visit(arm.Body,local,types,done)}else{m.work.later(next)}};m.work.later(next)
+        })
+        }
+    })
+}
+
+func readSourceText(raw string)(value.Text,error){return value.ReadText(raw)}
+
+func (m evalMachine) values(expressions []*Expr,env map[string]evalValue,types map[string]typeBinding,at Span,done func([]evalValue)) {
+    m.evaluator.step(uint64(len(expressions)),at);result:=make([]evalValue,0,len(expressions));index:=0;var next func()
+    next=func(){if index==len(expressions){done(result);return};expr:=expressions[index];index++;m.visit(expr,env,types,func(item evalValue){result=append(result,item);m.work.later(next)})};m.work.later(next)
+}
+
+func (m evalMachine) resolve(name string,signature *Type,types map[string]typeBinding,at Span,done func(evalValue)) {
+    e:=m.evaluator
+    if fn,found:=e.functions[name];found{
+        arity:=len(fn.Equations[0].Patterns);if arity==0{m.invoke(name,nil,signature,types,at,done);return}
+        result:=evalValue{form:EvalFunction(name,arity,nil),signature:signature}
+        if hasInlineRefinement(fn.Signature){result=e.assertInline(fn.Signature,result,e.functionBindings(name,signature))}
+        m.work.complete(done,result);return
+    }
+    if arity,found:=e.constructors[name];found{if arity==0{m.work.complete(done,evalValue{form:EvalVariant(name,nil)})}else{m.work.complete(done,evalValue{form:EvalFunction(name,arity,nil),signature:signature})};return}
+    if arity,found:=builtinArities[name];found{m.work.complete(done,evalValue{form:EvalFunction(name,arity,nil),signature:signature});return}
+    if _,found:=FixedIntegerConversion(name);found{m.work.complete(done,evalValue{form:EvalFunction(name,1,nil),signature:signature});return}
+    if _,found:=FixedFloatConversion(name);found{m.work.complete(done,evalValue{form:EvalFunction(name,1,nil),signature:signature});return}
+    evalError(at,"evaluation.name","unresolved function or variable")
+}
+
+func (m evalMachine) apply(function,argument evalValue,types map[string]typeBinding,at Span,done func(evalValue)) {
+    m.work.later(func(){
+        e:=m.evaluator;e.step(1,at)
+        match function.form{
+        case EvalGuardedFunction(inner,parameter,result,bindings):checked:=e.assertInline(parameter,argument,bindings);m.apply(inner,checked,types,at,func(value evalValue){m.work.complete(done,e.assertInline(result,value,bindings))})
+        case EvalFunction(name,arity,previous):
+            e.step(uint64(len(previous)+1),at);args:=append(append([]evalValue(nil),previous...),argument)
+            if len(args)<arity{m.work.complete(done,evalValue{form:EvalFunction(name,arity,args),signature:function.signature})}else{m.invoke(name,args,function.signature,types,at,done)}
+        case _:evalError(at,"evaluation.type","application requires a function")
+        }
+    })
+}
+
+func (m evalMachine) invoke(name string,args []evalValue,signature *Type,callerTypes map[string]typeBinding,at Span,done func(evalValue)) {
+    m.work.later(func(){
+        e:=m.evaluator;e.step(1,at)
+        if fn,found:=e.functions[name];found{
+            types:=e.functionBindings(name,signature);index:=0;var next func()
+            next=func(){
+                if index==len(fn.Equations){evalError(at,"evaluation.pattern","no function equation matched")}
+                equation:=fn.Equations[index];index++;env:=make(map[string]evalValue);matched:=true
+                for i,pattern:=range equation.Patterns{if !e.pattern(pattern,args[i],env){matched=false;break}}
+                if !matched{m.work.later(next);return}
+                m.visit(equation.Body,env,types,func(result evalValue){if len(args)==0&&hasInlineRefinement(fn.Signature){result=e.assertInline(fn.Signature,result,types)};m.work.complete(done,result)})
+            };m.work.later(next);return
+        }
+        if _,found:=e.constructors[name];found{
+            result:=evalValue{form:EvalVariant(name,append([]evalValue(nil),args...))}
+            m.work.complete(done,result);return
+        }
+        if name=="read"{
+            previous:=e.typeEnvironment;e.typeEnvironment=callerTypes
+            result:=func()evalValue{defer func(){e.typeEnvironment=previous}();return e.typedRead(signature,args[0],at)}()
+            m.work.complete(done,result);return
+        }
+        m.builtin(name,args,callerTypes,at,done)
+    })
+}
+
+func (m evalMachine) builtin(name string,args []evalValue,types map[string]typeBinding,at Span,done func(evalValue)) {
+    e:=m.evaluator
+    switch name{
+    case "map","filter":
+        items:=itemsOf(args[1],at);e.step(uint64(len(items)),at);result:=[]evalValue{};index:=0;var next func()
+        next=func(){if index==len(items){m.work.complete(done,evalValue{form:EvalList(result)});return};item:=items[index];index++;m.apply(args[0],item,types,at,func(value evalValue){if name=="map"{result=append(result,value)}else if boolean(value,at){result=append(result,item)};m.work.later(next)})};m.work.later(next)
+    case "foldl":
+        items:=itemsOf(args[2],at);result:=args[1];index:=0;var next func()
+        next=func(){if index==len(items){m.work.complete(done,result);return};item:=items[index];index++;e.step(1,at);m.apply(args[0],result,types,at,func(fn evalValue){m.apply(fn,item,types,at,func(value evalValue){result=value;m.work.later(next)})})};m.work.later(next)
+    case "all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf":m.combine(name,args,types,at,done)
+    default:m.work.complete(done,e.builtin(name,args,at))
+    }
+}
+
+func (m evalMachine) combine(name string,args []evalValue,types map[string]typeBinding,at Span,done func(evalValue)) {
+    mode:="any";if name=="all"||name=="satisfiesAll"{mode="all"};if name=="satisfiesOnlyOneOf"{mode="one"}
+    overValues:=name=="all"||name=="any";var items []evalValue
+    if overValues{items=itemsOf(args[1],at)}else{items=itemsOf(args[0],at)}
+    index,yes:=0,0;var unknown *evalFailure;var next func()
+    next=func(){
+        if index==len(items){if unknown!=nil{panic(unknown)};m.work.complete(done,boolValue(mode=="all"||mode=="one"&&yes==1));return}
+        item:=items[index];index++;fn,argument:=item,args[1];if overValues{fn,argument=args[0],item}
+        m.work.attempt(func(receiver func(evalValue)){m.apply(fn,argument,types,at,receiver)},func(value evalValue){
+            satisfied:=boolean(value,at);if satisfied{yes++}
+            if mode=="all"&&!satisfied||mode=="any"&&satisfied||mode=="one"&&yes>1{m.work.complete(done,boolValue(mode=="any"));return};m.work.later(next)
+        },func(failure *evalFailure){if unknown==nil{unknown=failure};m.work.later(next)})
+    };m.work.later(next)
+}

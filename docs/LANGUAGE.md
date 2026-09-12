@@ -84,9 +84,9 @@ unexplored patterns are certainly incomplete.
 The front end recognizes signatures for collection operations, predicate
 combinators, show/read, and regex predicates. Collection operations and typed
 show/read, budgeted full-string `matches`/substring `search`, and RFC 3339
-timestamp validation/comparison now have an in-memory implementation. The Java
-implementation remains unfinished. See [runtime semantics](RUNTIME.md) for the
-refinement regex dialect, timestamp precision, and leap-second policy.
+timestamp validation/comparison have conforming Go and generated Java execution.
+See [runtime semantics](RUNTIME.md) for the refinement regex dialect, timestamp
+precision, and leap-second policy.
 `read` needs an inferable target type; for example:
 
 ```haskell
@@ -96,12 +96,15 @@ positiveText text =
   case parsed of { Err _ -> False; (Ok n) -> n > 0 }
 ```
 
-Still required: constraint-qualified polymorphism for overloaded operations,
-full conversion/fixed-width literal semantics, import resolution, remaining execution,
-schema lowering, English explanation, and cross-runtime conformance. Currently
-underconstrained equality/length/numeric operations request a concrete annotation;
-they are not silently accepted with invented semantics. In particular, functions
-and collections containing functions cannot be compared for value equality.
+Named functions support explicit and inferred `Eq`, `Show`, `Read`, `Num`,
+`Integral`, and `Ord`
+constraints. See [qualified polymorphism](CAPABILITIES.md). Inference propagates
+through named forward, higher-order, and recursive references, while a concrete
+unsupported instantiation is rejected statically. Numeric literals remain
+concretely `Int` or `Real`; `Integral` permits polymorphic remainder without
+admitting `Real`; and no implicit numeric coercion is introduced. Length still requests a concrete type.
+Anonymous lambdas, symbol-qualified imports, and remaining native integration
+are still required.
 
 ## Formatting and diagnostics
 
@@ -141,6 +144,50 @@ can live in a single module. Package declarations are output namespaces rather
 than automatic symbol qualification: the entry package controls the flattened
 program, while imported namespaces remain recorded in the bundle. Symbol aliases
 and qualified imports remain future language work.
+
+## Scoped local generic annotations
+
+A local annotation may name a type parameter from its enclosing named function
+or generic declaration. It does not introduce an unrelated fresh type variable:
+
+```haskell
+copy :: a -> a
+copy x = let y :: a = x in y
+
+roundTrip :: a -> Result String a
+roundTrip x = let restored :: Result String a = read (show x) in restored
+```
+
+An undeclared `b`, a value inconsistent with `a`, or a parameter from a different
+function is a static error. Inline predicates on the local annotation retain
+the same runtime type environment and validation behavior.
+
+## Explicit fixed-width conversions
+
+For canonical widths `N` from 1 through the current backend resource bound of
+65,536, signed and unsigned integer conversion families are available:
+
+```haskell
+toInt8    :: Int -> Result String Int8
+fromInt8  :: Int8 -> Int
+wrapInt8  :: Int -> Int8
+toUInt8   :: Int -> Result String UInt8
+fromUInt8 :: UInt8 -> Int
+wrapUInt8 :: Int -> UInt8
+```
+
+Checked narrowing returns `Err` on overflow. Widening preserves the exact value.
+Wrapping is modulo `2^N`, interpreted in the target's signed or unsigned range.
+These operations change only the newly calculated value, not the original
+payload. Use `wrapInt8 (fromInt8 x + fromInt8 y)` for explicitly wrapping addition;
+ordinary `x + y` on `Int8` still fails on overflow. Fractional inputs require an
+explicit exact or rounding conversion to `Int` first. User-defined functions
+take precedence over built-in names, including these families.
+
+`Float32` and `Float64` are separate finite, exact-representability domains;
+they do not change the default exact `Real` arithmetic. Their exact narrowing,
+explicit ties-to-even rounding, widening, arithmetic, and canonical codec rules
+are specified in [numeric domains and explicit precision](NUMERICS.md).
 
 Limits are 10,000 supplied files, 16 MiB reachable original/flattened source and
 256 import levels. Original parse errors identify their source; cross-module

@@ -5,6 +5,7 @@
 package java
 
 import (
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,13 +24,24 @@ func compilePropertySuite(t *testing.T, source string, options PropertyTestOptio
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := GenerateModels(program, "example.properties", "Contract")
+	var models []File
+	if options.JSONModule != "" {
+		dependencies += string(os.PathListSeparator) + jacksonClasspath(t)
+		models, err = GenerateJSONSerde(program, "example.properties", "Contract", options.JSONModule, JSONSerdeOptions{Root: options.Targets[0].Name})
+	} else {
+		models, err = GenerateModels(program, "example.properties", "Contract")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	properties, err := GeneratePropertyTests(program, "example.properties", "Contract", options)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if options.JSONModule != "" {
+		for i := range properties {
+			properties[i].Source = strings.Replace(properties[i].Source, "String json=WIRE.writeValueAsString(model);", "if (Boolean.getBoolean(\"refine.test.wireProbe\")) throw new AssertionError(\"refine-wire-probe-reached\"); String json=WIRE.writeValueAsString(model);", 1)
+		}
 	}
 	files := append(models, properties...)
 	root := t.TempDir()
@@ -64,6 +76,7 @@ type NestedOptional = Maybe (Maybe Int)
 type Fractional = Real where isInteger it @code "whole"
 type Negative = Int where it >= -3000000000 @code "negative.bound"
 type Box a = { value :: a }
+type Factory = String
 type AgeBox = Box Percent
 type InlineList = { numbers :: [(Int where it >= 0)] }
 type InlineMaybe = { number :: Maybe (Int where it >= 0) }
@@ -72,7 +85,7 @@ type InlineChoice = { choice :: Choice }
 `
 	valid := value.OfNumber(value.Integer(50))
 	invalid := value.OfNumber(value.Integer(-1))
-	options := PropertyTestOptions{Targets: []PropertyTarget{{Name: "Percent"}, {Name: "Row"}, {Name: "Defaulted"}, {Name: "Forest"}, {Name: "Optional"}, {Name: "Nullish"}, {Name: "NestedOptional"}, {Name: "Fractional"}, {Name: "Negative"}, {Name: "AgeBox"}, {Name: "InlineList"}, {Name: "InlineMaybe"}, {Name: "InlineChoice"}}, CaseCount: 30, AttemptBudget: 5000, Seed: 17, Examples: []PropertyExample{{Target: "Percent", Value: valid, Expected: ExampleValid}, {Target: "Percent", Value: invalid, Expected: ExampleInvalid, DiagnosticCodes: []string{"percent.min"}}}}
+	options := PropertyTestOptions{Targets: []PropertyTarget{{Name: "Tree"}, {Name: "Choice"}, {Name: "Percent"}, {Name: "Row"}, {Name: "Defaulted"}, {Name: "Forest"}, {Name: "Optional"}, {Name: "Nullish"}, {Name: "NestedOptional"}, {Name: "Fractional"}, {Name: "Negative"}, {Name: "AgeBox"}, {Name: "InlineList"}, {Name: "InlineMaybe"}, {Name: "InlineChoice"}}, CaseCount: 30, AttemptBudget: 5000, Seed: 17, Examples: []PropertyExample{{Target: "Percent", Value: valid, Expected: ExampleValid}, {Target: "Percent", Value: invalid, Expected: ExampleInvalid, DiagnosticCodes: []string{"percent.min"}}}}
 	vm, classpath := compilePropertySuite(t, source, options)
 	output, err := exec.Command(vm, "-cp", classpath, "example.properties.ContractGeneratedProperties").CombinedOutput()
 	if err != nil {
@@ -89,8 +102,19 @@ func TestGeneratedPropertyExhaustionFailsHard(t *testing.T) {
 	}
 }
 
+func TestGeneratedJSONPropertiesExerciseWire(t *testing.T) {
+	vm, classpath := compilePropertySuite(t, `type Age = Int where it >= 0 @code "age.min"`, PropertyTestOptions{Targets: []PropertyTarget{{Name: "Age"}}, CaseCount: 20, Seed: 13, JSONModule: "AgeModule"})
+	if output, err := exec.Command(vm, "-cp", classpath, "example.properties.ContractGeneratedProperties").CombinedOutput(); err != nil {
+		t.Fatalf("JSON property suite: %v\n%s", err, output)
+	}
+	output, err := exec.Command(vm, "-Drefine.test.wireProbe=true", "-cp", classpath, "example.properties.ContractGeneratedProperties").CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "refine-wire-probe-reached") {
+		t.Fatalf("valid wire property was not executed: %v\n%s", err, output)
+	}
+}
+
 func TestPropertyGenerationRejectsUnsupportedAtomically(t *testing.T) {
-	programs := []string{`type Function = Int -> Int`, `type Loop = { next :: Loop }`}
+	programs := []string{`type Function = Int -> Int`, `type Loop = { next :: Loop }`, "data First = F Second\ndata Second = S First\n", "type Grow a = {value :: Int, next :: Grow [a]}\ntype Payload = Grow Int\n"}
 	for _, source := range programs {
 		program, err := language.Compile(source)
 		if err != nil {
@@ -128,5 +152,67 @@ func TestGeneratedPropertiesUseModelBoundariesAndTypedReplay(t *testing.T) {
 		if err == nil || generated != nil {
 			t.Fatalf("invalid replay returned output: %v %#v", err, generated)
 		}
+	}
+	for _, options := range []PropertyTestOptions{{Targets: []PropertyTarget{{Name: "Age"}}, NativeJSONValidator: "NativeGate"}, {Targets: []PropertyTarget{{Name: "Age"}}, JSONModule: "AgeModule", NativeJSONValidator: "not.valid"}} {
+		generated, err := GeneratePropertyTests(program, "example", "Contract", options)
+		if err == nil || generated != nil {
+			t.Fatalf("invalid native candidate filter returned output: %v %#v", err, generated)
+		}
+	}
+	filtered, err := GeneratePropertyTests(program, "example", "Contract", PropertyTestOptions{Targets: []PropertyTarget{{Name: "Age"}}, JSONModule: "AgeModule", NativeJSONValidator: "NativeGate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := filtered[0].Source
+	if !strings.Contains(text, "NATIVE_CANDIDATES.acceptsNativeCandidate(data)") || !strings.Contains(text, "nativeCandidate(d) && Contract.validate") {
+		t.Fatal("native-only candidate filter was not placed before positive refinement selection")
+	}
+	avroFiltered, err := GeneratePropertyTests(program, "example", "Contract", PropertyTestOptions{Targets: []PropertyTarget{{Name: "Age"}}, AvroSerde: "AgeAvroSerde"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = avroFiltered[0].Source
+	if !strings.Contains(text, "AVRO.acceptsNativeCandidate(data)") || !strings.Contains(text, "nativeCandidate(d) && Contract.validate") {
+		t.Fatal("Avro-native candidate filter was not placed before positive refinement selection")
+	}
+}
+
+func TestGeneratedFixedIntegerProperties(t *testing.T) {
+	source := "type Bit = UInt1\ntype SignedBit = Int1\ntype Byte = Int8\ntype UnsignedByte = UInt8\ntype NativeLong = Int64\ntype Huge = Int1024\n"
+	vm, classpath := compilePropertySuite(t, source, PropertyTestOptions{CaseCount: 20, Seed: 91})
+	if output, err := exec.Command(vm, "-cp", classpath, "example.properties.ContractGeneratedProperties").CombinedOutput(); err != nil {
+		t.Fatalf("fixed integer property boundaries: %v\n%s", err, output)
+	}
+}
+
+func TestGeneratedTimestampFloatAndClosedGenericRecursiveProperties(t *testing.T) {
+	source := `type Moment = Timestamp
+type F32 = Float32
+type F64 = Float64
+data Tree a = Leaf a | Branch (Tree a) (Tree a)
+type IntTree = Tree Int
+type Node a = {value :: a, next :: Maybe (Node a)}
+type StringNode = Node String
+data Nested a = Done a | Many [Nested a]
+type NestedInt = Nested Int
+`
+	options := PropertyTestOptions{Targets: []PropertyTarget{{Name: "Moment"}, {Name: "F32"}, {Name: "F64"}, {Name: "IntTree"}, {Name: "StringNode"}, {Name: "NestedInt"}}, CaseCount: 30, AttemptBudget: 5000, Seed: 211}
+	program, err := language.Compile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := GeneratePropertyTests(program, "example.properties", "Contract", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := generated[0].Source
+	for _, want := range []string{"2016-12-31T23:59:60Z", "Generator.<Data>recursive(", new(big.Int).Lsh(big.NewInt(1), 149).String(), new(big.Int).Lsh(big.NewInt(1), 150).String(), new(big.Int).Lsh(big.NewInt(1), 1074).String(), new(big.Int).Lsh(big.NewInt(1), 1075).String(), "1/3", "Leaf", "Branch", "Many"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("generated strategy missing %s", want)
+		}
+	}
+	vm, classpath := compilePropertySuite(t, source, options)
+	if output, err := exec.Command(vm, "-Xss256k", "-cp", classpath, "example.properties.ContractGeneratedProperties").CombinedOutput(); err != nil {
+		t.Fatalf("timestamp/float/generic recursive properties: %v\n%s", err, output)
 	}
 }

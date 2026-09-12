@@ -158,6 +158,11 @@ func (v *payloadValidator) named(name string,args []*Type,input evalValue,env ma
         match input.form {
         case EvalNumber(n,_):
             v.structure.step(uint64(len(n.Show())),at)
+            if name=="Float32"||name=="Float64" {
+                v.structure.step(64,at)
+                if _,err:=exactFloat(n,name);err!=nil{return v.wrong(path,"Number is not exactly representable as finite "+name+".")}
+                return numberValue(n,name),true
+            }
             if name!="Real" && !n.IsInteger(){return v.wrong(path,"Expected an integer without fractional coercion.")}
             if name!="Int" && name!="Real" {
                 digits:=strings.TrimPrefix(strings.TrimPrefix(name,"UInt"),"Int");width,err:=strconv.ParseUint(digits,10,32)

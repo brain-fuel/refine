@@ -64,7 +64,7 @@ func GeneratePayload(target *language.PayloadType)(Document,error){
 func generate(program *language.Program,payload *language.Type)(document Document,err error){
     defer func(){if caught:=recover();caught!=nil{if failure,ok:=caught.(limitError);ok{document=Document{};err=failure}else{panic(caught)}}}()
     if program==nil{return Document{},fmt.Errorf("explain: a checked program is required")}
-    module:=program.Syntax()
+    checked:=program.CheckedSyntax();module:=checked.Syntax
     b:=builder{functions:map[string]bool{},locals:map[string]bool{}}
     for _,fn:=range module.Functions{b.functions[fn.Name]=true}
     for _,decl:=range module.Types{
@@ -87,7 +87,10 @@ func generate(program *language.Program,payload *language.Type)(document Documen
     }
     for _,fn:=range module.Functions{
         b.locals=map[string]bool{}
-        b.doc.definitions=append(b.doc.definitions,Definition{Name:fn.Name,Signature:language.FormatType(fn.Signature),English:"A named function. Match its arguments against the following equations in source order and evaluate the first matching body in the pattern bindings. Recursive calls use the same rules and shared evaluation budget; termination is not promised."})
+        capabilities:=checked.FunctionCapabilities[fn.Name]
+        capabilityEnglish:=""
+        if len(capabilities)>0{parts:=[]string{};for _,item:=range capabilities{parts=append(parts,item.Capability+" for "+item.Variable)};capabilityEnglish=" Its effective statically required capabilities are "+strings.Join(parts,", ")+"."}
+        b.doc.definitions=append(b.doc.definitions,Definition{Name:fn.Name,Signature:language.FormatQualifiedType(capabilities,fn.Signature),English:"A named function. Match its arguments against the following equations in source order and evaluate the first matching body in the pattern bindings. Recursive calls use the same rules and shared evaluation budget; termination is not promised."+capabilityEnglish})
         b.typ(fn.Name,"signature",fn.Signature)
         for _,eq:=range fn.Equations{
             patterns,words:=[]string{},[]string{}
@@ -106,7 +109,7 @@ func generate(program *language.Program,payload *language.Type)(document Documen
 func describeType(t *language.Type)string{
     match t.Form{
     case language.NamedType(name):
-        switch name{case "Int":return "an arbitrary-precision integer";case "Real":return "an exact rational number (rounding is never implicit)";case "String":return "text compared by exact Unicode sequence, with length measured in UTF-16 code units";case "Bool":return "a Boolean";case "Timestamp":return "an RFC 3339 timestamp retaining its original text"}
+        switch name{case "Int":return "an arbitrary-precision integer";case "Real":return "an exact rational number (rounding is never implicit)";case "Float32":return "a finite IEEE-754 binary32 value represented exactly (with no distinct signed-zero identity and no implicit rounding)";case "Float64":return "a finite IEEE-754 binary64 value represented exactly (with no distinct signed-zero identity and no implicit rounding)";case "String":return "text compared by exact Unicode sequence, with length measured in UTF-16 code units";case "Bool":return "a Boolean";case "Timestamp":return "an RFC 3339 timestamp retaining its original text"}
         return "the declared type "+name
     case language.ListType(element):return "an ordered list whose elements each have "+describeType(element)
     case language.RecordType(fields):

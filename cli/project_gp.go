@@ -27,13 +27,16 @@ type projectConfig struct {
 	SchemaDir string                  `json:"schemaDir"`
 	Package   string                  `json:"package"`
 	Families  map[string]familyConfig `json:"families"`
+	Release   releaseProjectPolicy    `json:"release"`
 }
 type familyConfig struct {
-	Root        string          `json:"root"`
-	Package     string          `json:"package"`
-	JavaPackage string          `json:"javaPackage"`
-	NoCodegen   []string        `json:"noCodegen"`
-	Formats     []native.Format `json:"formats"`
+	Root        string              `json:"root"`
+	Package     string              `json:"package"`
+	JavaPackage string              `json:"javaPackage"`
+	NoCodegen   []string            `json:"noCodegen"`
+	Formats     []native.Format     `json:"formats"`
+	Wire        native.WireMetadata `json:"wire"`
+	Release     releaseFamilyPolicy `json:"release"`
 }
 
 func projectCommand(args []string, output, errorOutput io.Writer) int {
@@ -157,6 +160,26 @@ func readWithin(root *os.Root, name string) ([]byte, error) {
 	return data, nil
 }
 
+type schemaSourceKind uint8
+
+const (
+	refineSchema schemaSourceKind = iota + 1
+	nativeBundleSchema
+)
+
+func schemaSourceName(name string) (string, schemaSourceKind, bool) {
+	if strings.HasSuffix(name, ".refined.json") {
+		return strings.TrimSuffix(name, ".refined.json"), nativeBundleSchema, true
+	}
+	if strings.HasSuffix(name, ".refine") {
+		return strings.TrimSuffix(name, ".refine"), refineSchema, true
+	}
+	return "", 0, false
+}
+func emptyWireMetadata(metadata native.WireMetadata) bool {
+	return len(metadata.ExtraFields) == 0 && len(metadata.Scalars) == 0 && len(metadata.Discriminators) == 0 && metadata.PublicationNamespace == "" && metadata.NumericExpansion == 0
+}
+
 func loadProject(rootPath, configPath, packageOverride string) (project.GenerateInput, error) {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
@@ -213,12 +236,15 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 			return input, err
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-		seenVersions := map[string]bool{}
+		seenVersions := map[string]string{}
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".refine") {
+			if entry.IsDir() {
 				continue
 			}
-			basename := strings.TrimSuffix(entry.Name(), ".refine")
+			basename, kind, recognized := schemaSourceName(entry.Name())
+			if !recognized {
+				continue
+			}
 			var version *release.Version
 			if basename != "SNAPSHOT" {
 				if !strings.HasPrefix(basename, "v") {
@@ -228,10 +254,44 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 				if err != nil {
 					return input, err
 				}
+				if basename != "v"+parsed.String() {
+					return input, fmt.Errorf("schema version filename %s is not canonical", entry.Name())
+				}
 				version = &parsed
 			}
-			seenVersions[basename] = true
+			if prior := seenVersions[basename]; prior != "" {
+				return input, fmt.Errorf("family %s version %s is defined by both %s and %s", name, basename, prior, entry.Name())
+			}
+			seenVersions[basename] = entry.Name()
 			sourceID := path.Join(dirName, entry.Name())
+			noCodegen := false
+			for _, excluded := range settings.NoCodegen {
+				if excluded == basename {
+					noCodegen = true
+				}
+			}
+			javaPackage := settings.JavaPackage
+			if packageOverride != "" {
+				javaPackage = packageOverride
+			}
+			if kind == nativeBundleSchema {
+				raw, readErr := readWithin(root, sourceID)
+				if readErr != nil {
+					return input, readErr
+				}
+				imported, parseErr := native.ParseBundle(raw)
+				if parseErr != nil {
+					return input, parseErr
+				}
+				if !emptyWireMetadata(settings.Wire) {
+					return input, fmt.Errorf("family %s native bundle owns wire metadata; family wire overrides are not allowed", name)
+				}
+				if settings.Root != "" && settings.Root != imported.Root().TypeName {
+					return input, fmt.Errorf("family %s configured root %s does not match native bundle root %s", name, settings.Root, imported.Root().TypeName)
+				}
+				input.Contracts = append(input.Contracts, project.Contract{Family: name, Version: version, NativeProject: imported, RootType: settings.Root, LogicalNamespace: settings.Package, JavaPackage: javaPackage, NoCodegen: noCodegen, Formats: settings.Formats})
+				continue
+			}
 			bundle, err := loadSources(root, sourceID)
 			if err != nil {
 				return input, err
@@ -250,20 +310,16 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 			if namespace == "" {
 				namespace = program.Syntax().Package
 			}
-			javaPackage := settings.JavaPackage
-			if packageOverride != "" {
-				javaPackage = packageOverride
+			input.Contracts = append(input.Contracts, project.Contract{Family: name, Version: version, Program: program, RootType: target, LogicalNamespace: namespace, JavaPackage: javaPackage, NoCodegen: noCodegen, Formats: settings.Formats, Wire: settings.Wire})
+		}
+		prospective := ""
+		if settings.Release.Intended != nil {
+			if parsed, e := parsePolicyVersion(*settings.Release.Intended); e == nil {
+				prospective = "v" + parsed.String()
 			}
-			noCodegen := false
-			for _, excluded := range settings.NoCodegen {
-				if excluded == basename {
-					noCodegen = true
-				}
-			}
-			input.Contracts = append(input.Contracts, project.Contract{Family: name, Version: version, Program: program, RootType: target, LogicalNamespace: namespace, JavaPackage: javaPackage, NoCodegen: noCodegen, Formats: settings.Formats})
 		}
 		for _, excluded := range settings.NoCodegen {
-			if !seenVersions[excluded] {
+			if seenVersions[excluded] == "" && excluded != prospective {
 				return input, fmt.Errorf("family %s noCodegen refers to missing version %s", name, excluded)
 			}
 		}

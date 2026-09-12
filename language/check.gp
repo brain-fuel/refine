@@ -28,6 +28,9 @@ type CheckedModule struct {
     Inferred map[*Expr]*Type
     FunctionScopes map[string]map[string]string
     DeclarationScopes map[string]map[string]string
+    // FunctionCapabilities contains the effective explicit plus inferred
+    // requirements in stable order. Its entries are detached from compiler state.
+    FunctionCapabilities map[string][]CapabilityConstraint
 }
 
 func (p *Program) CheckedSyntax() CheckedModule {
@@ -36,13 +39,15 @@ func (p *Program) CheckedSyntax() CheckedModule {
     copy,err:=Compile(p.module.Source)
     if err!=nil{panic("checked source stopped compiling")}
     module:=copy.module
-    return CheckedModule{Syntax:module,Inferred:module.inferred,FunctionScopes:module.functionScopes,DeclarationScopes:module.declarationScopes}
+    return checkedModuleSnapshot(module)
 }
 
 type term struct { name string; args []*term; fields []typedField; variable int; rigid bool; rules []Where }
 type typedField struct { name string; typ *term }
 type constructor struct { parent string; parameters []string; arguments []*Type }
 type obligation struct { class string; typ *term; at Span }
+type capabilityRequirement struct { class string; typ *term; at Span }
+type capabilityCall struct { callee string; bindings map[string]*term; at Span }
 type checker struct {
     module *Module
     declarations map[string]TypeDecl
@@ -55,6 +60,10 @@ type checker struct {
     expressionTerms map[*Expr]*term
     reified map[*term]*Type
     expressionOrder []*Expr
+    typeVariables map[string]*term
+    functionVariables map[string]map[string]*term
+    capabilityRequirements []capabilityRequirement
+    capabilityCalls []capabilityCall
 }
 
 func typeError(at Span, message string) { panic(&Error{Code:"language.type",At:at,Message:message}) }
@@ -100,7 +109,7 @@ func (c *checker) unify(left, right *term, at Span) {
 }
 
 func primitive(name string) bool {
-    switch name { case "Int", "Real", "String", "Bool", "Timestamp": return true }
+    switch name { case "Int", "Real", "Float32", "Float64", "String", "Bool", "Timestamp": return true }
     prefix := "Int"; if strings.HasPrefix(name,"UInt") { prefix = "UInt" }
     digits := strings.TrimPrefix(name,prefix)
     if digits == name || digits == "" { return false }
@@ -202,7 +211,14 @@ var builtinSignatures = map[string]string{
 }
 
 func (c *checker) function(name string, at Span) *term {
-    if fn, ok := c.functions[name]; ok { return c.typ(fn.Signature,make(map[string]*term),true,false) }
+    if fn, ok := c.functions[name]; ok {
+        variables:=make(map[string]*term)
+        signature:=c.typ(fn.Signature,variables,true,false)
+        c.capabilityCalls=append(c.capabilityCalls,capabilityCall{callee:name,bindings:variables,at:at})
+        return signature
+    }
+    if conversion,ok:=FixedIntegerConversion(name);ok{if conversion.Mode=="from"{return arrow(base(conversion.Type),base("Int"))};if conversion.Mode=="wrap"{return arrow(base("Int"),base(conversion.Type))};return arrow(base("Int"),base("Result",base("String"),base(conversion.Type)))}
+    if conversion,ok:=FixedFloatConversion(name);ok{if conversion.Mode=="from"{return arrow(base(conversion.Type),base("Real"))};return arrow(base("Real"),base("Result",base("String"),base(conversion.Type)))}
     if constructor, ok := c.constructors[name]; ok {
         variables := make(map[string]*term); args := []*term{}
         for _, parameter := range constructor.parameters { variables[parameter] = c.fresh(false); args = append(args,variables[parameter]) }
@@ -216,6 +232,10 @@ func (c *checker) function(name string, at Span) *term {
     if name == "read" {
         result := c.fresh(false); c.obligations = append(c.obligations,obligation{class:"read",typ:result,at:at})
         return arrow(base("String"),base("Result",base("String"),result))
+    }
+    if name == "show" {
+        argument:=c.fresh(false);c.obligations=append(c.obligations,obligation{class:"show",typ:argument,at:at})
+        return arrow(argument,base("String"))
     }
     if name == "oneOf" || name == "elem" || name == "unique" {
         item := c.fresh(false)
@@ -233,8 +253,14 @@ func (c *checker) function(name string, at Span) *term {
 func copyEnvironment(env map[string]*term) map[string]*term { result := make(map[string]*term); for k, v := range env { result[k] = v }; return result }
 func (c *checker) numeric(t *term, at Span) *term {
     t = c.underlying(t,at)
-    if t.variable != 0 { typeError(at,"numeric type cannot be inferred; add an annotation") }
-    if t.name != "Real" && t.name != "Int" && !(primitive(t.name) && (strings.HasPrefix(t.name,"Int") || strings.HasPrefix(t.name,"UInt"))) { typeError(at,"expected a numeric type, got " + c.describe(t)) }
+    if t.variable != 0 { c.obligations=append(c.obligations,obligation{class:"numeric",typ:t,at:at});return t }
+    if !numericCapabilityPrimitive(t.name) { typeError(at,"expected a numeric type, got " + c.describe(t)) }
+    return t
+}
+func (c *checker) integral(t *term,at Span)*term {
+    t=c.underlying(t,at)
+    if t.variable!=0{c.obligations=append(c.obligations,obligation{class:"integral",typ:t,at:at});return t}
+    if !integralCapabilityPrimitive(t.name){typeError(at,"remainder requires integers")}
     return t
 }
 func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
@@ -269,14 +295,14 @@ func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
         case "==", "/=": c.unify(a,b,e.At); c.obligations = append(c.obligations,obligation{class:"equality",typ:a,at:e.At}); return base("Bool")
         case "<", "<=", ">", ">=":
             a, b = c.underlying(a,left.At), c.underlying(b,right.At); c.unify(a,b,e.At)
-            if a.name != "String" && a.name != "Timestamp" { c.numeric(a,e.At) }; return base("Bool")
+            c.obligations=append(c.obligations,obligation{class:"ordering",typ:a,at:e.At});return base("Bool")
         case "++":
             a, b = c.underlying(a,left.At), c.underlying(b,right.At); c.unify(a,b,e.At)
             c.obligations = append(c.obligations,obligation{class:"length",typ:a,at:e.At}); return a
         case ":": c.unify(base("[]",a),b,right.At); return b
         default:
-            a, b = c.numeric(a,left.At), c.numeric(b,right.At); c.unify(a,b,e.At)
-            if operator == "%" && a.name == "Real" { typeError(e.At,"remainder requires integers") }
+            if operator=="%"{a,b=c.integral(a,left.At),c.integral(b,right.At)}else{a,b=c.numeric(a,left.At),c.numeric(b,right.At)}
+            c.unify(a,b,e.At)
             if operator == "/" { return base("Real") }; return a
         }
     case Conditional(condition, yes, no):
@@ -284,7 +310,7 @@ func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
         a, b := c.expression(yes,env), c.expression(no,env); c.unify(a,b,e.At); return a
     case Let(name, annotation, bound, body):
         typ := c.expression(bound,env)
-        if annotation != nil { expected := c.typ(annotation,make(map[string]*term),false,false);c.assign(expected,typ,bound.At);c.refinements(annotation,make(map[string]*term));typ=expected }
+        if annotation != nil { expected := c.typ(annotation,c.typeVariables,false,false);c.assign(expected,typ,bound.At);c.refinements(annotation,c.typeVariables);typ=expected }
         local := copyEnvironment(env); local[name] = typ; return c.expression(body,local)
     case Case(subject, arms):
         typ := c.expression(subject,env); result := c.fresh(false); matrix := [][]*coveragePattern{}
@@ -302,13 +328,11 @@ func (c *checker) expression(e *Expr, env map[string]*term) (result *term) {
 
 func (c *checker) solveObligations() {
     for _, pending := range c.obligations {
-        t := c.underlying(pending.typ,pending.at)
         switch pending.class {
-        case "read":
-            if !c.known(t) { typeError(pending.at,"read target type cannot be inferred; add an annotation") }
-            c.readableType(t,pending.at,make(map[string]bool))
-        case "length": if t.name != "String" && t.name != "[]" { typeError(pending.at,"length/concatenation requires String or a list; add an annotation if inference is insufficient") }
-        case "equality": c.equalityType(t,pending.at,make(map[string]bool))
+        case "read","show","equality","numeric","integral","ordering":c.capabilityRequirements=append(c.capabilityRequirements,capabilityRequirement{class:capabilityName(pending.class),typ:pending.typ,at:pending.at})
+        case "length":
+            t:=c.underlying(pending.typ,pending.at)
+            if t.name != "String" && t.name != "[]" { typeError(pending.at,"length/concatenation requires String or a list; add an annotation if inference is insufficient") }
         }
     }
     c.obligations = nil
@@ -336,6 +360,7 @@ func (c *checker) known(t *term) bool {
 }
 
 func (c *checker) refinements(t *Type, variables map[string]*term) {
+    previous:=c.typeVariables;c.typeVariables=variables;defer func(){c.typeVariables=previous}()
     match t.Form {
     case RefinedType(parent, rules):
         c.refinements(parent,variables)
@@ -369,7 +394,7 @@ func Compile(source string) (program *Program, failure error) {
 // target inference cannot change the module's existing generic scope symbols.
 func checkModule(module *Module,payload *Type)*Program {
     if len(module.Imports) != 0 { panic(&Error{Code:"language.import",At:module.Imports[0].At,Message:"resolve and bundle imports before standalone compilation"}) }
-    c := checker{module:module,declarations:make(map[string]TypeDecl),functions:make(map[string]Function),constructors:make(map[string]constructor),substitution:make(map[int]*term),expressionTerms:make(map[*Expr]*term)}
+    c := checker{module:module,declarations:make(map[string]TypeDecl),functions:make(map[string]Function),constructors:make(map[string]constructor),substitution:make(map[int]*term),expressionTerms:make(map[*Expr]*term),functionVariables:make(map[string]map[string]*term)}
     module.functionScopes=make(map[string]map[string]string)
     module.declarationScopes=make(map[string]map[string]string)
     for _, declaration := range module.Types {
@@ -409,6 +434,8 @@ func checkModule(module *Module,payload *Type)*Program {
     for _, fn := range module.Functions {
         variables := make(map[string]*term)
         signature := c.typ(fn.Signature,variables,true,true)
+        c.typeVariables=variables
+        c.functionVariables[fn.Name]=variables
         module.functionScopes[fn.Name]=typeScope(variables)
         c.refinements(fn.Signature,variables)
         arity := len(fn.Equations[0].Patterns)
@@ -434,10 +461,17 @@ func checkModule(module *Module,payload *Type)*Program {
         c.readableType(target,payload.At,make(map[string]bool))
         c.refinements(payload,variables);c.solveObligations()
     }
+    c.solveCapabilities()
     module.inferred=make(map[*Expr]*Type,len(c.expressionTerms))
     c.reified=make(map[*term]*Type)
     for _,expr:=range c.expressionOrder {module.inferred[expr]=c.reify(c.expressionTerms[expr],expr.At)}
     return &Program{module:module}
+}
+
+func checkedModuleSnapshot(module *Module)CheckedModule {
+    capabilities:=make(map[string][]CapabilityConstraint,len(module.functionCapabilities))
+    for name,items:=range module.functionCapabilities{capabilities[name]=append([]CapabilityConstraint(nil),items...)}
+    return CheckedModule{Syntax:module,Inferred:module.inferred,FunctionScopes:module.functionScopes,DeclarationScopes:module.declarationScopes,FunctionCapabilities:capabilities}
 }
 
 func typeScope(variables map[string]*term)map[string]string {

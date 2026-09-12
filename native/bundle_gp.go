@@ -12,14 +12,15 @@ import (
 )
 
 type bundleFile struct {
-	Version        int                   `json:"version"`
-	Format         Format                `json:"format"`
-	Root           ResourceSelector      `json:"root"`
-	Resources      []Resource            `json:"resources"`
-	EditableSource string                `json:"editableSource"`
-	LanguageEntry  string                `json:"languageEntry,omitempty"`
-	LanguageFiles  []language.SourceFile `json:"languageFiles,omitempty"`
-	Metadata       WireMetadata          `json:"metadata"`
+	Version                 int                   `json:"version"`
+	Format                  Format                `json:"format"`
+	Root                    ResourceSelector      `json:"root"`
+	Resources               []Resource            `json:"resources"`
+	EditableSource          string                `json:"editableSource"`
+	LanguageEntry           string                `json:"languageEntry,omitempty"`
+	LanguageFiles           []language.SourceFile `json:"languageFiles,omitempty"`
+	NativeConstraintSources []Resource            `json:"nativeConstraintSources,omitempty"`
+	Metadata                WireMetadata          `json:"metadata"`
 }
 
 // Bundle returns one self-contained JSON distribution. Native resources remain
@@ -28,7 +29,7 @@ func (p *Project) Bundle() ([]byte, error) {
 	if p == nil {
 		return nil, &Error{Code: "native.project", Message: "a project is required"}
 	}
-	wire := bundleFile{Version: 1, Format: p.Format(), Root: p.root, Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), Metadata: p.Metadata()}
+	wire := bundleFile{Version: 1, Format: p.Format(), Root: p.root, Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), NativeConstraintSources: p.NativeConstraintSources(), Metadata: p.Metadata()}
 	data, err := json.MarshalIndent(wire, "", "  ")
 	if err != nil {
 		return nil, err
@@ -70,6 +71,12 @@ func ParseBundle(input []byte) (*Project, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	for _, unit := range wire.NativeConstraintSources {
+		project, err = project.WithEditedNativeConstraintSource(unit.URI, unit.Source)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return project.WithMetadata(wire.Metadata)
 }

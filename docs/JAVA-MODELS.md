@@ -328,10 +328,8 @@ it does not compare recursive inferred-signature suppliers or claim to prove
 predicate equivalence. Ancestor witnesses are built lazily without recursive
 factory calls. Evidence checks do not add another payload-validation pass.
 
-Generic tagged unions (including generic descendants of monomorphic unions)
-remain an implementation gate. Existing frontend limitations, including local
-annotations that name an enclosing type parameter and unconstrained generic
-equality, are not removed by model emission.
+Generic tagged unions, including instantiated nominal descendants, use the same
+closed witness and evidence design; see [GENERIC-UNIONS.md](GENERIC-UNIONS.md).
 
 ## Coverage and remaining scope
 
@@ -339,12 +337,14 @@ Current models cover monomorphic named scalars, records, lists and aliases,
 nominal refinement chains, recursive records through named references/optional
 fields, tagged unions and their recursive/refined alternatives, and composed
 optional/nullable/result values, plus the generic roots described above.
-Anonymous nested record classes still reject model generation explicitly. Wide regular records
-and union alternatives now use bounded draft emission rather than a model
-source-length guard.
-The validator can already handle more structural
-forms than the model emitter. Unsupported predicate execution and source-size
-limits remain as described in [JAVA-RUNTIME.md](JAVA-RUNTIME.md).
+Anonymous nested records produce deterministic descriptive model classes from
+their checked owner and field/item/argument path. They retain typed getters,
+validating and explicit-bypass construction, immutable drafts, generic owner
+witnesses, and the original checked inline type metadata; their witness identity
+includes the owner and exact type path. Wide regular records and union
+alternatives use bounded draft emission rather than a model source-length guard.
+Unsupported predicate execution and source-size limits remain as described in
+[JAVA-RUNTIME.md](JAVA-RUNTIME.md).
 
 Closed generic validation/read targets are now available through Go's
 `Program.PayloadType` and Java's `GenerateValidatorWithTypes` registration API.

@@ -273,10 +273,13 @@ the caller cap. An unaffordable operation does not run or consume another
 clause's allowance. These are logical work units, not milliseconds or a complete
 bound on host memory/CPU usage.
 
-There is also a deterministic 512-frame nesting safety cap. It yields
-indeterminate, never a claim of nontermination or a violation. Replacing recursive
-interpreter dispatch with a trampoline remains required work so recursive
-predicates can use the full logical budget without this temporary host-stack cap.
+Named expression evaluation now uses an explicit continuation queue in Go and
+Java. Tail, non-tail, and mutually recursive named calls therefore consume the
+same deterministic logical budget without consuming one host stack frame per
+call; an infinite recursion ends as `evaluation.budget`. Independent 512-level
+guards remain for bounded source/type trees and recursively nested payload
+structure. Crossing one of those structural guards is indeterminate, never a
+claim of nontermination or a predicate violation.
 
 ## Remaining integration
 
@@ -285,9 +288,11 @@ The following are explicitly unfinished, not silently interpreted as success:
 - Fixed-width/fixed-precision conversion vocabulary; release-stable
   regex/Unicode profile auditing across toolchain changes (current Go/Java
   parsing, compilation and matching cost conformance is tested).
-- Full constraint-qualified polymorphism and inference of all necessary codec
-  capabilities through generic function signatures. Unresolved runtime target
-  variables currently fail indeterminate; they must never silently pick a type.
+- Polymorphic numeric literals. Named function `Eq`, `Show`, `Read`, `Num`,
+  `Integral`, and `Ord` requirements are explicit or
+  inferred and propagated; unsupported concrete instantiations fail statically.
+  No runtime type or conversion is silently selected. Anonymous lambda
+  capability inference remains deferred.
 - Full numeric literal typing and removal/replacement of the current
   65,536-bit numeric-backend guard with a consistent resource policy.
 - Source-level overall budget/record-policy metadata, complete affected-path
@@ -322,3 +327,10 @@ precharges `(leftOriginalTextLength + rightOriginalTextLength)² + 32`.
 Go/Java conformance tests compare 29,355 complete validation reports across
 numeric boundaries, custom messages, leap/history cases, and budget thresholds.
 Rounding tests additionally check 10,000 independently calculated law cases.
+
+The `toIntN`/`toUIntN`, `fromIntN`/`fromUIntN`, and `wrapIntN`/`wrapUIntN`
+families now expose checked narrowing, exact widening, and explicit wrapping.
+They precharge `canonicalInputLength² + N + 1` logical work units before
+conversion. Widths are canonical positive decimal integers through 65,536.
+Ordinary fixed-width arithmetic continues to reject overflow; a wrapping
+conversion is never inserted implicitly.

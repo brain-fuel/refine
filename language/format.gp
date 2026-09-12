@@ -100,7 +100,7 @@ func Format(module *Module) string {
         b.WriteString("data " + name + " = " + strings.Join(parts," | ") + "\n\n")
     }
     for _, fn := range module.Functions {
-        if fn.Signature != nil { b.WriteString(fn.Name + " :: " + FormatType(fn.Signature) + "\n") }
+        if fn.Signature != nil { b.WriteString(fn.Name + " :: " + FormatQualifiedType(fn.Constraints,fn.Signature) + "\n") }
         for _, equation := range fn.Equations {
             b.WriteString(fn.Name)
             for _, pattern := range equation.Patterns { b.WriteString(" " + FormatPattern(pattern)) }
@@ -109,4 +109,13 @@ func Format(module *Module) string {
         b.WriteByte('\n')
     }
     return b.String()
+}
+
+// FormatQualifiedType renders a signature context without changing the type.
+// One constraint uses the compact form; multiple constraints are parenthesized.
+func FormatQualifiedType(constraints []CapabilityConstraint,signature *Type)string {
+    if len(constraints)==0{return FormatType(signature)}
+    parts:=make([]string,len(constraints));for i,item:=range constraints{parts[i]=item.Capability+" "+item.Variable}
+    prefix:=strings.Join(parts,", ");if len(parts)>1{prefix="("+prefix+")"}
+    return prefix+" => "+FormatType(signature)
 }

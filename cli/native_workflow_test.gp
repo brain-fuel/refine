@@ -1,0 +1,62 @@
+package cli
+
+import (
+    "bytes"
+    "encoding/json"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/native"
+)
+
+func TestNativeArtifactWorkflow(t *testing.T){
+    root:=t.TempDir();original:=`{"type":"integer","minimum":0,"description":"preserve exact bytes"}`
+    schema:=filepath.Join(root,"schema.json");if err:=os.WriteFile(schema,[]byte(original),0600);err!=nil{t.Fatal(err)}
+    var output,errors bytes.Buffer
+    run:=func(args []string,input string)int{t.Helper();output.Reset();errors.Reset();return nativeCommand(args,strings.NewReader(input),&output,&errors)}
+    if code:=run([]string{"ingest","--type","Age","json-schema",schema},"");code!=0{t.Fatalf("ingest %d %s",code,errors.String())}
+    bundle:=append([]byte(nil),output.Bytes()...);parsed,err:=native.ParseBundle(bundle);if err!=nil||parsed.Root().TypeName!="Age"{t.Fatal("invalid ingested artifact",err)}
+    if code:=run([]string{"source","-"},string(bundle));code!=0||output.String()!=parsed.EditableSource(){t.Fatal("editable source mismatch",errors.String())}
+    source:=filepath.Join(root,"edited.refine");editedSource:=strings.Replace(parsed.EditableSource(),"type Age = Int","type Age = Int where False @message \"secret author message\"",1);if err:=os.WriteFile(source,[]byte(editedSource),0600);err!=nil{t.Fatal(err)}
+    if code:=run([]string{"update","-",source},string(bundle));code!=0{t.Fatal("checked edit failed",errors.String())}
+    edited:=append([]byte(nil),output.Bytes()...)
+    if code:=run([]string{"original","-"},string(edited));code!=0||output.String()!=original{t.Fatal("edit changed native original",errors.String())}
+    artifact:=filepath.Join(root,"contract.refined.json");if err:=os.WriteFile(artifact,edited,0600);err!=nil{t.Fatal(err)}
+    if code:=run([]string{"validate-payload","--json",artifact,"-"},"3");code!=1||!strings.Contains(output.String(),`"state":"invalid"`)||!strings.Contains(output.String(),`"nativeOnly":false`)||!strings.Contains(output.String(),"secret author message"){t.Fatal("added refinement was not reported",output.String(),errors.String())}
+    if code:=run([]string{"validate-payload","--native-only","--json",artifact,"-"},"3");code!=0||!strings.Contains(output.String(),`"nativeOnly":true`)||!strings.Contains(output.String(),"NOT evaluated"){t.Fatal("native-only scope missing",output.String(),errors.String())}
+    if code:=run([]string{"validate-payload","--native-only","--json",artifact,"-"},"-987654321");code!=1||strings.Contains(output.String(),"987654321")||strings.Contains(output.String(),"secret author message"){t.Fatal("invalid native payload accepted or leaked",output.String(),errors.String())}
+    if err:=os.WriteFile(source,[]byte("type Missing = Int\n"),0600);err!=nil{t.Fatal(err)}
+    if code:=run([]string{"update","-",source},string(bundle));code!=1||output.Len()!=0{t.Fatal("bad edit emitted partial artifact")}
+    data,err:=os.ReadFile(schema);if err!=nil||string(data)!=original{t.Fatal("workflow modified input file")}
+}
+
+func TestNativeOfflineDependencyWorkflow(t *testing.T){
+    root:=t.TempDir();resources:=filepath.Join(root,"resources.json");data,err:=json.Marshal([]native.Resource{{URI:"urn:dependency",Source:`{"type":"string"}`}});if err!=nil{t.Fatal(err)};if err:=os.WriteFile(resources,data,0600);err!=nil{t.Fatal(err)}
+    var output,errors bytes.Buffer
+    if code:=nativeCommand([]string{"ingest","--resources",resources,"json-schema","-"},strings.NewReader(`{"$ref":"urn:dependency"}`),&output,&errors);code!=0{t.Fatal("offline dependencies",errors.String())}
+    bundle,err:=native.ParseBundle(output.Bytes());if err!=nil||len(bundle.Resources())!=2{t.Fatal("resources not bundled",err)}
+    output.Reset();errors.Reset()
+    if code:=nativeCommand([]string{"ingest","json-schema","-"},strings.NewReader(`{"$ref":"https://example.invalid/not-fetched"}`),&output,&errors);code!=1||output.Len()!=0{t.Fatal("unresolved external resource accepted")}
+}
+
+func TestNativeRefinedJSONValidationBoundary(t *testing.T){
+    project,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"integer","multipleOf":3}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Positive"}});if err!=nil{t.Fatal(err)}
+    project,err=project.WithEditedSource(strings.Replace(project.EditableSource(),"type Positive = Int","type Positive = Int where it > 0 @code \"positive\"",1));if err!=nil{t.Fatal(err)};bundle,err:=project.Bundle();if err!=nil{t.Fatal(err)}
+    artifact:=filepath.Join(t.TempDir(),"contract.json");if err=os.WriteFile(artifact,bundle,0600);err!=nil{t.Fatal(err)}
+    cases:=[]struct{name,payload,state,code string;args []string}{
+        {"valid","6","valid","",nil},
+        {"native rejects","4","invalid","native.payload",nil},
+        {"refinement rejects","-3","invalid","positive",nil},
+        {"budget","6","indeterminate","",[]string{"--total-steps","1"}},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){var output,errors bytes.Buffer;args:=append([]string{"native","validate-payload","--json"},tc.args...);args=append(args,artifact,"-");status:=Run(args,strings.NewReader(tc.payload),&output,&errors);want:=1;if tc.state=="valid"{want=0};if status!=want{t.Fatalf("status %d: %s %s",status,output.String(),errors.String())};var got report;if err:=json.Unmarshal(output.Bytes(),&got);err!=nil||got.State!=tc.state{t.Fatalf("report %s: %v",output.String(),err)};if tc.code!=""{found:=false;for _,detail:=range got.Diagnostics{if detail.Code==tc.code{found=true}};if !found{t.Fatalf("missing %s: %s",tc.code,output.String())}}})}
+    var output,errors bytes.Buffer;if status:=Run([]string{"native","validate-payload",artifact,"-"},strings.NewReader("-3"),&output,&errors);status!=1||output.Len()!=0||!strings.Contains(errors.String(),"positive"){t.Fatalf("human refinement failure %d %s %s",status,output.String(),errors.String())}
+}
+
+func TestNativeWorkflowUsageAndPrivacy(t *testing.T){
+    cases:=[][]string{{},{"missing"},{"source"},{"update","-","-"},{"ingest","--resources","-","json-schema","-"}}
+    for _,args:=range cases{var output,errors bytes.Buffer;if code:=nativeCommand(args,strings.NewReader(""),&output,&errors);code!=2||output.Len()!=0{t.Fatalf("bad usage %v %d",args,code)}}
+    for _,source:=range []string{`{"type":"string","type":"integer"}`,`{"type":"private-invalid-type"}`} {var output,errors bytes.Buffer;if code:=nativeCommand([]string{"ingest","json-schema","-"},strings.NewReader(source),&output,&errors);code!=1||output.Len()!=0||strings.Contains(errors.String(),"private-invalid-type"){t.Fatal("schema failure leaked input or emitted output")}}
+}

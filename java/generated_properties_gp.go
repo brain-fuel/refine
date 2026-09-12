@@ -44,12 +44,15 @@ type PropertyReplay struct {
 	SerializedData string
 }
 type PropertyTestOptions struct {
-	Targets       []PropertyTarget
-	CaseCount     int
-	AttemptBudget int
-	Seed          int64
-	Examples      []PropertyExample
-	Replays       []PropertyReplay
+	Targets             []PropertyTarget
+	CaseCount           int
+	AttemptBudget       int
+	Seed                int64
+	Examples            []PropertyExample
+	Replays             []PropertyReplay
+	JSONModule          string
+	AvroSerde           string
+	NativeJSONValidator string
 }
 
 type propertyRule struct {
@@ -297,11 +300,16 @@ func (e *propertyEmitter) generator(t *language.Type) (string, error) {
 	case language.NamedType:
 		name := __gp_m4.Name
 
+		if name != "Int" && integerType(name) {
+			return fixedIntegerPropertyGenerator(name)
+		}
 		switch name {
 		case "Int":
 			return `org.jetbrains.jetCheck.Generator.integers(-10000,10000).<Data>map(n -> new Data.Number(Rational.of(n),"Int"))`, nil
 		case "Real":
 			return `org.jetbrains.jetCheck.Generator.zipWith(org.jetbrains.jetCheck.Generator.integers(-10000,10000),org.jetbrains.jetCheck.Generator.integers(1,1000),(n,d) -> new Data.Number(new Rational(java.math.BigInteger.valueOf(n),java.math.BigInteger.valueOf(d)),"Real")).<Data>map(n -> n)`, nil
+		case "Float32", "Float64":
+			return `org.jetbrains.jetCheck.Generator.zipWith(org.jetbrains.jetCheck.Generator.integers(-65536,65536),org.jetbrains.jetCheck.Generator.integers(0,20),(n,p) -> new Data.Number(new Rational(java.math.BigInteger.valueOf(n),java.math.BigInteger.ONE.shiftLeft(p)),"` + name + `")).<Data>map(n -> n)`, nil
 		case "String":
 			return `org.jetbrains.jetCheck.Generator.stringsOf(org.jetbrains.jetCheck.IntDistribution.uniform(0,24),org.jetbrains.jetCheck.Generator.asciiPrintableChars()).<Data>map(Data.Text::new)`, nil
 		case "Bool":
@@ -315,7 +323,10 @@ func (e *propertyEmitter) generator(t *language.Type) (string, error) {
 			return "", fmt.Errorf("recursive occurrence of %s is unsupported outside its direct union strategy", name)
 		}
 		if decl.Body == nil {
-			return e.unionGenerator(name, decl)
+			e.visiting[name] = true
+			result, err := e.unionGenerator(name, decl)
+			delete(e.visiting, name)
+			return result, err
 		}
 		e.visiting[name] = true
 		result, err := e.generator(decl.Body)
@@ -579,18 +590,22 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 	usedReplays := map[string]bool{}
 	for i, target := range targets {
 		decl, ok := declarations[target.Name]
-		if !ok || len(decl.Parameters) > 0 || decl.Body == nil {
-			return nil, fmt.Errorf("property target %s must be a closed non-union declaration", target.Name)
+		if !ok || len(decl.Parameters) > 0 {
+			return nil, fmt.Errorf("property target %s must be a closed declaration", target.Name)
 		}
 		if known[target.Name] {
 			return nil, fmt.Errorf("duplicate property target %s", target.Name)
 		}
 		known[target.Name] = true
-		raw, err := emitter.generator(decl.Body)
+		targetType := decl.Body
+		if targetType == nil {
+			targetType = &language.Type{Form: language.NamedType{Name: target.Name}, At: decl.At}
+		}
+		raw, err := emitter.boundedGenerator(targetType)
 		if err != nil {
 			return nil, fmt.Errorf("property target %s: %w", target.Name, err)
 		}
-		rules, err := emitter.rules(target.Name, "", decl.Body)
+		rules, err := emitter.rules(target.Name, "", targetType)
 		if err != nil {
 			return nil, err
 		}
@@ -600,12 +615,12 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 			usedReplays[validKey] = true
 		}
 		factoryDecl, receiver := "", target.Name+"."
-		if targetUsesFactory(decl.Body, declarations, map[string]bool{}) {
-			factoryDecl = "var factory=new " + target.Name + ".Factory(); "
+		if targetUsesFactory(targetType, declarations, map[string]bool{}) {
+			factoryDecl = "var factory=new " + target.Name + "." + modelFactoryNameFor(declarations, contractName) + "(); "
 			receiver = "factory."
 		}
-		fmt.Fprintf(&methods, "    private static boolean validBoundary%d(Data data) {\n        try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.validate().state()==Validation.State.VALID && read.showWithoutValidation().equals(shown); } catch (ValidationException failure) { return false; }\n    }\n", i, factoryDecl, receiver, receiver)
-		fmt.Fprintf(&methods, "    private static boolean invalidBoundary%d(Data data,String code) {\n        %svar bypass=%sfromDataWithoutValidation(data); if (!bypass.rawData().equals(data) || !targeted(bypass.validate(),code)) return false; try { %sfromData(data); return false; } catch (ValidationException failure) { if (!targeted(failure.outcome(),code)) return false; } try { %sread(bypass.showWithoutValidation()); return false; } catch (ValidationException failure) { return targeted(failure.outcome(),code); }\n    }\n", i, factoryDecl, receiver, receiver, receiver)
+		fmt.Fprintf(&methods, "    private static boolean validBoundary%d(Data data) {\n        try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.validate().state()==Validation.State.VALID && read.showWithoutValidation().equals(shown) && wireValid(data,model) && avroWireValid(data,model); } catch (ValidationException failure) { return false; }\n    }\n", i, factoryDecl, receiver, receiver)
+		fmt.Fprintf(&methods, "    private static boolean invalidBoundary%d(Data data,String code) {\n        %svar bypass=%sfromDataWithoutValidation(data); if (!bypass.rawData().equals(data) || !targeted(bypass.validate(),code) || !wireInvalid(bypass,code) || !avroWireInvalid(bypass,code)) return false; try { %sfromData(data); return false; } catch (ValidationException failure) { if (!targeted(failure.outcome(),code)) return false; } try { %sread(bypass.showWithoutValidation()); return false; } catch (ValidationException failure) { return targeted(failure.outcome(),code); }\n    }\n", i, factoryDecl, receiver, receiver, receiver)
 		fmt.Fprintf(&methods, "    private static void target%d() {\n        var raw = %s;\n        var valid = requiring(raw, d -> %s.validate(%s,d).state() == Validation.State.VALID, %d, %s);\n        check(valid, %sGeneratedProperties::validBoundary%d, %s);\n", i, raw, contractName, javaQuote(target.Name), attempts, javaQuote("valid "+target.Name), contractName, i, javaQuote(validReplay))
 		for j, rule := range rules {
 			key := replayKey(target.Name, ReplayInvalid, rule.code)
@@ -653,6 +668,75 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 	for i := range targets {
 		calls = append(calls, fmt.Sprintf("target%d();", i))
 	}
+	candidateFields := ""
+	candidateChecks := []string{}
+	if options.NativeJSONValidator != "" {
+		if options.JSONModule == "" {
+			return nil, fmt.Errorf("a native JSON candidate filter requires JSONModule")
+		}
+		if err := javaClassName(options.NativeJSONValidator); err != nil {
+			return nil, err
+		}
+		candidateFields = "    private static final " + options.JSONModule + " NATIVE_CANDIDATES=new " + options.JSONModule + "();\n"
+		candidateChecks = append(candidateChecks, "NATIVE_CANDIDATES.acceptsNativeCandidate(data)")
+	}
+	if options.AvroSerde != "" {
+		if err := javaClassName(options.AvroSerde); err != nil {
+			return nil, err
+		}
+		candidateChecks = append(candidateChecks, "AVRO.acceptsNativeCandidate(data)")
+	}
+	candidateExpression := "true"
+	if len(candidateChecks) > 0 {
+		candidateExpression = strings.Join(candidateChecks, " && ")
+	}
+	nativeCandidate := candidateFields + "    private static boolean nativeCandidate(Data data) { return " + candidateExpression + "; }\n"
+	wireMethods := nativeCandidate + "    private static boolean wireValid(Data data,Object model) { return true; }\n    private static boolean wireInvalid(Object model,String code) { return true; }\n"
+	if options.JSONModule != "" {
+		if err := javaClassName(options.JSONModule); err != nil {
+			return nil, err
+		}
+		if len(targets) != 1 {
+			return nil, fmt.Errorf("a JSON property module currently requires exactly one target")
+		}
+		wireMethods = nativeCandidate + fmt.Sprintf(`    private static final tools.jackson.databind.json.JsonMapper WIRE=tools.jackson.databind.json.JsonMapper.builder().addModule(new %s()).build();
+    private static boolean wireValid(Data data,Object model) {
+        String json=WIRE.writeValueAsString(model); var decoded=WIRE.readValue(json,%s.class);
+        return decoded.rawData().equals(data) && WIRE.writeValueAsString(decoded).equals(json);
+    }
+    private static boolean wireInvalid(Object model,String code) {
+        var output=new java.io.ByteArrayOutputStream();
+        try { WIRE.writeValue(output,model); return false; }
+        catch (RuntimeException expected) {
+            Throwable cause=expected;
+            for (int i=0;cause!=null && i<32;i++,cause=cause.getCause()) {
+                if (cause instanceof ValidationException validation) return output.size()==0 && targeted(validation.outcome(),code);
+            }
+            return false;
+        }
+    }
+`, options.JSONModule, targets[0].Name)
+	}
+	if options.AvroSerde == "" {
+		wireMethods += "    private static boolean avroWireValid(Data data,Object model) { return true; }\n    private static boolean avroWireInvalid(Object model,String code) { return true; }\n"
+	} else {
+		if len(targets) != 1 {
+			return nil, fmt.Errorf("an Avro property adapter currently requires exactly one target")
+		}
+		wireMethods += fmt.Sprintf(`    private static final %s AVRO=new %s();
+    private static boolean avroWireValid(Data data,Object model) {
+        try { var value=(%s)model; byte[] binary=AVRO.writeBinary(value); var decoded=AVRO.readBinary(binary); String json=AVRO.writeJson(value); var jsonDecoded=AVRO.readJson(json); return decoded.rawData().equals(data) && jsonDecoded.rawData().equals(data) && java.util.Arrays.equals(binary,AVRO.writeBinary(decoded)) && json.equals(AVRO.writeJson(jsonDecoded)); }
+        catch (java.io.IOException failure) { return false; }
+    }
+    private static boolean avroWireInvalid(Object model,String code) {
+        var output=new java.io.ByteArrayOutputStream();
+        try { AVRO.writeBinary((%s)model,output); return false; }
+        catch (ValidationException expected) { return output.size()==0 && targeted(expected.outcome(),code); }
+        catch (java.io.IOException failure) { return false; }
+    }
+`, options.AvroSerde, options.AvroSerde, targets[0].Name, targets[0].Name)
+	}
+	propertyMethods := strings.ReplaceAll(methods.String(), "var valid = requiring(raw, d -> ", "var valid = requiring(raw, d -> nativeCandidate(d) && ")
 	source := header + fmt.Sprintf(`@SuppressWarnings("deprecation")
 public final class %s {
     private static final int CASES=%d; private static final long SEED=%dL;
@@ -660,9 +744,10 @@ public final class %s {
     private static <T extends Data> void check(org.jetbrains.jetCheck.Generator<T> generator, java.util.function.Predicate<T> property, String replay) { if (replay.isEmpty()) org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property); else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property); }
     private static boolean targeted(Validation.Outcome outcome,String code) { return outcome.state()==Validation.State.INVALID && outcome.diagnostics().size()==1 && outcome.diagnostics().getFirst().code().equals(code); }
 %s
+%s
     public static void main(String[] args) { %s %s }
 }
-`, class, cases, options.Seed, methods.String(), strings.Join(calls, " "), examples.String())
+`, class, cases, options.Seed, wireMethods, propertyMethods, strings.Join(calls, " "), examples.String())
 	prefix := strings.ReplaceAll(namespace, ".", "/")
 	return []File{{Path: path.Join(prefix, class+".java"), Source: source}}, nil
 }

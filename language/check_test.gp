@@ -78,7 +78,6 @@ func TestTypeCheckRejectsInvalidContracts(t *testing.T) {
         {"f :: Bool\nf = not == not", "functions do not support"},
         {"f :: Bool\nf = [not] == [not]", "functions do not support"},
         {"f :: Bool\nf = oneOf not [not]", "functions do not support"},
-        {"same :: a -> a -> Bool\nsame x y = x == y", "equality operand type"},
         {"type A = String\ntype B = String\nf :: A -> B\nf a = a", "expected B"},
         {"type Int = String", "cannot redefine"},
         {"data X = A | A", "duplicate or reserved"},

@@ -54,10 +54,12 @@ func (e *Error) Unwrap() error { return e.Cause }
 // language module, or the source member of {source,root}. Root, when present,
 // is checked as a closed payload type in that module.
 type Annotation struct {
-	Pointer   string
-	Source    string
-	Root      string
-	Formatted string
+	Pointer     string
+	Source      string
+	Root        string
+	Formatted   string
+	Metadata    WireMetadata
+	HasMetadata bool
 }
 
 // Document retains the exact caller bytes. Parsed oracle models are not exposed:
@@ -98,7 +100,11 @@ func (d *Document) Annotations() []Annotation {
 	if d == nil {
 		return nil
 	}
-	return append([]Annotation(nil), d.annotations...)
+	out := append([]Annotation(nil), d.annotations...)
+	for i := range out {
+		out[i].Metadata = copyMetadata(out[i].Metadata)
+	}
+	return out
 }
 
 func Parse(format Format, input []byte, options Options) (*Document, error) {
@@ -131,7 +137,8 @@ func limits(options Options) (schemajson.Limits, error) {
 	return l, nil
 }
 
-func ParseJSONSchema(input []byte, options Options) (*Document, error) {
+func ParseJSONSchema(input []byte, options Options) (document *Document, failure error) {
+	defer recoverRegexEvaluation(JSONSchema, &failure)
 	doc, err := schemajson.Parse(input, options.Limits)
 	if err != nil {
 		return nil, wrap(JSONSchema, "native.syntax", "", err)
@@ -206,7 +213,8 @@ func supportedOpenAPI(version string) bool {
 	return false
 }
 
-func ParseOpenAPI(input []byte, options Options) (*Document, error) {
+func ParseOpenAPI(input []byte, options Options) (document *Document, failure error) {
+	defer recoverRegexEvaluation(OpenAPI, &failure)
 	l, err := limits(options)
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.limit", "", err)
@@ -252,6 +260,10 @@ func wrap(format Format, code, pointer string, err error) *Error {
 }
 
 func parseYAML(input []byte, l schemajson.Limits) (*yaml.Node, error) {
+	numericExpansion := 0
+	return parseYAMLWithNumericExpansion(input, l, &numericExpansion)
+}
+func parseYAMLWithNumericExpansion(input []byte, l schemajson.Limits, numericExpansion *int) (*yaml.Node, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(string(input)))
 	var root yaml.Node
 	if err := decoder.Decode(&root); err != nil {
@@ -265,13 +277,13 @@ func parseYAML(input []byte, l schemajson.Limits) (*yaml.Node, error) {
 		return nil, errors.New("OpenAPI input must contain exactly one YAML document")
 	}
 	count := 0
-	if err := checkYAML(root.Content[0], 0, l, &count, "", make(map[*yaml.Node]bool)); err != nil {
+	if err := checkYAML(root.Content[0], 0, l, &count, numericExpansion, "", make(map[*yaml.Node]bool)); err != nil {
 		return nil, err
 	}
 	return root.Content[0], nil
 }
 
-func checkYAML(node *yaml.Node, depth int, l schemajson.Limits, count *int, path string, active map[*yaml.Node]bool) error {
+func checkYAML(node *yaml.Node, depth int, l schemajson.Limits, count, numericExpansion *int, path string, active map[*yaml.Node]bool) error {
 	if depth > l.Depth {
 		return fmt.Errorf("document depth limit exceeded at %s", path)
 	}
@@ -302,14 +314,37 @@ func checkYAML(node *yaml.Node, depth int, l schemajson.Limits, count *int, path
 			}
 			seen[key.Value] = true
 			childPath := path + "/" + escapePointer(key.Value)
-			if err := checkYAML(node.Content[i+1], depth+1, l, count, childPath, active); err != nil {
+			if err := checkYAML(node.Content[i+1], depth+1, l, count, numericExpansion, childPath, active); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
+	if node.Kind == yaml.ScalarNode && (node.Tag == "!!int" || node.Tag == "!!float") {
+		if len(node.Value) > DefaultNumericExpansion {
+			return fmt.Errorf("exact YAML number token limit exceeded at %s", path)
+		}
+		raw := ""
+		var err error
+		if node.Tag == "!!int" {
+			raw, err = yamlIntegerJSON(node.Value)
+		} else {
+			raw, err = yamlFloatJSON(node.Value)
+		}
+		if err != nil {
+			return err
+		}
+		cost, err := exactJSONNumberExpansion(raw, path, DefaultNumericExpansion)
+		if err != nil {
+			return err
+		}
+		if cost > DefaultNumericExpansion-*numericExpansion {
+			return fmt.Errorf("aggregate exact YAML number expansion limit exceeded at %s", path)
+		}
+		*numericExpansion += cost
+	}
 	for i, child := range node.Content {
-		if err := checkYAML(child, depth+1, l, count, fmt.Sprintf("%s/%d", path, i), active); err != nil {
+		if err := checkYAML(child, depth+1, l, count, numericExpansion, fmt.Sprintf("%s/%d", path, i), active); err != nil {
 			return err
 		}
 	}
@@ -340,6 +375,13 @@ func checkJSONDraft(root schemajson.Node, prefix string) error {
 }
 
 func scalarJSON(node schemajson.Node, path string) error {
+	return scalarJSONWithNumericExpansion(node, path, DefaultNumericExpansion)
+}
+func scalarJSONWithNumericExpansion(node schemajson.Node, path string, limit int) error {
+	used := 0
+	return scalarJSONBudget(node, path, limit, &used)
+}
+func scalarJSONText(node schemajson.Node, path string) error {
 	switch schemajson.KindName(node.Kind()) {
 	case "string":
 		if _, ok := nodeString(node); !ok {
@@ -347,7 +389,7 @@ func scalarJSON(node schemajson.Node, path string) error {
 		}
 	case "array":
 		for i, child := range node.Elements() {
-			if err := scalarJSON(child, fmt.Sprintf("%s/%d", path, i)); err != nil {
+			if err := scalarJSONText(child, fmt.Sprintf("%s/%d", path, i)); err != nil {
 				return err
 			}
 		}
@@ -357,10 +399,78 @@ func scalarJSON(node schemajson.Node, path string) error {
 			if err != nil {
 				return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators", path)
 			}
-			if err := scalarJSON(member.Value, path+"/"+escapePointer(key)); err != nil {
+			if err := scalarJSONText(member.Value, path+"/"+escapePointer(key)); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+func scalarJSONBudget(node schemajson.Node, path string, limit int, used *int) error {
+	switch schemajson.KindName(node.Kind()) {
+	case "string":
+		if _, ok := nodeString(node); !ok {
+			return fmt.Errorf("non-scalar Unicode string at %s is not supported by native validators", path)
+		}
+	case "number":
+		cost, err := exactJSONNumberExpansion(node.Raw(), path, limit)
+		if err != nil {
+			return err
+		}
+		if cost > limit-*used {
+			return fmt.Errorf("aggregate exact JSON number expansion limit exceeded at %s", path)
+		}
+		*used += cost
+	case "array":
+		for i, child := range node.Elements() {
+			if err := scalarJSONBudget(child, fmt.Sprintf("%s/%d", path, i), limit, used); err != nil {
+				return err
+			}
+		}
+	case "object":
+		for _, member := range node.Members() {
+			key, err := member.Key.UTF8()
+			if err != nil {
+				return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators", path)
+			}
+			if err := scalarJSONBudget(member.Value, path+"/"+escapePointer(key), limit, used); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// exactJSONNumberExpansion charges the token bytes plus the absolute decimal
+// exponent without constructing a big integer. Callers aggregate this cost
+// across the complete document before handing any value to an exact oracle.
+func exactJSONNumberExpansion(raw, path string, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("exact JSON number expansion limit must be positive")
+	}
+	if len(raw) > limit {
+		return 0, fmt.Errorf("exact JSON number token limit exceeded at %s", path)
+	}
+	exponent := ""
+	if index := strings.IndexAny(raw, "eE"); index >= 0 {
+		exponent = raw[index+1:]
+	}
+	if strings.HasPrefix(exponent, "+") || strings.HasPrefix(exponent, "-") {
+		exponent = exponent[1:]
+	}
+	magnitude := 0
+	for _, char := range exponent {
+		if char < '0' || char > '9' {
+			return 0, fmt.Errorf("invalid JSON number exponent at %s", path)
+		}
+		digit := int(char - '0')
+		if magnitude > (limit-digit)/10 {
+			return 0, fmt.Errorf("exact JSON number exponent limit exceeded at %s", path)
+		}
+		magnitude = magnitude*10 + digit
+	}
+	if magnitude > limit-len(raw) {
+		return 0, fmt.Errorf("exact JSON number expansion limit exceeded at %s", path)
+	}
+	return len(raw) + magnitude, nil
 }

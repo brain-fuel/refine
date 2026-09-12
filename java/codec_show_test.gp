@@ -33,7 +33,7 @@ type Local = Raw where (let render = show in length (render it) > 0) where False
 type Guarded = Raw where length (render it) > 0 where False @message (render it)
 type Text = String where length (show it) > 0 where False @message (show it)
 type Number = Real where length (show it) > 0 where False @message (show it)
-type Static = Int where show {} == "{}" && show [] == "[]" && show True == "True" && show False == "False"
+type Static = Int where show {} == "{}" && (let xs :: [Int] = [] in show xs) == "[]" && show True == "True" && show False == "False"
 type Mapped = [Int] where map show it == map (id show) it
 `
 
