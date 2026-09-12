@@ -66,6 +66,41 @@ func (n Number) Multiply(other Number) Number {
 	return numberFromRat(new(big.Rat).Mul(n.rat(), other.rat()))
 }
 func (n Number) Negate() Number { return numberFromRat(new(big.Rat).Neg(n.rat())) }
+
+// Truncate, Floor, Ceiling and RoundHalfEven are explicit exact-to-integer
+// rounding operations. They return new values and never modify the payload.
+func (n Number) Truncate() Number {
+	r := n.rat()
+	return numberFromRat(new(big.Rat).SetInt(new(big.Int).Quo(r.Num(), r.Denom())))
+}
+func (n Number) Floor() Number {
+	r := n.rat()
+	q, rem := new(big.Int), new(big.Int)
+	q.QuoRem(r.Num(), r.Denom(), rem)
+	if rem.Sign() < 0 {
+		q.Sub(q, big.NewInt(1))
+	}
+	return numberFromRat(new(big.Rat).SetInt(q))
+}
+func (n Number) Ceiling() Number {
+	r := n.rat()
+	q, rem := new(big.Int), new(big.Int)
+	q.QuoRem(r.Num(), r.Denom(), rem)
+	if rem.Sign() > 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	return numberFromRat(new(big.Rat).SetInt(q))
+}
+func (n Number) RoundHalfEven() Number {
+	r := n.rat()
+	q, rem := new(big.Int), new(big.Int)
+	q.QuoRem(r.Num(), r.Denom(), rem)
+	distance := new(big.Int).Lsh(new(big.Int).Abs(rem), 1).Cmp(r.Denom())
+	if distance > 0 || distance == 0 && q.Bit(0) == 1 {
+		q.Add(q, big.NewInt(int64(r.Sign())))
+	}
+	return numberFromRat(new(big.Rat).SetInt(q))
+}
 func (n Number) Divide(other Number) (Number, error) {
 	if other.Sign() == 0 {
 		return Number{}, errors.New("division by zero")

@@ -1,0 +1,58 @@
+package language
+
+import (
+    "fmt"
+    "reflect"
+    "sync"
+    "testing"
+    "testing/quick"
+
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestOfflineSourceImports(t *testing.T){
+    sources:=map[string]string{
+        "app/main.refine":"package com.example.app\nimport \"../lib/person.refine\"\nimport \"../lib/predicates.refine\"\ntype Adult = Person where adult it.age\n",
+        "lib/person.refine":"package com.example.library\nimport \"ids.refine\"\ntype Person = { id :: ID, age :: Int }\n",
+        "lib/predicates.refine":"import \"ids.refine\"\nadult :: Int -> Bool\nadult age = age >= 18\n",
+        "lib/ids.refine":"-- original metadata\ntype ID = String where length it > 0\n",
+        "unused.refine":"this intentionally does not parse",
+    }
+    bundle,err:=CompileSources("app/main.refine",sources);if err!=nil{t.Fatal(err)}
+    files:=bundle.Files();if len(files)!=4||files[0].ID!="lib/ids.refine"||bundle.Program().Syntax().Package!="com.example.app"{t.Fatal(files)}
+    raw,_:=value.TextFromUTF8(`{id = "A", age = 21}`);_,report:=bundle.Program().ReadData("Adult",raw,validation.Limits{});if validation.StateName(report.State())!="valid"{t.Fatal(report)}
+    raw,_=value.TextFromUTF8(`{id = "", age = 10}`);_,report=bundle.Program().ReadData("Adult",raw,validation.Limits{});if validation.StateName(report.State())!="invalid"||len(report.Diagnostics())!=2{t.Fatal(report)}
+    before:=bundle.Program().Source();sources["lib/ids.refine"]="changed";files[0].Source="changed";files[1].Imports[0]="changed";copy:=bundle.Sources();copy["lib/ids.refine"]="changed"
+    if bundle.Program().Source()!=before||bundle.Files()[0].Source=="changed"{t.Fatal("bundle is mutable")}
+    rebuilt,err:=CompileSources(bundle.Entry(),bundle.Sources());if err!=nil||rebuilt.Program().Source()!=before||!reflect.DeepEqual(rebuilt.Files(),bundle.Files()){t.Fatal("bundle cannot reconstruct itself",err)}
+}
+
+func TestImportFailures(t *testing.T){
+    for _,test:=range []struct{sources map[string]string;code string}{
+        {map[string]string{"main.refine":"import \"missing.refine\"\ntype T = Int"},"language.import_missing"},
+        {map[string]string{"main.refine":"import \"main.refine\"\ntype T = Int"},"language.import_cycle"},
+        {map[string]string{"main.refine":"import \"../escape.refine\""},"language.import_path"},
+        {map[string]string{"main.refine":"import \"https://example.com/s.refine\""},"language.import_path"},
+        {map[string]string{"main.refine":"import \"b.refine\"\ntype T = Int","b.refine":"type T = String"},"language.import_collision"},
+        {map[string]string{"main.refine":"import \"b.refine\"\nf :: Int -> Int\nf n = n","b.refine":"f :: Int -> Int\nf n = n"},"language.import_collision"},
+        {map[string]string{"main.refine":"type T = Int where it"},"language.import_type"},
+        {map[string]string{"main.refine":"type T ="},"language.import_parse"},
+        {map[string]string{"main.refine":"type T = Int","../bad.refine":""},"language.import_path"},
+    }{bundle,err:=CompileSources("main.refine",test.sources);if err==nil||bundle!=nil{t.Fatal("accepted invalid imports")};detail,ok:=err.(*ImportError);if !ok||detail.Code!=test.code{t.Fatalf("got %v, want %s",err,test.code)}}
+    if _,err:=Compile("import \"external.refine\"\ntype T = Int");err==nil{t.Fatal("ordinary Compile silently loads imports")}
+}
+
+func TestImportGraphProperties(t *testing.T){
+    property:=func(length uint8)bool{
+        count:=int(length%32)+1;files:=map[string]string{}
+        for n:=0;n<count;n++{source:=fmt.Sprintf("type T%d = Int\n",n);if n>0{source=fmt.Sprintf("import \"%d.refine\"\n",n-1)+source};files[fmt.Sprintf("%d.refine",n)]=source}
+        entry:=fmt.Sprintf("%d.refine",count-1);first,err:=CompileSources(entry,files);if err!=nil{return false};second,err:=CompileSources(entry,first.Sources());return err==nil&&len(first.Files())==count&&first.Program().Source()==second.Program().Source()
+    }
+    if err:=quick.Check(property,&quick.Config{MaxCount:1000});err!=nil{t.Fatal(err)}
+}
+
+func TestImportConcurrentReuse(t *testing.T){
+    files:=map[string]string{"main.refine":"import \"lib.refine\"\ntype T = ID","lib.refine":"type ID = String"}
+    var wg sync.WaitGroup;for range 16{wg.Add(1);go func(){defer wg.Done();bundle,err:=CompileSources("main.refine",files);if err!=nil||len(bundle.Files())!=2{t.Error(err)}}()};wg.Wait()
+}

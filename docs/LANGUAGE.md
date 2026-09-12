@@ -125,3 +125,26 @@ The snapshot is produced by checking a fresh tree. Mutating its syntax, type
 nodes, maps or scopes cannot change the original `Program` or another snapshot.
 Backends can therefore retain the type information needed for polymorphic calls
 and typed codecs without gaining access to the evaluator's private checked AST.
+# Offline reusable source imports
+
+`language.CompileSources(entry, sources)` accepts an explicit map of canonical,
+project-relative source IDs to original source strings. It resolves relative
+imports offline, includes shared dependencies once in deterministic dependency
+order, and returns an immutable `SourceBundle` containing the checked flattened
+program plus original source files, content hashes, import edges and namespaces.
+Recompiling `Entry()` with `Sources()` reproduces the same bundled program.
+
+Imports cannot escape the supplied root, open URLs, or access the filesystem.
+The CLI's project boundary separately reads project-confined files. Cyclic module
+imports and cross-module name collisions reject; mutually recursive declarations
+can live in a single module. Package declarations are output namespaces rather
+than automatic symbol qualification: the entry package controls the flattened
+program, while imported namespaces remain recorded in the bundle. Symbol aliases
+and qualified imports remain future language work.
+
+Limits are 10,000 supplied files, 16 MiB reachable original/flattened source and
+256 import levels. Original parse errors identify their source; cross-module
+type errors identify the source owner but use canonical flattened positions.
+Automatic source-offset-based diagnostic codes may differ from standalone
+compilation. Native per-constraint provenance remains tied to original resource
+metadata, not a claim that flattening preserves original byte offsets.

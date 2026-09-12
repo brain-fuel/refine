@@ -10,7 +10,7 @@ and release evidence is tracked in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.
 ## Development
 
 Use Go 1.26 or newer. GoPlus is pinned as a module tool at **v0.158.0**, verified
-against the latest published module on 2026-09-11. Do not use an older globally
+against the latest published module on 2026-09-12. Do not use an older globally
 installed `goplus`. Semantic source lives in `.gp`; generated Go is committed so
 ordinary Go consumers do not need the GoPlus compiler.
 The generated `//goplus:v v0.28.0` marker is GoPlus's separate source-compatibility
@@ -34,8 +34,11 @@ typed payload validation. See [docs/RUNTIME.md](docs/RUNTIME.md) for the library
 API, step accounting, and explicit limitations. Generated Java now includes
 standalone validators, initial immutable domain models, exact timestamps,
 canonical show/read, and deterministic dynamic regex predicates; see the
-[Java runtime guide](docs/JAVA-RUNTIME.md). Native schema/wire validation,
-complete model shapes and serde, remaining language features, and release
+[Java runtime guide](docs/JAVA-RUNTIME.md). Checked native ingestion and bundles,
+generic model families, bounded Jackson 3 serde, English algorithm export,
+conservative logical analysis, release-planning libraries, schema-derived
+JetCheck tests, and Maven generation are now available. Complete native wire
+enforcement, Avro serde, remaining language/model shapes, and full release
 orchestration remain in progress.
 
 The development CLI exposes only the phases currently implemented:
@@ -45,10 +48,16 @@ go build -o bin/refine ./cmd/refine
 bin/refine typecheck --json language/testdata/contracts.refine
 bin/refine fmt language/testdata/contracts.refine
 bin/refine inspect-json --json value/testdata/numbers.json
+bin/refine explain examples/invoice.refine
+bin/refine satisfiable --json examples/evolution/SNAPSHOT.refine Age
+bin/refine project maven
 ```
 
 `typecheck` is not payload/native schema validation. See
 [docs/LANGUAGE.md](docs/LANGUAGE.md) for syntax, static checks, and remaining gaps.
+The [worked examples](examples/README.md), [native schema guide](docs/NATIVE.md),
+[Jackson serde guide](docs/SERDE-JSON.md), and [Maven workflow](docs/PROJECT.md)
+describe executable workflows and their current limits.
 
 The module is `goforge.dev/refine`, hosted at
 [brain-fuel/refine](https://github.com/brain-fuel/refine). MIT licensed.

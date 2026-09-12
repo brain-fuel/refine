@@ -1,0 +1,166 @@
+// Package native validates and retains ordinary and Refined native schema documents.
+// It is deliberately offline: ingestion never reads a referenced file or URL.
+package native
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "io"
+    "regexp"
+    "strings"
+
+    avro "github.com/hamba/avro/v2"
+    "github.com/getkin/kin-openapi/openapi3"
+    jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+    yaml "github.com/oasdiff/yaml3"
+
+    "goforge.dev/refine/provenance"
+    "goforge.dev/refine/schemajson"
+)
+
+type Format string
+const (
+    JSONSchema Format = "json-schema"
+    Avro Format = "avro"
+    OpenAPI Format = "openapi"
+)
+
+// Limits bound syntax ingestion. Zero selects schemajson's documented default.
+type Options struct { Limits schemajson.Limits }
+
+type Error struct {
+    Code string
+    Format Format
+    Pointer string
+    Message string
+    Cause error
+}
+func (e *Error) Error()string{
+    at:="";if e.Pointer!=""{at=" at "+e.Pointer}
+    return e.Code+" ("+string(e.Format)+")"+at+": "+e.Message
+}
+func (e *Error) Unwrap()error{return e.Cause}
+
+// Annotation is a checked x-refine extension. Source is either a complete
+// language module, or the source member of {source,root}. Root, when present,
+// is checked as a closed payload type in that module.
+type Annotation struct { Pointer string; Source string; Root string; Formatted string }
+
+// Document retains the exact caller bytes. Parsed oracle models are not exposed:
+// doing so would make an apparently immutable imported contract mutable.
+type Document struct {
+    format Format
+    version string
+    raw string
+    annotations []Annotation
+    jsonProvenance *provenance.JSONSchema
+}
+func (d *Document) Format()Format{if d==nil{return ""};return d.format}
+func (d *Document) Version()string{if d==nil{return ""};return d.version}
+func (d *Document) Original()string{if d==nil{return ""};return d.raw}
+func (d *Document) ExportOriginal()[]byte{if d==nil{return nil};return append([]byte(nil),[]byte(d.raw)...)}
+func (d *Document) Annotations()[]Annotation{if d==nil{return nil};return append([]Annotation(nil),d.annotations...)}
+
+func Parse(format Format,input []byte,options Options)(*Document,error){
+    switch format {
+    case JSONSchema:return ParseJSONSchema(input,options)
+    case Avro:return ParseAvro(input,options)
+    case OpenAPI:return ParseOpenAPI(input,options)
+    default:return nil,&Error{Code:"native.format",Format:format,Message:"supported formats are json-schema, avro, and openapi"}
+    }
+}
+
+func limits(options Options)(schemajson.Limits,error){
+    l:=options.Limits
+    if l.Bytes<0||l.Depth<0||l.Nodes<0{return l,errors.New("limits must be nonnegative")}
+    if l.Bytes==0{l.Bytes=schemajson.DefaultBytes};if l.Depth==0{l.Depth=schemajson.DefaultDepth};if l.Nodes==0{l.Nodes=schemajson.DefaultNodes}
+    return l,nil
+}
+
+func ParseJSONSchema(input []byte,options Options)(*Document,error){
+    doc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(JSONSchema,"native.syntax","",err)}
+    if err:=scalarJSON(doc.Root(),"");err!=nil{return nil,wrap(JSONSchema,"native.encoding","",err)}
+    root:=doc.Root();kind:=schemajson.KindName(root.Kind())
+    if kind!="object"&&kind!="boolean"{return nil,&Error{Code:"native.structure",Format:JSONSchema,Message:"a Draft 2020-12 schema must be an object or Boolean"}}
+    if err:=checkJSONDraft(root,"");err!=nil{return nil,err}
+    compiler:=jsonoracle.NewCompiler();compiler.DefaultDraft(jsonoracle.Draft2020);compiler.UseRegexpEngine(jsonRegexp)
+    // No URLLoader is installed. Internal references work; external references
+    // fail closed instead of causing filesystem or network access.
+    oracleInput,err:=jsonoracle.UnmarshalJSON(strings.NewReader(doc.Raw()));if err!=nil{return nil,wrap(JSONSchema,"native.syntax","",err)}
+    if err:=compiler.AddResource("https://refine.invalid/imported.schema.json",oracleInput);err!=nil{return nil,wrap(JSONSchema,"native.structure","",err)}
+    if _,err:=compiler.Compile("https://refine.invalid/imported.schema.json");err!=nil{return nil,wrap(JSONSchema,"native.structure","",err)}
+    annotations,err:=jsonSchemaAnnotations(root);if err!=nil{return nil,err}
+    origins,err:=provenance.DiscoverJSONSchema(input,options.Limits);if err!=nil{return nil,wrap(JSONSchema,"native.provenance","",err)}
+    return &Document{format:JSONSchema,version:"2020-12",raw:doc.Raw(),annotations:annotations,jsonProvenance:origins},nil
+}
+
+func ParseAvro(input []byte,options Options)(*Document,error){
+    doc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(Avro,"native.syntax","",err)}
+    if err:=scalarJSON(doc.Root(),"");err!=nil{return nil,wrap(Avro,"native.encoding","",err)}
+    kind:=schemajson.KindName(doc.Root().Kind());if kind!="object"&&kind!="array"&&kind!="string"{
+        return nil,&Error{Code:"native.structure",Format:Avro,Message:"an Avro schema must be a JSON string, object, or array"}
+    }
+    // A private cache prevents schemas from one document affecting another.
+    if _,err:=avro.ParseBytesWithCache(input,"",&avro.SchemaCache{});err!=nil{return nil,wrap(Avro,"native.structure","",err)}
+    annotations,err:=avroAnnotations(doc.Root());if err!=nil{return nil,err}
+    return &Document{format:Avro,version:"1.12.0",raw:doc.Raw(),annotations:annotations},nil
+}
+
+var openAPIVersion=regexp.MustCompile(`^3\.(0|1|2)\.\d+$`)
+func supportedOpenAPI(version string)bool{
+    switch version {case "3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0":return true};return false
+}
+
+func ParseOpenAPI(input []byte,options Options)(*Document,error){
+    l,err:=limits(options);if err!=nil{return nil,wrap(OpenAPI,"native.limit","",err)}
+    if len(input)>l.Bytes{return nil,&Error{Code:"native.limit",Format:OpenAPI,Message:"document byte limit exceeded"}}
+    if strings.HasPrefix(strings.TrimSpace(string(input)),"{"){jsonDoc,err:=schemajson.Parse(input,options.Limits);if err!=nil{return nil,wrap(OpenAPI,"native.syntax","",err)};if err:=scalarJSON(jsonDoc.Root(),"");err!=nil{return nil,wrap(OpenAPI,"native.encoding","",err)}}
+    yamlRoot,err:=parseYAML(input,l);if err!=nil{return nil,wrap(OpenAPI,"native.syntax","",err)}
+    loader:=openapi3.NewLoader();loader.IsExternalRefsAllowed=false
+    parsed,err:=loader.LoadFromData(input);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
+    version:=parsed.OpenAPI
+    if !openAPIVersion.MatchString(version)||!supportedOpenAPI(version){
+        return nil,&Error{Code:"native.version",Format:OpenAPI,Pointer:"/openapi",Message:"supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0"}
+    }
+    if err:=parsed.Validate(context.Background(),openapi3.SetRegexCompiler(openAPIRegexp));err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
+    annotations,err:=yamlRootAnnotation(yamlRoot);if err!=nil{return nil,err}
+    return &Document{format:OpenAPI,version:version,raw:string(append([]byte(nil),input...)),annotations:annotations},nil
+}
+
+func wrap(format Format,code,pointer string,err error)*Error{return &Error{Code:code,Format:format,Pointer:pointer,Message:err.Error(),Cause:err}}
+
+func parseYAML(input []byte,l schemajson.Limits)(*yaml.Node,error){
+    decoder:=yaml.NewDecoder(strings.NewReader(string(input)));var root yaml.Node
+    if err:=decoder.Decode(&root);err!=nil{return nil,err};if len(root.Content)==0{return nil,errors.New("empty document")}
+    var extra yaml.Node;if err:=decoder.Decode(&extra);err!=io.EOF{return nil,errors.New("OpenAPI input must contain exactly one YAML document")}
+    count:=0;if err:=checkYAML(root.Content[0],0,l,&count,"",make(map[*yaml.Node]bool));err!=nil{return nil,err}
+    return root.Content[0],nil
+}
+
+func checkYAML(node *yaml.Node,depth int,l schemajson.Limits,count *int,path string,active map[*yaml.Node]bool)error{
+    if depth>l.Depth{return fmt.Errorf("document depth limit exceeded at %s",path)};*count++;if *count>l.Nodes{return errors.New("document node limit exceeded")}
+    if active[node]{return fmt.Errorf("cyclic YAML alias at %s",path)};active[node]=true;defer delete(active,node)
+    if node.Kind==yaml.AliasNode{return fmt.Errorf("YAML aliases are not supported at %s; expand the value explicitly",path)}
+    if node.Kind==yaml.MappingNode{
+        seen:=make(map[string]bool)
+        for i:=0;i<len(node.Content);i+=2{key:=node.Content[i];if key.Kind!=yaml.ScalarNode{return fmt.Errorf("non-scalar mapping key at %s",path)};if key.Value=="<<"{return fmt.Errorf("YAML merge keys are not supported at %s; expand the mapping explicitly",path)}
+            if seen[key.Value]{return fmt.Errorf("duplicate mapping key %q at %s",key.Value,path)};seen[key.Value]=true
+            childPath:=path+"/"+escapePointer(key.Value);if err:=checkYAML(node.Content[i+1],depth+1,l,count,childPath,active);err!=nil{return err}
+        };return nil
+    }
+    for i,child:=range node.Content{if err:=checkYAML(child,depth+1,l,count,fmt.Sprintf("%s/%d",path,i),active);err!=nil{return err}}
+    return nil
+}
+
+func escapePointer(s string)string{return strings.ReplaceAll(strings.ReplaceAll(s,"~","~0"),"/","~1")}
+func nodeString(node schemajson.Node)(string,bool){text,ok:=node.Text();if !ok{return "",false};s,err:=text.UTF8();return s,err==nil}
+func checkJSONDraft(root schemajson.Node,prefix string)error{if schemajson.KindName(root.Kind())=="object"{if dialect,ok:=root.Lookup("$schema");ok{value,ok:=nodeString(dialect);if !ok||strings.TrimSuffix(value,"#")!="https://json-schema.org/draft/2020-12/schema"{return &Error{Code:"native.version",Format:JSONSchema,Pointer:prefix+"/$schema",Message:"only JSON Schema Draft 2020-12 is supported"}}}};return nil}
+
+func scalarJSON(node schemajson.Node,path string)error{
+    switch schemajson.KindName(node.Kind()){
+    case "string":if _,ok:=nodeString(node);!ok{return fmt.Errorf("non-scalar Unicode string at %s is not supported by native validators",path)}
+    case "array":for i,child:=range node.Elements(){if err:=scalarJSON(child,fmt.Sprintf("%s/%d",path,i));err!=nil{return err}}
+    case "object":for _,member:=range node.Members(){key,err:=member.Key.UTF8();if err!=nil{return fmt.Errorf("non-scalar Unicode object key at %s is not supported by native validators",path)};if err:=scalarJSON(member.Value,path+"/"+escapePointer(key));err!=nil{return err}}
+    };return nil
+}

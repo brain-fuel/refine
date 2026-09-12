@@ -1,0 +1,54 @@
+package example.polygon
+
+type Point = { x :: Real, y :: Real }
+data Edge = Edge Point Point
+
+lastPoint :: [Point] -> Maybe Point
+lastPoint [] = Nothing
+lastPoint [point] = Just point
+lastPoint (_ : next : rest) = lastPoint (next : rest)
+
+closed :: [Point] -> Bool
+closed [] = False
+closed (first : rest) = case lastPoint rest of { Just last -> first == last; Nothing -> False }
+
+withoutLast :: [Point] -> [Point]
+withoutLast [] = []
+withoutLast [_] = []
+withoutLast (first : next : rest) = first : withoutLast (next : rest)
+
+edges :: [Point] -> [Edge]
+edges [] = []
+edges [_] = []
+edges (a : b : rest) = Edge a b : edges (b : rest)
+
+orientation :: Point -> Point -> Point -> Real
+orientation a b c = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+
+between :: Real -> Real -> Real -> Bool
+between a b x = (a <= x && x <= b) || (b <= x && x <= a)
+
+onSegment :: Point -> Point -> Point -> Bool
+onSegment a b p = orientation a b p == 0.0 && between a.x b.x p.x && between a.y b.y p.y
+
+disjoint :: Edge -> Edge -> Bool
+disjoint (Edge a b) (Edge c d) = if a == c || a == d || b == c || b == d then True
+  else not (
+    (orientation a b c * orientation a b d < 0.0
+      && orientation c d a * orientation c d b < 0.0)
+    || onSegment a b c || onSegment a b d
+    || onSegment c d a || onSegment c d b
+  )
+
+edgeDisjoint :: [Edge] -> Edge -> Bool
+edgeDisjoint allEdges edge = all (disjoint edge) allEdges
+
+areaTerm :: Real -> Edge -> Real
+areaTerm total (Edge a b) = total + a.x * b.y - b.x * a.y
+
+type Polygon = [Point]
+  where length it >= 4 @code "polygon.minimum_vertices"
+  where closed it @code "polygon.closed"
+  where unique (withoutLast it) @code "polygon.distinct_vertices"
+  where foldl areaTerm 0.0 (edges it) /= 0.0 @code "polygon.nonzero_area"
+  where all (edgeDisjoint (edges it)) (edges it) @code "polygon.nonintersection"

@@ -1,0 +1,35 @@
+package explain
+
+func builtinMeaning(name string)(string,bool){
+    meaning:=""
+    switch name{
+    case "toReal":meaning="Convert the arbitrary-precision integer argument to an exact rational without rounding or changing the payload."
+    case "toInteger":meaning="Convert the exact rational argument to an arbitrary-precision integer only when its denominator is one. Return Ok with that integer, otherwise Err describing the fractional conversion; the author must handle the result."
+    case "truncate":meaning="Explicitly round the exact rational toward zero and return an arbitrary-precision integer."
+    case "floor":meaning="Explicitly round the exact rational toward negative infinity and return an arbitrary-precision integer."
+    case "ceiling":meaning="Explicitly round the exact rational toward positive infinity and return an arbitrary-precision integer."
+    case "roundHalfEven":meaning="Explicitly round the exact rational to the nearest integer; break exact half-way ties by choosing the even integer, including for negative values."
+    case "civilSecondsUntil":meaning="Return Ok with the exact civil-coordinate seconds from the first timestamp to the second, excluding intervening leap seconds. A leap-labelled endpoint returns Err, because it has no ordinary civil coordinate. This is not elapsed SI time."
+    case "siSecondsUntil":meaning="Return Ok with exact elapsed SI seconds from the first timestamp to the second, including announced leap seconds in the pinned history. Endpoints outside that history return Err rather than guessing future leap seconds."
+    case "not":meaning="Negate the Boolean argument."
+    case "isInteger":meaning="Return whether the exact rational argument has denominator one."
+    case "show":meaning="Display the argument using canonical language-neutral text: reduced exact fractions, escaped UTF-16 text, ordered lists and constructor arguments, and record fields sorted by identifier. This is not JSON or Avro serialization and does not validate bypass-created values."
+    case "read":meaning="Parse only canonical literal-value text into the statically inferred target type; input cannot execute expressions. Validate the target and its refinements. Return Ok with the validated value or Err with the failure; the author must explicitly handle the result."
+    case "length":meaning="Return the number of list elements or UTF-16 code units in text. This does not replace native schema character-length semantics."
+    case "reverse":meaning="Return a new list in reverse element order."
+    case "map":meaning="Apply the first argument function to every element of the second argument list in order, returning the results in a new list."
+    case "filter":meaning="Apply the first argument predicate to every element of the second argument list in order, keeping elements for which it returns true. A predicate error is not silently treated as false."
+    case "foldl":meaning="Start with the second argument as accumulator. Visit the third argument list from left to right, replacing the accumulator with the first argument function applied to the accumulator and then the element. Return the final accumulator."
+    case "oneOf","elem":meaning="Return whether the first argument equals at least one member of the second argument collection. This is allowed-value membership, not the native JSON Schema oneOf keyword."
+    case "unique":meaning="Return whether no two elements of the argument list are structurally equal."
+    case "matches":meaning="Compile the first argument as the refinement regex dialect (RE2 syntax) and require it to match the entire second argument text. Unsupported syntax and exhausted compile/match budgets are evaluation errors, not a failed match. This is not a replacement for a native schema's regex dialect."
+    case "search":meaning="Compile the first argument as the refinement regex dialect (RE2 syntax) and test whether it matches any substring of the second argument text, including an empty match. Unsupported syntax and exhausted compile/match budgets are evaluation errors."
+    case "all":meaning="Apply the first argument predicate to elements of the second argument list in order. Return false on a known false result, even after an indeterminate result. If no result is false but one is indeterminate, the result is indeterminate; otherwise return true, including for the empty list."
+    case "any":meaning="Apply the first argument predicate to elements of the second argument list in order. Return true on a known true result, even after an indeterminate result. If no result is true but one is indeterminate, the result is indeterminate; otherwise return false, including for the empty list."
+    case "satisfiesAll":meaning="Apply each predicate in the first argument collection to the second argument value in order. Return false as soon as any predicate is known false, even after an indeterminate result. With no false result, any indeterminate result makes the result indeterminate; otherwise return true, including for no predicates."
+    case "satisfiesOnlyOneOf":meaning="Apply each predicate in the first argument collection to the second argument value in order. Require exactly one true result. Two known true results are false even if another result is indeterminate. Otherwise any indeterminate result makes the result indeterminate; with all results known, return whether exactly one is true. No predicates gives false."
+    case "satisfiesOneOf","satisfiesAtLeastOneOf":meaning="Apply each predicate in the first argument collection to the second argument value in order. Return true as soon as one predicate is known true, even after an indeterminate result. With no true result, any indeterminate result makes the result indeterminate; otherwise return false, including for no predicates."
+    default:return "",false
+    }
+    return "Use this built-in operation when applied: "+meaning,true
+}

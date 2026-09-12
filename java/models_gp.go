@@ -576,9 +576,6 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		}
 	}
 	for _, decl := range m.module.Types {
-		if len(decl.Parameters) > 0 && decl.Body == nil {
-			unsupported(decl.At, "generic tagged-union model emission remains required")
-		}
 		if decl.Body == nil {
 			continue
 		}
@@ -609,11 +606,6 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 			m.genericFamilies[root] = true
 		}
 		m.shape(decl.Name)
-	}
-	for root := range m.genericFamilies {
-		if m.declarations[root].Body == nil {
-			unsupported(m.declarations[root].At, "generic tagged-union model emission remains required")
-		}
 	}
 	// Populate every field spelling before allocating lambda-local names.
 	for _, decl := range m.module.Types {
@@ -656,7 +648,11 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		m.genericContext(decl)
 		source := ""
 		if m.genericFamilies[m.modelRoot(decl.Name)] {
-			source = m.genericModel(decl)
+			if m.shape(decl.Name) == nil {
+				source = m.genericUnionModel(decl)
+			} else {
+				source = m.genericModel(decl)
+			}
 		} else if m.shape(decl.Name) == nil {
 			source = m.unionModel(decl)
 		} else {

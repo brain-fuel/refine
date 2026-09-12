@@ -1,0 +1,61 @@
+package native
+
+import (
+    "fmt"
+    "regexp"
+    "strings"
+
+    "goforge.dev/refine/language"
+)
+
+type ExtraFieldMode string
+const (
+    DiscardExtraFields ExtraFieldMode = "discard"
+    PreserveExtraFields ExtraFieldMode = "preserve"
+)
+type EncodingKind string
+const (
+    JSONNumber EncodingKind = "json-number"
+    DecimalString EncodingKind = "decimal-string"
+    RationalRecord EncodingKind = "rational-record"
+    AvroBytesDecimal EncodingKind = "avro-bytes-decimal"
+    TimestampString EncodingKind = "timestamp-string"
+)
+type ScalarEncoding struct { Kind EncodingKind; Precision int; Scale int }
+type Discriminator struct {
+    Field string
+    Values map[string]string
+    // Arguments gives the ordered JSON member name for each positional
+    // constructor argument. Every constructor must have an entry.
+    Arguments map[string][]string
+}
+type WireMetadata struct {
+    ExtraFields map[string]ExtraFieldMode
+    Scalars map[string]ScalarEncoding
+    Discriminators map[string]Discriminator
+    PublicationNamespace string
+}
+
+func copyMetadata(in WireMetadata)WireMetadata{out:=WireMetadata{PublicationNamespace:in.PublicationNamespace,ExtraFields:make(map[string]ExtraFieldMode),Scalars:make(map[string]ScalarEncoding),Discriminators:make(map[string]Discriminator)}
+    for k,v:=range in.ExtraFields{out.ExtraFields[k]=v};for k,v:=range in.Scalars{out.Scalars[k]=v};for k,v:=range in.Discriminators{copy:=Discriminator{Field:v.Field,Values:make(map[string]string),Arguments:make(map[string][]string)};for a,b:=range v.Values{copy.Values[a]=b};for a,b:=range v.Arguments{copy.Arguments[a]=append([]string(nil),b...)};out.Discriminators[k]=copy};return out}
+
+var namespacePattern=regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+var memberPattern=regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+func validateMetadata(program *language.Program,metadata WireMetadata)error{
+    if metadata.PublicationNamespace!=""&&!namespacePattern.MatchString(metadata.PublicationNamespace){return fmt.Errorf("publication namespace must contain dot-separated identifiers")}
+    module:=program.Syntax();types:=make(map[string]language.TypeDecl);for _,decl:=range module.Types{types[decl.Name]=decl}
+    for name,mode:=range metadata.ExtraFields{if _,ok:=types[name];!ok{return fmt.Errorf("extra-field policy names unknown type %s",name)};if mode!=DiscardExtraFields&&mode!=PreserveExtraFields{return fmt.Errorf("invalid extra-field mode for %s",name)};if kind:=metadataTypeKind(name,types,map[string]bool{});kind!="record"{return fmt.Errorf("extra-field policy requires record type %s",name)}}
+    for name,encoding:=range metadata.Scalars{if _,ok:=types[name];!ok{return fmt.Errorf("scalar encoding names unknown type %s",name)};kind:=metadataTypeKind(name,types,map[string]bool{});switch encoding.Kind{case JSONNumber:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="integer"{return fmt.Errorf("json-number encoding requires an integer-backed type %s",name)};case DecimalString:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="integer"{return fmt.Errorf("decimal-string encoding requires an integer-backed type %s",name)};case RationalRecord:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="real"{return fmt.Errorf("rational-record encoding requires a Real-backed type %s",name)};case TimestampString:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="timestamp"{return fmt.Errorf("timestamp-string encoding requires a Timestamp-backed type %s",name)};case AvroBytesDecimal:if kind!="real"||encoding.Precision<=0||encoding.Scale<0||encoding.Scale>encoding.Precision{return fmt.Errorf("invalid Avro decimal type/precision/scale for %s",name)};default:return fmt.Errorf("invalid scalar encoding for %s",name)}}
+    for name,wire:=range metadata.Discriminators{decl,ok:=types[name];if !ok||decl.Body!=nil{return fmt.Errorf("discriminator requires tagged union type %s",name)};if !memberPattern.MatchString(wire.Field){return fmt.Errorf("invalid discriminator field for %s",name)};expected:=make(map[string]int);for _,variant:=range decl.Variants{expected[variant.Name]=len(variant.Arguments)};if len(wire.Values)!=len(expected)||len(wire.Arguments)!=len(expected){return fmt.Errorf("discriminator metadata must cover every constructor of %s",name)};seenValues:=make(map[string]bool)
+        for constructor,arity:=range expected{tag,ok:=wire.Values[constructor];if !ok||tag==""{return fmt.Errorf("missing discriminator value for %s.%s",name,constructor)};if seenValues[tag]{return fmt.Errorf("duplicate discriminator wire value %q for %s",tag,name)};seenValues[tag]=true;args,ok:=wire.Arguments[constructor];if !ok||len(args)!=arity{return fmt.Errorf("constructor argument names for %s.%s must have arity %d",name,constructor,arity)};seenArgs:=map[string]bool{wire.Field:true};for _,arg:=range args{if !memberPattern.MatchString(arg)||seenArgs[arg]{return fmt.Errorf("invalid or duplicate member %q for %s.%s",arg,name,constructor)};seenArgs[arg]=true}}
+        for constructor:=range wire.Values{if _,ok:=expected[constructor];!ok{return fmt.Errorf("unknown constructor %s.%s",name,constructor)}};for constructor:=range wire.Arguments{if _,ok:=expected[constructor];!ok{return fmt.Errorf("unknown constructor %s.%s",name,constructor)}}
+    };return nil
+}
+
+func metadataTypeKind(name string,types map[string]language.TypeDecl,visiting map[string]bool)string{if visiting[name]{return ""};visiting[name]=true;decl,ok:=types[name];if !ok||decl.Body==nil{return ""};return metadataSyntaxKind(decl.Body,types,visiting)}
+func metadataSyntaxKind(t *language.Type,types map[string]language.TypeDecl,visiting map[string]bool)string{match t.Form{
+case language.RefinedType(base,_):return metadataSyntaxKind(base,types,visiting)
+case language.RecordType(_):return "record"
+case language.NamedType(name):if name=="Real"{return "real"};if name=="Timestamp"{return "timestamp"};if name=="Int"||strings.HasPrefix(name,"Int")||strings.HasPrefix(name,"UInt"){return "integer"};return metadataTypeKind(name,types,visiting)
+case _:return ""
+}}

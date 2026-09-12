@@ -1,0 +1,26 @@
+package example.expression
+
+data ValueType = TInt | TBool
+data Expr = IntegerLiteral Int | BooleanLiteral Bool | Plus Expr Expr | EqualExpr Expr Expr | IfThenElse Expr Expr Expr
+
+infer :: Expr -> Maybe ValueType
+infer (IntegerLiteral _) = Just TInt
+infer (BooleanLiteral _) = Just TBool
+infer (Plus left right) = case infer left of {
+  Just TInt -> case infer right of { Just TInt -> Just TInt; _ -> Nothing };
+  _ -> Nothing
+}
+infer (EqualExpr left right) = case infer left of {
+  Just a -> case infer right of { Just b -> if a == b then Just TBool else Nothing; _ -> Nothing };
+  _ -> Nothing
+}
+infer (IfThenElse condition yes no) = case infer condition of {
+  Just TBool -> case infer yes of {
+    Just a -> case infer no of { Just b -> if a == b then Just a else Nothing; _ -> Nothing };
+    _ -> Nothing
+  };
+  _ -> Nothing
+}
+
+type Expression = Expr where case infer it of { Just _ -> True; Nothing -> False }
+  @code "expression.type_consistency"

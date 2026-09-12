@@ -11,6 +11,7 @@ jobs:
   go:
     env:
       REFINE_REQUIRE_JAVA: '1'
+      REFINE_REQUIRE_MAVEN: '1'
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -33,6 +34,23 @@ jobs:
           curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar -o "$jetcheck_dir/annotations-13.0.jar"
           echo "REFINE_JETCHECK_DIR=$jetcheck_dir" >> "$GITHUB_ENV"
           # Go tests check pinned SHA-256 digests before executing these jars.
+      - name: Provision pinned Jackson 3 serde-test dependencies
+        shell: bash
+        run: |
+          jackson_dir=$(mktemp -d "$RUNNER_TEMP/refine-jackson.XXXXXX")
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/tools/jackson/core/jackson-databind/3.2.0/jackson-databind-3.2.0.jar -o "$jackson_dir/jackson-databind-3.2.0.jar"
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/tools/jackson/core/jackson-core/3.2.0/jackson-core-3.2.0.jar -o "$jackson_dir/jackson-core-3.2.0.jar"
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22.jar -o "$jackson_dir/jackson-annotations-2.22.jar"
+          echo "REFINE_JACKSON_DIR=$jackson_dir" >> "$GITHUB_ENV"
+          # Go tests check pinned SHA-256 digests before executing these jars.
+      - name: Provision pinned Maven for unsigned build integration
+        shell: bash
+        run: |
+          maven_dir=$(mktemp -d "$RUNNER_TEMP/refine-maven.XXXXXX")
+          curl --fail --silent --show-error --location --retry 3 https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.tar.gz -o "$maven_dir/maven.tar.gz"
+          printf '%s  %s\n' '831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6' "$maven_dir/maven.tar.gz" | shasum -a 512 -c -
+          tar -xzf "$maven_dir/maven.tar.gz" -C "$maven_dir"
+          echo "REFINE_MAVEN_HOME=$maven_dir/apache-maven-3.9.16" >> "$GITHUB_ENV"
       - name: Verify pinned GoPlus and generated sources
         run: |
           go tool goplus version
@@ -47,6 +65,7 @@ jobs:
           bin/refine typecheck --json language/testdata/contracts.refine
           bin/refine fmt language/testdata/contracts.refine > /tmp/refine-formatted.refine
           bin/refine typecheck /tmp/refine-formatted.refine
+          bin/refine explain --json language/testdata/contracts.refine
       - name: Fuzz lossless ingestion and text codecs
         run: |
           go test ./schemajson -run '^$' -fuzz '^FuzzLosslessDocument$' -fuzztime=10s
@@ -64,3 +83,6 @@ jobs:
           go test ./java -run '^$' -fuzz '^FuzzValidatorGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./java -run '^$' -fuzz '^FuzzModelGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
           go test ./java -run '^$' -fuzz '^FuzzPayloadTypeGeneration$' -fuzztime=10s -fuzzminimizetime=1000x
+          go test ./analysis -run '^$' -fuzz '^FuzzAnalysis$' -fuzztime=10s -fuzzminimizetime=1000x
+          go test ./explain -run '^$' -fuzz '^FuzzExplain$' -fuzztime=10s -fuzzminimizetime=1000x
+          go test ./native -run '^$' -fuzz '^FuzzNativeJSONRoundTrip$' -fuzztime=10s -fuzzminimizetime=1000x

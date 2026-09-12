@@ -112,6 +112,10 @@ const codecParserJava = `
         }
         void tail(ReadNode left, int minimum, int level, Consumer<ReadNode> done) {
             work.later(() -> {
+                if (is("newline")) {
+                    int mark = index; lines();
+                    if (precedence(peek().kind()) < minimum) { index = mark; work.complete(done, left); return; }
+                }
                 if (is(".") && minimum <= 9) { take(); tail(readNode("project", name(), left), minimum, level, done); return; }
                 if (atomStart() && minimum <= 8) { expression(9, level, right -> tail(readNode("apply", "", left, right), minimum, level, done)); return; }
                 int rank = precedence(peek().kind()); if (rank < minimum) { work.complete(done, left); return; }

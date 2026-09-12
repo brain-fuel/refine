@@ -1,0 +1,17 @@
+package native
+
+import (
+    "bytes"
+    "encoding/json"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/schemajson"
+)
+
+type bundleFile struct { Version int `json:"version"`; Format Format `json:"format"`; Root ResourceSelector `json:"root"`; Resources []Resource `json:"resources"`; EditableSource string `json:"editableSource"`; LanguageEntry string `json:"languageEntry,omitempty"`; LanguageFiles []language.SourceFile `json:"languageFiles,omitempty"`; Metadata WireMetadata `json:"metadata"` }
+
+// Bundle returns one self-contained JSON distribution. Native resources remain
+// byte-for-byte strings and retain their URI identities for offline resolution.
+func (p *Project) Bundle()([]byte,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};wire:=bundleFile{Version:1,Format:p.Format(),Root:p.root,Resources:p.Resources(),EditableSource:p.source,LanguageEntry:p.LanguageEntry(),LanguageFiles:p.LanguageFiles(),Metadata:p.Metadata()};data,err:=json.MarshalIndent(wire,"","  ");if err!=nil{return nil,err};return append(data,'\n'),nil}
+
+func ParseBundle(input []byte)(*Project,error){if _,err:=schemajson.Parse(input,schemajson.Limits{});err!=nil{return nil,wrap("","native.bundle","",err)};var wire bundleFile;decoder:=json.NewDecoder(bytes.NewReader(input));decoder.DisallowUnknownFields();if err:=decoder.Decode(&wire);err!=nil{return nil,wrap("","native.bundle","",err)};if wire.Version!=1{return nil,&Error{Code:"native.bundle",Format:wire.Format,Message:"unsupported bundle version"}};project,err:=IngestProjectResources(wire.Format,wire.Resources,ProjectOptions{ResourceID:wire.Root.Resource,Root:wire.Root});if err!=nil{return nil,err};if wire.LanguageEntry!=""{sources:=make(map[string]string);for _,file:=range wire.LanguageFiles{if _,duplicate:=sources[file.ID];duplicate{return nil,&Error{Code:"native.bundle",Format:wire.Format,Message:"duplicate language source ID"}};sources[file.ID]=file.Source};project,err=project.WithEditedSources(wire.LanguageEntry,sources);if err==nil&&project.EditableSource()!=wire.EditableSource{return nil,&Error{Code:"native.bundle",Format:wire.Format,Message:"editableSource does not match the bundled language import graph"}}}else{project,err=project.WithEditedSource(wire.EditableSource)};if err!=nil{return nil,err};return project.WithMetadata(wire.Metadata)}

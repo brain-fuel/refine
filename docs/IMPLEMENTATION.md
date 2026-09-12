@@ -1010,6 +1010,53 @@ native formats and project workflows. The full checklist remains the release gat
   Authored GoPlus and generated Go were pushed together. No product tag or
   Maven deployment occurred.
 
+## Parallel native, Java serde, project, and analysis integration
+
+- Native structure ingestion now uses explicit offline ecosystem validators for
+  JSON Schema 2020-12, Avro 1.12, and published OpenAPI 3 versions. Immutable
+  resource bundles preserve original bytes, checked editable source/imports,
+  per-resource JSON Schema provenance, selectors, and wire metadata. Lowering
+  validates its outputs and embeds complete algorithmic English for additional
+  rules. Structural projection and generated native enforcement remain bounded;
+  unsupported cases fail explicitly, as detailed in `docs/NATIVE.md`.
+- Generic tagged unions now compose instantiated inheritance and model evidence.
+  Jackson 3 generation covers nested/recursive/closed-generic models, separate
+  absence/null, exact-number policies, explicit union discriminators, per-record
+  extra preservation, duplicate rejection, and validation before writing payload
+  bytes. Avro serde and complete native runtime enforcement remain required.
+- `explain` exports immutable, demand-driven English instruction graphs, helper
+  equations, separate where clauses and custom messages. `analysis` proves
+  supported scalar interval cases, verifies concrete counterexamples with the
+  complete validator, and returns unknown outside its sound subset. Logical
+  payload inclusion is explicitly not native-wire or Java ABI compatibility.
+- Offline language imports retain exact source digests and a deterministic
+  dependency graph. Explicit exact integer/rational conversions, four rounding
+  modes, and fallible civil/SI timestamp duration run in both Go and Java.
+  The worked booking, invoice, batch, deployment, payment, expression, polygon,
+  and evolution contracts have executable positive/negative tests.
+- The release library checks exact comparison evidence, version-controlled
+  overrides/fix acknowledgements, semantic version boundaries, immutable release
+  targets and pinned dependencies. Promotion has recoverable ownership-aware
+  journals; portable directory race limitations are documented. A complete
+  schema-driven release CLI remains required.
+- Project generation discovers all released/snapshot schema files and emits
+  owned models and native/English resources under one Maven project. Confined
+  imports, strict config, no-codegen, package/output overrides, read-only output
+  checks, and collision/rollback safeguards are tested. A real pinned Maven
+  build verifies repeatable unsigned JAR bytes and automatic snapshot
+  regeneration without changing released source. General test/serde project
+  integration remains required.
+- Schema-derived JetCheck suites now exercise valid model factories and read
+  round trips, invalid factory/read rejection, explicit bypass retention,
+  targeted clauses, boundary values, executable examples and serialized replay.
+  Exhaustion is an error, never skipped cases. The supported generator subset
+  and remaining recursive/union strategies are recorded in
+  `docs/GENERATED-TESTS.md`.
+- Fresh ten-second fuzz runs passed 2,224,794 analysis, 2,711,511 English-export,
+  and 1,616,294 native round-trip executions. These counts describe only those
+  runs, not exhaustive conformance. Latest published GoPlus remains v0.158.0.
+  No full-specification release gate is marked complete by this integration.
+
 ## Inline-refined Java argument witnesses
 
 - Generic argument witnesses now retain anonymous refinements such as

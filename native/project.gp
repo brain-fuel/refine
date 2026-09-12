@@ -1,0 +1,80 @@
+package native
+
+import (
+    "fmt"
+    "net/url"
+    "strings"
+
+    jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+    "goforge.dev/refine/schemajson"
+)
+
+type ResourceSelector struct { Resource string; Pointer string; TypeName string }
+type ProjectOptions struct { ResourceID string; Root ResourceSelector; Metadata WireMetadata }
+type Enforcement struct { Supported bool; Reason string }
+type Resource struct { URI string; Source string }
+
+// Project couples editable checked language source to an immutable native
+// sidecar. The sidecar remains authoritative for constraints not represented by
+// the language projection.
+type Project struct { document *Document; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema }
+
+func (p *Project) Format()Format{if p==nil||p.document==nil{return ""};return p.document.Format()}
+func (p *Project) Version()string{if p==nil||p.document==nil{return ""};return p.document.Version()}
+func (p *Project) Root()ResourceSelector{if p==nil{return ResourceSelector{}};return p.root}
+func (p *Project) EditableSource()string{if p==nil{return ""};return p.source}
+func (p *Project) Metadata()WireMetadata{if p==nil{return WireMetadata{}};return copyMetadata(p.metadata)}
+func (p *Project) Resources()[]Resource{if p==nil{return nil};return append([]Resource(nil),p.resources...)}
+func (p *Project) LanguageEntry()string{if p==nil{return ""};return p.languageEntry}
+func (p *Project) LanguageFiles()[]language.SourceFile{if p==nil{return nil};out:=append([]language.SourceFile(nil),p.languageFiles...);for i:=range out{out[i].Imports=append([]string(nil),out[i].Imports...)};return out}
+func (p *Project) NativeDocument()*Document{if p==nil{return nil};return p.document}
+type ResourceConstraint struct { Resource string; Constraint provenance.Constraint }
+func (p *Project) NativeConstraints()[]ResourceConstraint{if p==nil{return nil};out:=[]ResourceConstraint{};for _,resource:=range p.resources{if origin:=p.jsonOrigins[resource.URI];origin!=nil{for _,constraint:=range origin.Constraints(){out=append(out,ResourceConstraint{Resource:resource.URI,Constraint:constraint})}}};return out}
+func (p *Project) ResourceConstraintSource(resource string)string{if p==nil||p.jsonOrigins[resource]==nil{return ""};return p.jsonOrigins[resource].ConstraintSource()}
+func (p *Project) AuditResourceSource(resource,source string)([]provenance.Finding,error){if p==nil||p.jsonOrigins[resource]==nil{return nil,&Error{Code:"native.provenance",Format:p.Format(),Pointer:resource,Message:"resource has no JSON Schema provenance"}};return p.jsonOrigins[resource].AuditSource(source)}
+func (p *Project) RecoverResourceNative(resource,name,source string)(string,error){if p==nil||p.jsonOrigins[resource]==nil{return "",&Error{Code:"native.provenance",Format:p.Format(),Pointer:resource,Message:"resource has no JSON Schema provenance"}};return p.jsonOrigins[resource].RecoverNative(name,source)}
+func (p *Project) PayloadType()(*language.PayloadType,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};return p.program.PayloadType(p.root.TypeName)}
+
+// GeneratedEnforcement is deliberately conservative. Generated language-only
+// validators do not yet execute the opaque native sidecar.
+func (p *Project) GeneratedEnforcement()Enforcement{return Enforcement{Supported:false,Reason:"generated validators must compose the bundled native validator before claiming enforcement of opaque native keywords"}}
+
+func normalizeProjectOptions(format Format,options ProjectOptions)(ProjectOptions,error){if options.ResourceID==""{if options.Root.Resource!=""{options.ResourceID=options.Root.Resource}else{options.ResourceID="urn:refine:root"}};uri,err:=url.Parse(options.ResourceID);if err!=nil||!uri.IsAbs()||uri.Fragment!=""{return options,&Error{Code:"native.resource",Format:format,Message:"ResourceID must be an absolute URI without a fragment"}};if options.Root.Resource==""{options.Root.Resource=options.ResourceID};if options.Root.Resource!=options.ResourceID{return options,&Error{Code:"native.root",Format:format,Message:"external root resources require IngestProjectResources"}};if !checkedTypeName(options.Root.TypeName){if options.Root.TypeName==""{options.Root.TypeName="ImportedRoot"}else{return options,&Error{Code:"native.root",Format:format,Message:"root TypeName must begin uppercase and contain identifiers"}}};return options,nil}
+
+func IngestProject(format Format,input []byte,options ProjectOptions)(*Project,error){
+    options,err:=normalizeProjectOptions(format,options);if err!=nil{return nil,err};var document *Document;source:=""
+    switch format{
+    case JSONSchema:
+        document,err=ParseJSONSchema(input,Options{});if err==nil{doc,_:=schemajson.Parse(input,Options{}.Limits);source,err=projectJSON(doc,options.Root,false);if err==nil&&document.ConstraintSource()!=""{source+="\n"+document.ConstraintSource()}}
+    case Avro:
+        if options.Root.Pointer!=""{return nil,&Error{Code:"native.root",Format:Avro,Pointer:options.Root.Pointer,Message:"Avro root selector pointer must be empty"}};document,err=ParseAvro(input,Options{});if err==nil{doc,_:=schemajson.Parse(input,Options{}.Limits);source,err=projectAvro(doc,options.Root)}
+    case OpenAPI:
+        if options.Root.Pointer==""{options.Root.Pointer="/components/schemas/"+escapePointer(options.Root.TypeName)};document,err=ParseOpenAPI(input,Options{});if err==nil{l,_:=limits(Options{});rootNode,parseErr:=parseYAML(input,l);if parseErr!=nil{err=parseErr}else{jsonDoc,convertErr:=yamlToJSONDocument(rootNode);if convertErr!=nil{err=convertErr}else{source,err=projectJSON(jsonDoc,options.Root,true)}}}
+    default:return nil,&Error{Code:"native.format",Format:format,Message:"unsupported project format"}
+    }
+    if err!=nil{return nil,err};if annotated,rootName,ok:=rootAnnotation(document,options.Root);ok{source=annotated;if rootName!=options.Root.TypeName{source+="\ntype "+options.Root.TypeName+" = "+rootName+"\n"}};program,err:=language.Compile(source);if err!=nil{return nil,wrap(format,"native.projection","",err)};if _,err:=program.PayloadType(options.Root.TypeName);err!=nil{return nil,wrap(format,"native.root",options.Root.Pointer,err)};if err:=validateMetadata(program,options.Metadata);err!=nil{return nil,wrap(format,"native.metadata","",err)}
+    origins:=make(map[string]*provenance.JSONSchema);if document.jsonProvenance!=nil{origins[options.ResourceID]=document.jsonProvenance};return &Project{document:document,root:options.Root,source:source,program:program,metadata:copyMetadata(options.Metadata),resources:[]Resource{{URI:options.ResourceID,Source:document.Original()}},jsonOrigins:origins},nil
+}
+
+func rootAnnotation(document *Document,root ResourceSelector)(string,string,bool){if document==nil{return "","",false};wanted:=root.Pointer+"/x-refine";if document.Format()==OpenAPI{wanted="/x-refine"};for _,annotation:=range document.Annotations(){if annotation.Pointer==wanted&&annotation.Root!=""&&checkedTypeName(annotation.Root){return annotation.Source,annotation.Root,true}};return "","",false}
+
+// WithEditedSource checks an author's refinements while retaining the exact
+// immutable native sidecar, root selector, and wire metadata.
+func (p *Project) WithEditedSource(source string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};program,err:=language.Compile(source);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=source;copy.program=program;copy.languageEntry="";copy.languageFiles=nil;copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);return &copy,nil}
+
+// WithEditedSources resolves imports only from the supplied map through the
+// language package's bounded, immutable source bundle.
+func (p *Project) WithEditedSources(entry string,sources map[string]string)(*Project,error){if p==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}};bundle,err:=language.CompileSources(entry,sources);if err!=nil{return nil,wrap(p.Format(),"native.refinement","",err)};program:=bundle.Program();if _,err:=program.PayloadType(p.root.TypeName);err!=nil{return nil,wrap(p.Format(),"native.root",p.root.Pointer,err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.source=program.Source();copy.program=program;copy.languageEntry=bundle.Entry();copy.languageFiles=bundle.Files();copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);return &copy,nil}
+
+func (p *Project) WithMetadata(metadata WireMetadata)(*Project,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};if err:=validateMetadata(p.program,metadata);err!=nil{return nil,wrap(p.Format(),"native.metadata","",err)};copy:=*p;copy.metadata=copyMetadata(metadata);copy.resources=append([]Resource(nil),p.resources...);return &copy,nil}
+
+// ValidateJSON enforces every retained JSON Schema keyword at the selected
+// root. Other native payload validators are explicitly gated for now.
+func (p *Project) ValidateJSON(input []byte)error{if p==nil||p.document==nil{return &Error{Code:"native.project",Message:"a project is required"}};if p.Format()!=JSONSchema{return &Error{Code:"native.enforcement",Format:p.Format(),Message:"native payload validation is not implemented for this format"}}
+    instance,err:=schemajson.Parse(input,schemajson.Limits{});if err!=nil{return wrap(JSONSchema,"native.payload","",err)};if err:=scalarJSON(instance.Root(),"");err!=nil{return wrap(JSONSchema,"native.payload","",err)};value,err:=jsonoracle.UnmarshalJSON(strings.NewReader(instance.Raw()));if err!=nil{return wrap(JSONSchema,"native.payload","",err)}
+    compiler:=jsonoracle.NewCompiler();compiler.DefaultDraft(jsonoracle.Draft2020);compiler.UseRegexpEngine(jsonRegexp);for _,resource:=range p.resources{schemaValue,err:=jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source));if err!=nil{return wrap(JSONSchema,"native.structure",resource.URI,err)};if err:=compiler.AddResource(resource.URI,schemaValue);err!=nil{return wrap(JSONSchema,"native.structure",resource.URI,err)}};location:=p.root.Resource;if p.root.Pointer!=""{location+="#"+p.root.Pointer};schema,err:=compiler.Compile(location);if err!=nil{return wrap(JSONSchema,"native.structure",p.root.Pointer,err)};if err:=schema.Validate(value);err!=nil{return wrap(JSONSchema,"native.payload",p.root.Pointer,err)};return nil
+}
+
+func (p *Project) Summary()string{if p==nil{return ""};return fmt.Sprintf("%s %s, root %s",p.Format(),p.Version(),p.root.TypeName)}

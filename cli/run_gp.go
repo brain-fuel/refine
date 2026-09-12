@@ -22,11 +22,24 @@ Usage:
   refine typecheck [--json] <source.refine|->
   refine fmt <source.refine|->
   refine inspect-json [--json] <document.json|->
+  refine explain [--json] <source.refine|->
+  refine validate [--json] [--total-steps N] [--clause-steps N] <source.refine|-> <type> <payload.txt|->
+  refine validate-native [--json] <json-schema|avro|openapi> <schema|->
+  refine satisfiable [--json] <source.refine|-> <type>
+  refine compare-payload [--json] <old.refine|-> <old-type> <new.refine|-> <new-type>
+  refine project generate [--root DIR] [--config FILE] [--package NAME] [--output DIR] [--flat] [--check] [--json]
+  refine project maven [--executable PATH]
 
 typecheck checks the language's static rules; it is not yet native schema,
 satisfiability, compatibility, or payload validation.
 fmt writes formatted source to stdout and never overwrites the input file.
 inspect-json checks JSON syntax and duplicate keys, not schema validity.
+validate reads canonical Refine value text, not JSON or Avro wire data.
+validate-native validates native document structure offline, not payloads.
+explain emits complete demand-driven English instructions without running predicates.
+satisfiable and compare-payload use conservative logical numeric proofs; unsupported
+cases are unknown. compare-payload enforces backward inclusion only and is not a
+native-wire, Java-ABI, or full release-compatibility check.
 Use - to read stdin. Maven deployment is not performed by these commands.
 `
 
@@ -43,6 +56,7 @@ type report struct {
 	State       string       `json:"state"`
 	Summary     string       `json:"summary,omitempty"`
 	Diagnostics []diagnostic `json:"diagnostics"`
+	Result      any          `json:"result,omitempty"`
 }
 
 func load(path string, input io.Reader) ([]byte, error) {
@@ -69,6 +83,13 @@ func Run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return 0
 	}
 	command := args[0]
+	if command == "project" {
+		return projectCommand(args[1:], output, errorOutput)
+	}
+	switch command {
+	case "explain", "validate", "validate-native", "satisfiable", "compare-payload":
+		return workflow(args, input, output, errorOutput)
+	}
 	if command != "typecheck" && command != "fmt" && command != "inspect-json" {
 		fmt.Fprintln(errorOutput, "unknown command; use refine help")
 		return 2

@@ -166,6 +166,8 @@ var builtinArities = map[string]int{
     "map":2,"filter":2,"all":2,"any":2,"foldl":3,"oneOf":2,"elem":2,
     "satisfiesAll":2,"satisfiesOnlyOneOf":2,"satisfiesOneOf":2,"satisfiesAtLeastOneOf":2,
     "matches":2,"search":2,
+    "toReal":1,"toInteger":1,"truncate":1,"floor":1,"ceiling":1,"roundHalfEven":1,
+    "civilSecondsUntil":2,"siSecondsUntil":2,
 }
 func (e *evaluator) resolve(name string,at Span) evalValue {
     return e.resolveTyped(name,nil,at)

@@ -63,6 +63,21 @@ public record Rational(BigInteger numerator, BigInteger denominator)
         return new Rational(numerator.multiply(other.denominator), denominator.multiply(other.numerator));
     }
     public Rational negate() { return new Rational(numerator.negate(), denominator); }
+    public Rational truncate() { return of(numerator.divide(denominator)); }
+    public Rational floor() {
+        BigInteger[] parts = numerator.divideAndRemainder(denominator);
+        return of(parts[1].signum() < 0 ? parts[0].subtract(BigInteger.ONE) : parts[0]);
+    }
+    public Rational ceiling() {
+        BigInteger[] parts = numerator.divideAndRemainder(denominator);
+        return of(parts[1].signum() > 0 ? parts[0].add(BigInteger.ONE) : parts[0]);
+    }
+    public Rational roundHalfEven() {
+        BigInteger[] parts = numerator.divideAndRemainder(denominator);
+        int distance = parts[1].abs().shiftLeft(1).compareTo(denominator);
+        return of(distance > 0 || distance == 0 && parts[0].testBit(0)
+            ? parts[0].add(BigInteger.valueOf(numerator.signum())) : parts[0]);
+    }
     public int signum() { return numerator.signum(); }
     public boolean isInteger() { return denominator.equals(BigInteger.ONE); }
     @Override public int compareTo(Rational other) {

@@ -12,7 +12,7 @@ func (m *modelEmitter) unionNames(root string)map[string]string{
     names:=map[string]string{};used:=map[string]bool{}
     for name:=range m.declarations{used[sourceNameKey(name)]=true}
     used[sourceNameKey(m.contract)]=true
-    for _,name:=range []string{"Draft","ModelSupport","ModelMaybe","ModelNullable","ModelResult","Evidence"}{used[sourceNameKey(name)]=true}
+    for _,name:=range []string{"Draft","ModelSupport","ModelMaybe","ModelNullable","ModelResult","Evidence",m.modelFactoryName()}{used[sourceNameKey(name)]=true}
     used[sourceNameKey(m.modelDraftName())]=true
     view:="Variant";for used[sourceNameKey(view)]{view+="_"};used[sourceNameKey(view)]=true;m.unionViews[root]=view
     for _,variant:=range m.declarations[root].Variants{

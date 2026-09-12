@@ -351,6 +351,9 @@ var builtinSignatures = map[string]string{
 	"satisfiesOneOf": "[a -> Bool] -> a -> Bool", "satisfiesAtLeastOneOf": "[a -> Bool] -> a -> Bool",
 	"matches": "String -> String -> Bool", "search": "String -> String -> Bool",
 	"isInteger": "Real -> Bool",
+	"toReal":    "Int -> Real", "toInteger": "Real -> Result String Int",
+	"truncate": "Real -> Int", "floor": "Real -> Int", "ceiling": "Real -> Int", "roundHalfEven": "Real -> Int",
+	"civilSecondsUntil": "Timestamp -> Timestamp -> Result String Real", "siSecondsUntil": "Timestamp -> Timestamp -> Result String Real",
 }
 
 func (c *checker) function(name string, at Span) *term {

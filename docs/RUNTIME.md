@@ -282,7 +282,7 @@ predicates can use the full logical budget without this temporary host-stack cap
 
 The following are explicitly unfinished, not silently interpreted as success:
 
-- Explicit conversion/rounding and timestamp duration vocabulary; release-stable
+- Fixed-width/fixed-precision conversion vocabulary; release-stable
   regex/Unicode profile auditing across toolchain changes (current Go/Java
   parsing, compilation and matching cost conformance is tested).
 - Full constraint-qualified polymorphism and inference of all necessary codec
@@ -301,3 +301,24 @@ Tests cover table-driven execution, all three-outcome sequences of up to four
 predicates, exact budget thresholds, recursive/generic payload checks, message
 fallback, private diagnostics, concurrent immutable reuse, transformation laws,
 field-versus-record constraint equivalence, and evaluator/data fuzz properties.
+
+## Explicit exact conversions and durations
+
+`toReal :: Int -> Real` preserves the exact integer value. There is no implicit
+numeric coercion. `toInteger :: Real -> Result String Int` returns `Ok` only
+when the rational denominator is one; fractional input returns an explicit
+`Err`. `truncate`, `floor`, `ceiling`, and `roundHalfEven` take `Real` and
+return `Int`, with respectively toward-zero, toward-negative-infinity,
+toward-positive-infinity, and nearest/ties-to-even rounding. These operations
+produce new values and never rewrite an existing refinement's raw payload.
+
+`civilSecondsUntil` and `siSecondsUntil` take two `Timestamp` values and return
+`Result String Real`. Civil duration rejects leap-second endpoints; SI duration
+uses the pinned leap-history interval and rejects unsupported dates. Neither
+consults a clock or external service. Callers must explicitly handle `Err`.
+
+Numeric conversion precharges `canonicalLength² + 1` work units; duration
+precharges `(leftOriginalTextLength + rightOriginalTextLength)² + 32`.
+Go/Java conformance tests compare 29,355 complete validation reports across
+numeric boundaries, custom messages, leap/history cases, and budget thresholds.
+Rounding tests additionally check 10,000 independently calculated law cases.

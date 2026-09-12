@@ -18,9 +18,10 @@ const functionExecutionJava = `
                         work.complete(done, arity == 0 ? new VariantValue(name, List.of()) : new FunctionValue(name, arity, List.of(), signature)); return;
                     }
                     arity = switch (name) {
-                        case "not", "length", "reverse", "unique", "isInteger", "show", "read" -> 1;
+                        case "not", "length", "reverse", "unique", "isInteger", "show", "read", "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven" -> 1;
                         case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search" -> 2;
                         case "foldl" -> 3;
+                        case "civilSecondsUntil", "siSecondsUntil" -> 2;
                         default -> null;
                     };
                     if (arity == null) throw fail("evaluation.name", "unresolved function or variable");
@@ -105,6 +106,28 @@ const functionExecutionJava = `
                 }
                 void builtin(String name, List<Val> args, Map<String, Binding> types, int level, Consumer<Val> done) {
                     switch (name) {
+                        case "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven" -> {
+                            Rational number = ((NumberValue)args.getFirst()).value(); long size = number.show().length(); step(size * size + 1);
+                            if (name.equals("toReal")) work.complete(done, new NumberValue(number, "Real"));
+                            else if (name.equals("toInteger")) work.complete(done, number.isInteger()
+                                ? new VariantValue("Ok", List.of(new NumberValue(number, "Int")))
+                                : new VariantValue("Err", List.of(new TextValue("conversion.fractional: exact integer conversion requires denominator one"))));
+                            else {
+                                Rational rounded = switch (name) {
+                                    case "truncate" -> number.truncate(); case "floor" -> number.floor();
+                                    case "ceiling" -> number.ceiling(); default -> number.roundHalfEven();
+                                };
+                                work.complete(done, new NumberValue(rounded, "Int"));
+                            }
+                        }
+                        case "civilSecondsUntil", "siSecondsUntil" -> {
+                            Timestamp start = ((TimestampValue)args.getFirst()).value(), end = ((TimestampValue)args.get(1)).value();
+                            long size = (long)start.raw().length() + end.raw().length();
+                            if (size != 0 && Long.compareUnsigned(size, Long.divideUnsigned(-33L, size)) > 0) throw fail("evaluation.budget", "timestamp duration cost exceeds evaluation resources");
+                            step(size * size + 32);
+                            try { Rational duration = name.equals("civilSecondsUntil") ? start.civilSecondsUntil(end) : start.siSecondsUntil(end); work.complete(done, new VariantValue("Ok", List.of(new NumberValue(duration, "Real")))); }
+                            catch (Timestamp.Error error) { work.complete(done, new VariantValue("Err", List.of(new TextValue(error.code() + ": " + error.getMessage())))); }
+                        }
                         case "matches", "search" -> {
                             try {
                                 var program = RegexProgram.compile(((TextValue)args.getFirst()).value(), meter);

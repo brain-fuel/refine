@@ -1,0 +1,12 @@
+package example.payment
+
+data Instruction = Card String Real | BankTransfer String Real
+
+type Payment = Instruction
+  where case it of {
+    Card token amount -> length token > 0 && amount > 0.0;
+    BankTransfer account amount -> length account >= 4 && amount > 0.0
+  } @code "payment.details"
+
+-- JSON discriminator fields/values must be declared separately in wire metadata;
+-- these constructors do not implicitly invent a wire property.

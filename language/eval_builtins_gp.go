@@ -15,6 +15,51 @@ import (
 
 func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 	switch name {
+	case "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven":
+		n, _ := number(args[0], at)
+		size := uint64(len(n.Show()))
+		if size > 0 && size > (^uint64(0)-1)/size {
+			evalError(at, "evaluation.budget", "numeric conversion cost exceeds evaluation resources")
+		}
+		e.step(size*size+1, at)
+		switch name {
+		case "toReal":
+			return numberValue(n, "Real")
+		case "toInteger":
+			if !n.IsInteger() {
+				text, _ := value.TextFromUTF8("conversion.fractional: exact integer conversion requires denominator one")
+				return evalValue{form: evalVariant{name: "Err", arguments: []evalValue{textValue(text)}}}
+			}
+			return evalValue{form: evalVariant{name: "Ok", arguments: []evalValue{numberValue(n, "Int")}}}
+		case "truncate":
+			n = n.Truncate()
+		case "floor":
+			n = n.Floor()
+		case "ceiling":
+			n = n.Ceiling()
+		case "roundHalfEven":
+			n = n.RoundHalfEven()
+		}
+		return numberValue(n, "Int")
+	case "civilSecondsUntil", "siSecondsUntil":
+		start, end := timestampOf(args[0], at), timestampOf(args[1], at)
+		size := uint64(len(start.Raw())) + uint64(len(end.Raw()))
+		if size > 0 && size > (^uint64(0)-32)/size {
+			evalError(at, "evaluation.budget", "timestamp duration cost exceeds evaluation resources")
+		}
+		e.step(size*size+32, at)
+		var duration value.Number
+		var err error
+		if name == "civilSecondsUntil" {
+			duration, err = start.CivilSecondsUntil(end)
+		} else {
+			duration, err = start.SISecondsUntil(end)
+		}
+		if err != nil {
+			text, _ := value.TextFromUTF8(err.Error())
+			return evalValue{form: evalVariant{name: "Err", arguments: []evalValue{textValue(text)}}}
+		}
+		return evalValue{form: evalVariant{name: "Ok", arguments: []evalValue{numberValue(duration, "Real")}}}
 	case "not":
 		return boolValue(!boolean(args[0], at))
 	case "isInteger":

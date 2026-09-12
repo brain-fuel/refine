@@ -1,0 +1,16 @@
+package example.batch
+
+type Entry = { id :: String, parent :: Maybe String }
+
+entryId :: Entry -> String
+entryId entry = entry.id
+
+knownParent :: [String] -> Entry -> Bool
+knownParent identifiers entry = case entry.parent of {
+  Nothing -> True;
+  Just parent -> oneOf parent identifiers
+}
+
+type Batch = [Entry]
+  where unique (map entryId it) @code "batch.unique_id"
+  where all (knownParent (map entryId it)) it @code "batch.parent_reference"

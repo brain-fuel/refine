@@ -1,0 +1,116 @@
+package native
+
+import (
+    "errors"
+    "fmt"
+    "strings"
+    "testing"
+    "testing/quick"
+
+    "goforge.dev/refine/schemajson"
+)
+
+func problemCode(err error)string{var p *Error;if errors.As(err,&p){return p.Code};return ""}
+
+func TestValidatedLosslessIngestion(t *testing.T){
+    cases:=[]struct{name string;format Format;source string;version string}{
+        {"json-schema",JSONSchema," \n{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"integer\",\"minimum\":0.00,\"x-note\":1}\n","2020-12"},
+        {"avro",Avro,`{"type":"record","name":"Person","fields":[{"name":"z","type":"long"},{"name":"a","type":["null","string"],"default":null}]}`,"1.12.0"},
+        {"openapi-json",OpenAPI,`{"openapi":"3.1.2","info":{"title":"T","version":"1"},"paths":{},"x-note":{"n":9007199254740993}}`,"3.1.2"},
+        {"openapi-yaml",OpenAPI,"openapi: 3.2.0\ninfo:\n  title: T\n  version: '1'\npaths: {}\nx-note: keep\n","3.2.0"},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){input:=[]byte(tc.source);doc,err:=Parse(tc.format,input,Options{});if err!=nil{t.Fatal(err)};input[0]='X'
+        if doc.Original()!=tc.source||string(doc.ExportOriginal())!=tc.source||doc.Version()!=tc.version||doc.Format()!=tc.format{t.Fatalf("loss/version mismatch: %q %q %q",doc.Format(),doc.Version(),doc.Original())}
+        exported:=doc.ExportOriginal();exported[0]='Y';if doc.Original()!=tc.source{t.Fatal("mutable bytes escaped")}
+    })}
+}
+
+func TestStrictStructureVersionsAndOfflineRefs(t *testing.T){
+    cases:=[]struct{format Format;source string;code string}{
+        {JSONSchema,`{"type":7}`,"native.structure"},
+        {JSONSchema,`{"$schema":"http://json-schema.org/draft-07/schema#"}`,"native.version"},
+        {JSONSchema,`{"$ref":"https://example.com/schema.json"}`,"native.structure"},
+        {JSONSchema,`{"type":"integer","minimum":0,"minimum":1}`,"native.syntax"},
+        {Avro,`{"type":"record","name":"Bad","fields":[{"name":"x","type":"missing"}]}`,"native.structure"},
+        {Avro,`{"type":"record","name":"Bad","fields":[],"fields":[]}`,"native.syntax"},
+        {OpenAPI,"openapi: 2.0.0\ninfo: {title: T, version: '1'}\npaths: {}\n","native.version"},
+        {OpenAPI,"openapi: 3.3.0\ninfo: {title: T, version: '1'}\npaths: {}\n","native.version"},
+        {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, title: Again, version: '1'}\npaths: {}\n","native.syntax"},
+        {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths:\n  /x:\n    get:\n      responses: {}\n","native.structure"},
+        {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    X: {$ref: 'other.yaml#/X'}\n","native.structure"},
+    }
+    for _,tc:=range cases{_,err:=Parse(tc.format,[]byte(tc.source),Options{});if err==nil||problemCode(err)!=tc.code{t.Errorf("%s expected %s: %v",tc.source,tc.code,err)}}
+}
+
+func TestRefineAnnotationsAreCheckedAndImmutable(t *testing.T){
+    module:="type Positive = Int where it > 0\n"
+    docs:=[]struct{format Format;source string}{
+        {JSONSchema,`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","x-refine":{"source":"type Positive = Int where it > 0\n","root":"Positive"}}`},
+        {Avro,`{"type":"long","x-refine":"type Positive = Int where it > 0\n"}`},
+        {OpenAPI,"openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths: {}\nx-refine:\n  source: |\n    type Positive = Int where it > 0\n  root: Positive\n"},
+    }
+    for _,tc:=range docs{doc,err:=Parse(tc.format,[]byte(tc.source),Options{});if err!=nil{t.Fatal(err)};annotations:=doc.Annotations();if len(annotations)!=1||annotations[0].Source!=module{t.Fatalf("%+v",annotations)};annotations[0].Source="changed";if doc.Annotations()[0].Source!=module{t.Fatal("mutable annotation escaped")}}
+    invalid:=[]string{
+        `{"type":"integer","x-refine":{"source":"type Bad = Int where 1","root":"Bad"}}`,
+        `{"type":"integer","x-refine":{"source":"type Fine = Int","root":"Missing"}}`,
+        `{"type":"integer","x-refine":{"source":"type Fine = Int","extra":true}}`,
+    }
+    for _,source:=range invalid{_,err:=ParseJSONSchema([]byte(source),Options{});if problemCode(err)!="native.refinement"{t.Errorf("untyped annotation: %v",err)}}
+}
+
+func TestJSONSchemaProvenanceDelegation(t *testing.T){
+    source:=`{"type":"integer","minimum":0.00,"maximum":100}`;doc,err:=ParseJSONSchema([]byte(source),Options{});if err!=nil{t.Fatal(err)}
+    constraints:=doc.Constraints();if len(constraints)!=2{t.Fatalf("%+v",constraints)};projection:=doc.ConstraintSource();if projection==""{t.Fatal("missing projection")}
+    edited:=strings.Replace(projection,constraints[0].Predicate,"(it > 0)",1);findings,err:=doc.AuditSource(edited);if err!=nil{t.Fatal(err)}
+    if len(findings)!=2||findings[0].Status==findings[1].Status{t.Fatalf("per-constraint isolation lost: %+v",findings)}
+    if _,err:=doc.RecoverNative(constraints[0].Name,edited);err==nil{t.Fatal("edited native recovered")}
+    if got,err:=doc.RecoverNative(constraints[1].Name,edited);err!=nil||got!="100"{t.Fatalf("untouched recovery: %q %v",got,err)}
+    avroDoc,_:=ParseAvro([]byte(`"string"`),Options{});if _,err:=avroDoc.AuditSource("");problemCode(err)!="native.provenance"{t.Fatal("unsupported provenance was not explicit")}
+}
+
+func TestOpenAPIVersionTable(t *testing.T){
+    versions:=[]string{"3.0.0","3.0.1","3.0.2","3.0.3","3.0.4","3.1.0","3.1.1","3.1.2","3.2.0"}
+    for _,version:=range versions{source:=`{"openapi":"`+version+`","info":{"title":"T","version":"1"},"paths":{}}`;doc,err:=ParseOpenAPI([]byte(source),Options{});if err!=nil||doc.Version()!=version{t.Errorf("%s: %v",version,err)}}
+}
+
+func TestAnnotationsOnlyAtDeclaredLocations(t *testing.T){
+    // These strings are payload metadata, not schema annotations, and must not
+    // be parsed or executed as Refine source.
+    jsonSchema:=`{"type":"object","examples":[{"x-refine":"not language"}],"default":{"x-refine":{"source":7}}}`
+    doc,err:=ParseJSONSchema([]byte(jsonSchema),Options{});if err!=nil||len(doc.Annotations())!=0{t.Fatalf("JSON metadata mistaken for annotation: %v",err)}
+    avro:=`{"type":"record","name":"R","fields":[{"name":"x","type":{"type":"map","values":"string"},"default":{"x-refine":"not language"}}]}`
+    doc,err=ParseAvro([]byte(avro),Options{});if err!=nil||len(doc.Annotations())!=0{t.Fatalf("Avro default mistaken for annotation: %v",err)}
+    openapi:=`{"openapi":"3.1.2","info":{"title":"T","version":"1"},"paths":{},"components":{"examples":{"X":{"value":{"x-refine":"not language"}}}}}`
+    doc,err=ParseOpenAPI([]byte(openapi),Options{});if err!=nil||len(doc.Annotations())!=0{t.Fatalf("OpenAPI example mistaken for annotation: %v",err)}
+}
+
+func TestOpenAPIStrictYAMLAndJSONSurface(t *testing.T){
+    cases:=[]string{
+        `{"openapi":"3.1.2","\u006fpenapi":"3.1.2","info":{"title":"T","version":"1"},"paths":{}}`,
+        "base: &base {title: T, version: '1'}\nopenapi: 3.1.2\ninfo: *base\npaths: {}\n",
+        "base: &base {title: T, version: '1'}\nopenapi: 3.1.2\ninfo:\n  <<: *base\npaths: {}\n",
+        "openapi: 3.1.2\ninfo: {title: T, version: '1'}\npaths: {}\n---\nopenapi: 3.1.2\n",
+    }
+    for _,source:=range cases{if _,err:=ParseOpenAPI([]byte(source),Options{});problemCode(err)!="native.syntax"{t.Errorf("non-strict OpenAPI input accepted: %v",err)}}
+    for _,tc:=range []struct{format Format;source string}{{JSONSchema,`{"const":"\ud800"}`},{Avro,`{"type":"fixed","name":"\ud800","size":1}`},{OpenAPI,`{"openapi":"3.1.2","info":{"title":"\ud800","version":"1"},"paths":{}}`}}{
+        if _,err:=Parse(tc.format,[]byte(tc.source),Options{});problemCode(err)!="native.encoding"{t.Errorf("surrogate semantics silently changed for %s: %v",tc.format,err)}
+    }
+}
+
+func TestNativeECMAPatternSyntax(t *testing.T){
+    // Positive lookahead is valid ECMA-262 syntax and is not supported by Go's
+    // regexp engine. Ingestion must not silently substitute the latter dialect.
+    schema:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string","pattern":"(?=x)x"}`
+    if _,err:=ParseJSONSchema([]byte(schema),Options{});err!=nil{t.Fatalf("valid ECMA pattern rejected: %v",err)}
+    api:=`{"openapi":"3.1.2","info":{"title":"T","version":"1"},"paths":{},"components":{"schemas":{"X":{"type":"string","pattern":"(?=x)x"}}}}`
+    if _,err:=ParseOpenAPI([]byte(api),Options{});err!=nil{t.Fatalf("valid OpenAPI ECMA pattern rejected: %v",err)}
+    for _,source:=range []string{`{"type":"string","pattern":"["}`,`{"type":"string","pattern":"(?<"}`}{if _,err:=ParseJSONSchema([]byte(source),Options{});problemCode(err)!="native.structure"{t.Errorf("invalid ECMA pattern accepted: %v",err)}}
+}
+
+func TestRoundTripProperty(t *testing.T){
+    property:=func(n int64)bool{source:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","const":`+fmtInt(n)+`}`;doc,err:=ParseJSONSchema([]byte(source),Options{});return err==nil&&string(doc.ExportOriginal())==source}
+    if err:=quick.Check(property,&quick.Config{MaxCount:500});err!=nil{t.Fatal(err)}
+}
+func fmtInt(n int64)string{return fmt.Sprintf("%d",n)}
+
+func FuzzNativeJSONRoundTrip(f *testing.F){for _,seed:=range []string{`true`,`false`,`{"type":"string"}`,`{"type":"record","name":"R","fields":[]}`}{f.Add(seed)};f.Fuzz(func(t *testing.T,source string){for _,format:=range []Format{JSONSchema,Avro}{doc,err:=Parse(format,[]byte(source),Options{Limits:schemajson.Limits{Bytes:65536,Depth:64,Nodes:10000}});if err==nil&&doc.Original()!=source{t.Fatal("source changed")}}})}

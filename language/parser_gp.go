@@ -373,6 +373,19 @@ func (p *parser) expression(minimum int) *Expr {
 	start := p.peek().at.Start
 	left := p.prefix()
 	for {
+		// A leading infix operator is an unambiguous continuation, unlike a
+		// bare identifier which may start the next declaration. Preserve the
+		// newline for an enclosing precedence level if this operator binds
+		// less tightly than the expression currently being parsed.
+		if p.is("newline") {
+			mark := p.index
+			p.lines()
+			rank, _ := precedence(p.peek().kind)
+			if rank < minimum {
+				p.index = mark
+				break
+			}
+		}
 		if p.is(".") && 9 >= minimum {
 			p.take()
 			field := p.name()

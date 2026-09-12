@@ -1,0 +1,24 @@
+package example.deployment
+
+type Node = { id :: String, dependencies :: [String] }
+
+nodeId :: Node -> String
+nodeId node = node.id
+
+lookupNode :: String -> [Node] -> Maybe Node
+lookupNode _ [] = Nothing
+lookupNode id (node : nodes) = if id == node.id then Just node else lookupNode id nodes
+
+visitId :: [Node] -> [String] -> String -> Bool
+visitId nodes stack id = case lookupNode id nodes of {
+  Nothing -> False;
+  Just node -> visit nodes stack node
+}
+
+visit :: [Node] -> [String] -> Node -> Bool
+visit nodes stack node = not (oneOf node.id stack)
+  && all (visitId nodes (node.id : stack)) node.dependencies
+
+type Deployment = [Node]
+  where unique (map nodeId it) @code "deployment.unique_id"
+  where all (visit it []) it @code "deployment.acyclic_references"

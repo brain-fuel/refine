@@ -1,0 +1,17 @@
+package example.invoice
+
+type Line = {
+  price :: Real where it >= 0.0,
+  quantity :: Int where it > 0
+}
+
+-- Round each line to integer cents, explicitly choosing nearest-even ties.
+lineCents :: Line -> Int
+lineCents line = roundHalfEven (line.price * toReal line.quantity * 100.0)
+
+addLine :: Int -> Line -> Int
+addLine total line = total + lineCents line
+
+type Invoice = { lines :: [Line], totalCents :: Int }
+  where length it.lines > 0 @code "invoice.nonempty"
+  where it.totalCents == foldl addLine 0 it.lines @code "invoice.total"

@@ -20,7 +20,7 @@ func (m *modelEmitter) unionNames(root string) map[string]string {
 		used[sourceNameKey(name)] = true
 	}
 	used[sourceNameKey(m.contract)] = true
-	for _, name := range []string{"Draft", "ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult", "Evidence"} {
+	for _, name := range []string{"Draft", "ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult", "Evidence", m.modelFactoryName()} {
 		used[sourceNameKey(name)] = true
 	}
 	used[sourceNameKey(m.modelDraftName())] = true

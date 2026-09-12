@@ -227,7 +227,6 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         for i,variant:=range decl.Variants{for j,arg:=range variant.Arguments{m.locateModelTypes(decl.Name,arg,[]int{i,j})}}
     }
     for _,decl:=range m.module.Types{
-        if len(decl.Parameters)>0 && decl.Body==nil{unsupported(decl.At,"generic tagged-union model emission remains required")}
         if decl.Body==nil{continue}
         m.genericContext(decl)
         base:=unrefined(decl.Body)
@@ -235,7 +234,6 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
         match unrefined(decl.Body).Form{case language.NamedType(parent):if _,found:=m.declarations[parent];found{m.parents[decl.Name]=parent;m.children[parent]=append(m.children[parent],decl.Name)};case _:}
     }
     for _,decl:=range m.module.Types{root:=m.modelRoot(decl.Name);if len(decl.Parameters)>0{m.genericFamilies[root]=true};m.shape(decl.Name)}
-    for root:=range m.genericFamilies{if m.declarations[root].Body==nil{unsupported(m.declarations[root].At,"generic tagged-union model emission remains required")}}
     // Populate every field spelling before allocating lambda-local names.
     for _,decl:=range m.module.Types{
         root:=decl.Name;for m.parents[root]!=""{root=m.parents[root]};shape:=m.shape(root)
@@ -251,7 +249,7 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
     for _,item:=range support{files=append(files,File{Path:path.Join(prefix,item.name+".java"),Source:header+item.body})}
     for _,decl:=range m.module.Types{
         m.genericContext(decl)
-        source:="";if m.genericFamilies[m.modelRoot(decl.Name)]{source=m.genericModel(decl)}else if m.shape(decl.Name)==nil{source=m.unionModel(decl)}else{source=m.model(decl)}
+        source:="";if m.genericFamilies[m.modelRoot(decl.Name)]{if m.shape(decl.Name)==nil{source=m.genericUnionModel(decl)}else{source=m.genericModel(decl)}}else if m.shape(decl.Name)==nil{source=m.unionModel(decl)}else{source=m.model(decl)}
         files=append(files,File{Path:path.Join(prefix,decl.Name+".java"),Source:header+source})
     }
     return files,nil
