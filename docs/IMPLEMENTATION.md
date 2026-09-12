@@ -996,3 +996,16 @@ native formats and project workflows. The full checklist remains the release gat
   alongside the outstanding native/serde/language/English/analysis/versioning/
   generated-test/Maven/CLI work. No release gate is checked off, no product tag
   or Maven deployment is made, and GoPlus remains at latest v0.158.0.
+- A fresh external module fetched public pseudo-version
+  `v0.0.0-20260912114749-3e490612a7a6` with `GOWORK=off` and no replacements.
+  Its race-tested harness compiled generated Java 25 with warnings-as-errors and
+  ran at `-Xss256k`, checking exact Go-derived constructor/update budgets,
+  fixed-width versus unbounded witnesses, generic `show` scope, nested generic
+  fields, recursive typed reads, structural bypasses and immutable collections.
+  The consumer's initial plain-Go compile needed an explicit `value.TextFromUTF8`
+  conversion for `ReadData`; fixing that harness required no production change.
+- Source checkpoint `3e49061` passed the complete Linux/macOS
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/34691980151), including
+  generation checks, race tests, vet, CLI checks and all fifteen fuzz gates.
+  Authored GoPlus and generated Go were pushed together. No product tag or
+  Maven deployment occurred.
