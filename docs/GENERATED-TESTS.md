@@ -54,6 +54,9 @@ The generator supports booleans, strings, exact rational reals, finite exact
 (through the backend's 65,536-bit resource bound), lists, records, nominal
 aliases, closed applications of generic aliases and tagged unions, refinements,
 exact string-keyed maps, and `Maybe`/`Nullable`/`Result` payload constructors.
+Intrinsic `JSON` strategies cover all six constructors recursively; generated
+numbers use finite base-10 rationals so positive JSON wire properties exercise
+the codec instead of being discarded as unrepresentable.
 Map strategies generate bounded unique canonical keys and recursively use the
 value strategy. Closed recursive generic
 unions and records use a derived finite-base strategy: lists cut to empty,

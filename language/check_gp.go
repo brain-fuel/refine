@@ -208,7 +208,7 @@ func primitive(name string) bool {
 	return err == nil && width > 0 && strconv.FormatUint(width, 10) == digits
 }
 func (c *checker) arity(name string, at Span) int {
-	if primitive(name) {
+	if primitive(name) || name == "JSON" {
 		return 0
 	}
 	switch name {
@@ -786,7 +786,7 @@ func checkModule(module *Module, payload *Type) *Program {
 	module.functionScopes = make(map[string]map[string]string)
 	module.declarationScopes = make(map[string]map[string]string)
 	for _, declaration := range module.Types {
-		if primitive(declaration.Name) || declaration.Name == "Maybe" || declaration.Name == "Nullable" || declaration.Name == "Result" || declaration.Name == "Map" {
+		if primitive(declaration.Name) || declaration.Name == "Maybe" || declaration.Name == "Nullable" || declaration.Name == "Result" || declaration.Name == "Map" || declaration.Name == "JSON" {
 			typeError(declaration.At, "cannot redefine a built-in type")
 		}
 		seen := make(map[string]bool)
@@ -806,6 +806,9 @@ func checkModule(module *Module, payload *Type) *Program {
 	c.constructors["NonNull"] = constructor{parent: "Nullable", parameters: []string{"a"}, arguments: []*Type{named("a")}}
 	c.constructors["Err"] = constructor{parent: "Result", parameters: []string{"e", "a"}, arguments: []*Type{named("e")}}
 	c.constructors["Ok"] = constructor{parent: "Result", parameters: []string{"e", "a"}, arguments: []*Type{named("a")}}
+	for _, item := range jsonConstructorSpecs() {
+		c.constructors[item.name] = constructor{parent: "JSON", arguments: item.arguments}
+	}
 	for _, declaration := range module.Types {
 		for _, variant := range declaration.Variants {
 			if _, exists := c.constructors[variant.Name]; exists || variant.Name == "True" || variant.Name == "False" {

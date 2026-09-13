@@ -251,9 +251,7 @@ func samePins(a, b []ImportPin) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	key := func(p ImportPin) string {
-		return p.Family + "\x00" + p.Version.String() + "\x00" + string(p.Content) + "\x00" + strconv.FormatBool(p.AffectsContract)
-	}
+	key := func(p ImportPin) string { return p.Family + "\x00" + p.Version.String() + "\x00" + string(p.Content) }
 	left := make([]string, len(a))
 	right := make([]string, len(b))
 	for i, p := range a {

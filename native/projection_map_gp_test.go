@@ -43,18 +43,31 @@ func TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema(t *testing.T
 	}
 }
 
-func TestJSONMapProjectionRejectsHeterogeneousOrOpenValueDomains(t *testing.T) {
-	cases := []struct{ name, source, want string }{
-		{"mixed named values", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"}},"additionalProperties":{"type":"integer"}}`, "heterogeneous"},
-		{"mixed patterns", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"},"^s":{"type":"string"}},"additionalProperties":false}`, "heterogeneous"},
-		{"untyped unmatched keys", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"}}}`, "untyped value domain"},
-		{"unevaluated applicator domain", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","unevaluatedProperties":{"type":"integer"}}`, "unevaluatedProperties"},
+func TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains(t *testing.T) {
+	cases := []struct{ name, source, valid, invalid string }{
+		{"mixed named values", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"}},"additionalProperties":{"type":"integer"}}`, `{"name":"hello","count":2}`, `{"name":1}`},
+		{"mixed patterns", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"},"^s":{"type":"string"}},"additionalProperties":false}`, `{"i":1,"s":"hello"}`, `{"s":1}`},
+		{"untyped unmatched keys", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","patternProperties":{"^i":{"type":"integer"}}}`, `{"i":1,"other":[null,true]}`, `{"i":false}`},
+		{"unevaluated applicator domain", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","unevaluatedProperties":{"type":"integer"}}`, `{"a":1,"b":2}`, `{"a":null}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			project, err := IngestProject(JSONSchema, []byte(tc.source), ProjectOptions{Root: ResourceSelector{TypeName: "MapRoot"}})
-			if project != nil || problemCode(err) != "native.projection" || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("unsafe map domain was not rejected: %v", err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(project.EditableSource(), "type MapRoot = Map String JSON") {
+				t.Fatal(project.EditableSource())
+			}
+			data, report, err := project.DecodeAndValidateJSON([]byte(tc.valid), validation.Limits{})
+			if err != nil || validation.StateName(report.State()) != "valid" || len(data.Entries()) != 2 {
+				t.Fatalf("carrier erased map entries: %v %+v", err, report)
+			}
+			if err = project.ValidateJSON([]byte(tc.invalid)); problemCode(err) != "native.payload" {
+				t.Fatalf("native constraints lost: %v", err)
+			}
+			if project.NativeDocument().Original() != tc.source {
+				t.Fatal("native schema changed")
 			}
 		})
 	}

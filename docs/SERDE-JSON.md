@@ -74,6 +74,17 @@ rejects duplicate decoded keys, including escaped/unescaped spellings of the
 same key; writing uses exact UTF-16 key order and rejects unpaired surrogate keys
 before any staged bytes are released.
 
+The intrinsic `JSON` carrier is transparent on this boundary: `JSONNull`,
+`JSONBoolean`, `JSONNumber`, `JSONString`, `JSONArray`, and `JSONObject` map to
+their corresponding JSON wire forms without a discriminator. Its numbers are
+exact `Real` values, independent of the module's ordinary named-`Real` policy;
+only finite base-10 representations can be written. A repeating rational such
+as `1/3`, or an unpaired UTF-16 unit in a string or object key, remains a valid
+language/model value but is rejected before any bytes are emitted. Reads retain
+the exact JSON number and reject duplicate decoded object keys. The same codec,
+numeric-expansion, depth, node, text, and native-validation budgets apply to the
+entire recursively nested value.
+
 ## Resource bounds
 
 `JSONSerdeOptions.CodecLimits` sets immutable generation-time maxima. Zero

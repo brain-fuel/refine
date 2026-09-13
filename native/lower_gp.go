@@ -418,6 +418,11 @@ func unwrap(t *language.Type, name string) (bool, *language.Type) {
 
 func (l *lowerer) named(name string) (any, error) {
 	switch name {
+	case "JSON":
+		if l.format == Avro {
+			return nil, l.unrepresentable(name, "the intrinsic JSON value carrier has no implicit Avro wire representation")
+		}
+		return map[string]any{"description": "Any JSON value, represented by the Refine JSON algebra. JSON wire numbers must be exact finite decimals; non-decimal rational values are rejected rather than rounded. Strings and object keys must be Unicode scalar text; object order is not semantic."}, nil
 	case "String":
 		return map[string]any{"type": "string"}, nil
 	case "Bool":

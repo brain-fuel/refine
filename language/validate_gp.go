@@ -286,11 +286,38 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 		default:
 			return v.wrong(path, "Expected a map.")
 		}
+	case "JSON":
+		if len(args) != 0 {
+			return v.wrong(path, "JSON does not accept type arguments.")
+		}
+		switch __gp_m10 := any(input.form).(type) {
+		case evalVariant:
+			tag := __gp_m10.name
+			values := __gp_m10.arguments
+
+			spec, ok := jsonConstructor(tag)
+			if !ok {
+				return v.wrong(path, "Constructor does not belong to JSON.")
+			}
+			if len(values) != len(spec.arguments) {
+				return v.wrong(path, "JSON constructor has the wrong number of arguments.")
+			}
+			if len(values) == 0 {
+				return input, true
+			}
+			checked, valid := v.check(spec.arguments[0], values[0], env, pointerField(path, "0"))
+			if !valid {
+				return evalValue{}, false
+			}
+			return evalValue{form: evalVariant{name: tag, arguments: []evalValue{checked}}}, true
+		default:
+			return v.wrong(path, "Expected an explicit JSON constructor.")
+		}
 	}
 	if primitive(name) {
-		switch __gp_m10 := any(input.form).(type) {
+		switch __gp_m11 := any(input.form).(type) {
 		case evalNumber:
-			n := __gp_m10.value
+			n := __gp_m11.value
 
 			v.structure.step(uint64(len(n.Show())), at)
 			if name == "Float32" || name == "Float64" {
@@ -338,10 +365,10 @@ func (v *payloadValidator) named(name string, args []*Type, input evalValue, env
 	if decl.Body != nil {
 		return v.check(decl.Body, input, bindings, path)
 	}
-	switch __gp_m11 := any(input.form).(type) {
+	switch __gp_m12 := any(input.form).(type) {
 	case evalVariant:
-		tag := __gp_m11.name
-		values := __gp_m11.arguments
+		tag := __gp_m12.name
+		values := __gp_m12.arguments
 
 		for _, variant := range decl.Variants {
 			v.structure.step(1, at)
@@ -371,12 +398,12 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 	if depth >= evaluationNesting {
 		evalError(t.At, "evaluation.depth", "optional type expansion nesting limit exceeded")
 	}
-	switch __gp_m12 := any(t.Form).(type) {
+	switch __gp_m13 := any(t.Form).(type) {
 	case RefinedType:
-		base := __gp_m12.Base
+		base := __gp_m13.Base
 		return v.optional(base, env, depth+1)
 	case NamedType:
-		name := __gp_m12.Name
+		name := __gp_m13.Name
 
 		if bound, found := env[name]; found {
 			return v.optional(bound.typ, bound.environment, depth+1)
@@ -390,10 +417,10 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 		args := []*Type{}
 		for {
 			stop := false
-			switch __gp_m13 := any(root.Form).(type) {
+			switch __gp_m14 := any(root.Form).(type) {
 			case AppliedType:
-				fn := __gp_m13.Constructor
-				arg := __gp_m13.Argument
+				fn := __gp_m14.Constructor
+				arg := __gp_m14.Argument
 				args = append([]*Type{arg}, args...)
 				root = fn
 			default:
@@ -403,9 +430,9 @@ func (v *payloadValidator) optional(t *Type, env map[string]typeBinding, depth i
 				break
 			}
 		}
-		switch __gp_m14 := any(root.Form).(type) {
+		switch __gp_m15 := any(root.Form).(type) {
 		case NamedType:
-			name := __gp_m14.Name
+			name := __gp_m15.Name
 
 			if name == "Maybe" && len(args) == 1 {
 				return true
@@ -457,9 +484,9 @@ func (v *payloadValidator) rule(rule Where, input evalValue, path string, types 
 	if rule.Message != nil {
 		custom, failed := e.attempt(rule.Message, env)
 		if failed == nil {
-			switch __gp_m15 := any(custom.form).(type) {
+			switch __gp_m16 := any(custom.form).(type) {
 			case evalText:
-				text := __gp_m15.value
+				text := __gp_m16.value
 				if message, err := text.UTF8(); err == nil {
 					detail.Message = message
 				}

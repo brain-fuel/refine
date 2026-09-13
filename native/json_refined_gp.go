@@ -99,6 +99,8 @@ func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindin
 			return d.scalar(name, encoding, node, path)
 		}
 		switch name {
+		case "JSON":
+			return d.jsonValue(node, path, depth)
 		case "Bool":
 			if schemajson.KindName(node.Kind()) != "boolean" {
 				return value.Data{}, d.failure(path, "expected a JSON Boolean")

@@ -1,0 +1,85 @@
+package java
+
+import (
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/native"
+)
+
+const intrinsicJSONContract=`
+type Root = JSON
+type Envelope = { payload :: JSON }
+`
+
+func TestGeneratedIntrinsicJSONValueModelsSerdeAndProperties(t *testing.T){
+    compiler,vm:=javaTools(t);classpath:=strings.Join([]string{networkntClasspath(t),jetCheckClasspath(t)},string(os.PathListSeparator))
+    program,err:=language.Compile(intrinsicJSONContract);if err!=nil{t.Fatal(err)}
+    files,err:=GenerateJSONSerde(program,"example.jsonvalue","Contract","RootModule",JSONSerdeOptions{Root:"Root"});if err!=nil{t.Fatal(err)}
+    envelope,err:=GenerateJSONSerde(program,"example.jsonvalue","Contract","EnvelopeModule",JSONSerdeOptions{Root:"Envelope"});if err!=nil{t.Fatal(err)};for _,file:=range envelope{if strings.HasSuffix(file.Path,"/EnvelopeModule.java"){files=append(files,file)}}
+    properties,err:=GeneratePropertyTests(program,"example.jsonvalue","Contract",PropertyTestOptions{Targets:[]PropertyTarget{{Name:"Root"}},CaseCount:12,AttemptBudget:256,Seed:29,JSONModule:"RootModule"});if err!=nil{t.Fatal(err)};if len(properties)!=1{t.Fatal("intrinsic JSON property source missing")};for _,name:=range []string{"JSONNull","JSONBoolean","JSONNumber","JSONString","JSONArray","JSONObject","BigInteger.TEN.pow"}{if !strings.Contains(properties[0].Source,name){t.Fatalf("intrinsic JSON property strategy omits %s",name)}};files=append(files,properties...)
+    nativeOnly,err:=native.IngestProject(native.JSONSchema,[]byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","not":{"type":"null"}}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"NativeOnly"},Metadata:native.WireMetadata{PublicationNamespace:"example.nativejson"}});if err!=nil{t.Fatal(err)};if !strings.Contains(nativeOnly.EditableSource(),"type NativeOnly = JSON"){t.Fatalf("native fallback did not select JSON: %s",nativeOnly.EditableSource())};nativeFiles,err:=GenerateProjectJSONSerde(nativeOnly,"Contract","NativeOnlyModule");if err!=nil{t.Fatal(err)};files=append(files,nativeFiles...)
+    refinedNull,err:=native.IngestProject(native.JSONSchema,[]byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema"}`),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"RefinedNull"},Metadata:native.WireMetadata{PublicationNamespace:"example.refinedjson"}});if err!=nil{t.Fatal(err)};refinedNull,err=refinedNull.WithEditedSource(`notNull :: JSON -> Bool
+notNull value = case value of { JSONNull -> False; JSONBoolean _ -> True; JSONNumber _ -> True; JSONString _ -> True; JSONArray _ -> True; JSONObject _ -> True }
+type RefinedNull = JSON where notNull it @code "json.not_null"
+`);if err!=nil{t.Fatal(err)};refinedFiles,err:=GenerateProjectJSONSerde(refinedNull,"Contract","RefinedNullModule");if err!=nil{t.Fatal(err)};files=append(files,refinedFiles...)
+    foundJSON:=false;for _,file:=range files{if strings.HasSuffix(file.Path,"/JSONValue.java"){foundJSON=true};if strings.HasSuffix(file.Path,"/Root.java")&&strings.Contains(file.Source,"Object value"){t.Fatal("intrinsic JSON model degraded to Object")}}
+    if !foundJSON{t.Fatal("JSONValue model was not emitted")}
+    dir:=t.TempDir();sources:=[]string{};for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    proof:=filepath.Join(dir,"example","jsonvalue","JSONValueProof.java");if err:=os.WriteFile(proof,[]byte("package example.jsonvalue; public final class JSONValueProof { private JSONValueProof() {} public static Data encode(JSONValue value){return JSONValues.encode(value,\"\");} public static JSONValue decode(Data value){return JSONValues.decode(value);} }"),0644);err!=nil{t.Fatal(err)};sources=append(sources,proof)
+    harness:=filepath.Join(dir,"JSONValueGate.java");if err:=os.WriteFile(harness,[]byte(intrinsicJSONHarness),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness)
+    classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",classpath,"-d",classes},sources...)
+    if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("intrinsic JSON javac: %v\n%s",err,output)}
+    if output,err:=exec.Command(vm,"-Xss256k","-Xmx64m","-cp",classes+string(os.PathListSeparator)+classpath,"JSONValueGate").CombinedOutput();err!=nil{t.Fatalf("intrinsic JSON runtime: %v\n%s",err,output)}
+}
+
+func TestIntrinsicJSONModelEmissionIsLazyAndCollisionSafe(t *testing.T){
+    plain,err:=language.Compile("type Root = { value :: String }\n");if err!=nil{t.Fatal(err)};files,err:=GenerateModels(plain,"example.plain","Contract");if err!=nil{t.Fatal(err)};for _,file:=range files{if strings.HasSuffix(file.Path,"/JSONValue.java")||strings.HasSuffix(file.Path,"/JSONValues.java"){t.Fatal("ordinary schema gained intrinsic JSON sources")}}
+    collision,err:=language.Compile("type JSONValue = JSON\ntype Root = JSONValue\n");if err!=nil{t.Fatal(err)};files,err=GenerateModels(collision,"example.collision","Contract");if err==nil||len(files)!=0||!strings.Contains(err.Error(),"reserved")&&!strings.Contains(err.Error(),"collide"){t.Fatalf("JSONValue source collision was not rejected atomically: %v %#v",err,files)}
+}
+
+func TestIntrinsicJSONModelObjectPreflightBeforeCopy(t *testing.T){
+    for _,ordered:=range []string{
+        "scheduled=schedule(scheduled,object.value().size(),item.path());var entries=new java.util.ArrayList<>(object.value().entrySet())",
+        "scheduled=checkedSchedule(scheduled,mapping.size());var entries=new java.util.ArrayList<>(mapping.entrySet())",
+    }{if !strings.Contains(modelJSONValuesJava,ordered){t.Fatal("JSON object conversion allocates its defensive copy before checking the remaining node budget")}}
+}
+
+const intrinsicJSONHarness=`
+import example.jsonvalue.*;
+import java.io.ByteArrayOutputStream;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+public final class JSONValueGate {
+  interface Throwing { void run() throws Exception; }
+  static void require(boolean value){if(!value)throw new AssertionError();}
+  static void rejects(Throwing action){try{action.run();throw new AssertionError("accepted invalid JSON value");}catch(Exception expected){if(expected instanceof RuntimeException||expected instanceof tools.jackson.core.JacksonException||expected instanceof java.io.IOException)return;throw new AssertionError(expected);}}
+  static String kind(JSONValue value){return switch(value){case JSONValue.NullValue ignored->"null";case JSONValue.BooleanValue ignored->"boolean";case JSONValue.NumberValue ignored->"number";case JSONValue.StringValue ignored->"string";case JSONValue.ArrayValue ignored->"array";case JSONValue.ObjectValue ignored->"object";};}
+  static Data variant(String name,Data... values){return new Data.Variant(name,List.of(values));}
+  public static void main(String[] args)throws Exception{
+    var entries=new LinkedHashMap<String,JSONValue>();entries.put("b",new JSONValue.BooleanValue(true));entries.put("a",new JSONValue.ArrayValue(List.of(new JSONValue.NullValue(),new JSONValue.NumberValue(Rational.parse("5/2")))));
+    var values=List.<JSONValue>of(new JSONValue.NullValue(),new JSONValue.BooleanValue(false),new JSONValue.NumberValue(Rational.parse("1/8")),new JSONValue.StringValue("x"),new JSONValue.ArrayValue(List.of()),new JSONValue.ObjectValue(entries));
+    require(values.stream().map(JSONValueGate::kind).toList().equals(List.of("null","boolean","number","string","array","object")));
+    var object=(JSONValue.ObjectValue)values.getLast();require(List.copyOf(object.value().keySet()).equals(List.of("a","b")));rejects(()->object.value().put("c",new JSONValue.NullValue()));entries.put("later",new JSONValue.NullValue());require(!object.value().containsKey("later"));
+    var objectModel=new Root(object);String shown=objectModel.showWithoutValidation();if(!shown.contains("JSONObject")||!shown.contains("map {")||!Root.read(shown).rawData().equals(objectModel.rawData()))throw new AssertionError(shown);
+    var mapper=RootModule.strictMapper();var expected=List.of("null","false","0.125","\"x\"","[]","{\"a\":[null,2.5],\"b\":true}");for(int i=0;i<values.size();i++){var model=new Root(values.get(i));String json=mapper.writeValueAsString(model);require(json.equals(expected.get(i)));var read=mapper.readValue(json,Root.class);require(read.rawData().equals(model.rawData()));require(mapper.writeValueAsString(read).equals(json));}
+    var envelopeMapper=EnvelopeModule.strictMapper();var envelope=envelopeMapper.readValue("{\"payload\":{\"z\":1,\"a\":null}}",Envelope.class);require(envelope.payload() instanceof JSONValue.ObjectValue);require(envelopeMapper.writeValueAsString(envelope).equals("{\"payload\":{\"a\":null,\"z\":1}}"));
+    rejects(()->mapper.readValue("{\"a\":1,\"\\u0061\":2}",Root.class));rejects(()->mapper.readValue("1 2",Root.class));
+    for(Data malformed:List.of(new Data.Number(Rational.ONE),variant("Unknown"),variant("JSONNull",new Data.Bool(true)),variant("JSONBoolean"),variant("JSONBoolean",new Data.Text("x")),variant("JSONArray",new Data.Number(Rational.ONE)),variant("JSONObject",new Data.Sequence(List.of())))){var outcome=Contract.validate("Root",malformed);require(outcome.state()==Validation.State.INVALID&&!outcome.incomplete());rejects(()->Root.fromData(malformed));}
+    var repeating=new Root(new JSONValue.NumberValue(Rational.parse("1/3")));var numberOut=new ByteArrayOutputStream();rejects(()->mapper.writeValue(numberOut,repeating));require(numberOut.size()==0);
+    String lone=new String(new char[]{(char)0xd800});var badText=new Root(new JSONValue.StringValue(lone));var textOut=new ByteArrayOutputStream();rejects(()->mapper.writeValue(textOut,badText));require(textOut.size()==0);
+    var badKey=new Root(new JSONValue.ObjectValue(Map.of(lone,new JSONValue.NullValue())));var keyOut=new ByteArrayOutputStream();rejects(()->mapper.writeValue(keyOut,badKey));require(keyOut.size()==0);
+    JSONValue deep=new JSONValue.NullValue();for(int i=0;i<500;i++)deep=new JSONValue.ArrayValue(List.of(deep));JSONValue decoded=JSONValueProof.decode(JSONValueProof.encode(deep));for(int i=0;i<500;i++)decoded=((JSONValue.ArrayValue)decoded).value().getFirst();require(decoded instanceof JSONValue.NullValue);
+    JSONValue tooDeep=new JSONValue.NullValue();for(int i=0;i<520;i++)tooDeep=new JSONValue.ArrayValue(List.of(tooDeep));JSONValue rejectedDepth=tooDeep;rejects(()->JSONValueProof.encode(rejectedDepth));
+    var tooWide=new JSONValue.ArrayValue(java.util.Collections.nCopies(100_000,new JSONValue.NullValue()));rejects(()->JSONValueProof.encode(tooWide));
+    var nativeMapper=example.nativejson.NativeOnlyModule.strictMapper();rejects(()->nativeMapper.readValue("null",example.nativejson.NativeOnly.class));require(nativeMapper.readValue("1",example.nativejson.NativeOnly.class).value() instanceof example.nativejson.JSONValue.NumberValue);
+    var refinedMapper=example.refinedjson.RefinedNullModule.strictMapper();rejects(()->refinedMapper.readValue("null",example.refinedjson.RefinedNull.class));require(refinedMapper.readValue("true",example.refinedjson.RefinedNull.class).validate().state()==example.refinedjson.Validation.State.VALID);
+    ContractGeneratedProperties.main(args);
+  }
+}
+`

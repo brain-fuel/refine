@@ -451,16 +451,21 @@ func policyRef(family string, policy releaseComparisonPolicy) (release.Compariso
 	return ref, nil
 }
 
-func entryImports(root *os.Root, entry *releaseSchemaEntry, catalog releaseCatalog, config projectConfig, intended map[string]release.Version, allowSnapshot bool) ([]release.ImportPin, error) {
+type releaseEntryImports struct {
+	pins    []release.ImportPin
+	entries map[string]*releaseSchemaEntry
+}
+
+func entryImports(root *os.Root, entry *releaseSchemaEntry, catalog releaseCatalog, config projectConfig, intended map[string]release.Version, allowSnapshot bool) (releaseEntryImports, error) {
 	if entry.nativeProject != nil {
 		for _, file := range entry.nativeProject.LanguageFiles() {
 			for _, resolved := range file.Imports {
 				if dependency := catalog.entries[resolved]; dependency != nil {
-					return nil, fmt.Errorf("native bundle %s embeds catalog-relative dependency %s; an exact semantic release pin cannot be proven", entry.sourcePath, dependency.sourcePath)
+					return releaseEntryImports{}, fmt.Errorf("native bundle %s embeds catalog-relative dependency %s; an exact semantic release pin cannot be proven", entry.sourcePath, dependency.sourcePath)
 				}
 			}
 		}
-		return nil, nil
+		return releaseEntryImports{pins: []release.ImportPin{}, entries: map[string]*releaseSchemaEntry{}}, nil
 	}
 	files := entry.bundle.Files()
 	var source *language.SourceFile
@@ -471,33 +476,34 @@ func entryImports(root *os.Root, entry *releaseSchemaEntry, catalog releaseCatal
 		}
 	}
 	if source == nil {
-		return nil, fmt.Errorf("release entry source metadata missing")
+		return releaseEntryImports{}, fmt.Errorf("release entry source metadata missing")
 	}
-	pins := []release.ImportPin{}
+	result := releaseEntryImports{pins: []release.ImportPin{}, entries: map[string]*releaseSchemaEntry{}}
 	for _, resolved := range source.Imports {
 		dependency := catalog.entries[resolved]
 		if dependency == nil {
 			continue
 		}
 		if err := compileReleaseEntry(root, dependency, catalog, config); err != nil {
-			return nil, err
+			return releaseEntryImports{}, err
 		}
 		version := release.Version{}
 		if dependency.version != nil {
 			version = *dependency.version
 		} else {
 			if !allowSnapshot {
-				return nil, fmt.Errorf("released schema %s imports mutable SNAPSHOT family %s", entry.basename, dependency.family)
+				return releaseEntryImports{}, fmt.Errorf("released schema %s imports mutable SNAPSHOT family %s", entry.basename, dependency.family)
 			}
 			accepted, ok := intended[dependency.family]
 			if !ok {
-				return nil, fmt.Errorf("snapshot import %s requires an intended exact version", dependency.family)
+				return releaseEntryImports{}, fmt.Errorf("snapshot import %s requires an intended exact version", dependency.family)
 			}
 			version = accepted
 		}
-		pins = append(pins, release.ImportPin{Family: dependency.family, Version: version, Content: dependency.content, AffectsContract: true})
+		result.pins = append(result.pins, release.ImportPin{Family: dependency.family, Version: version, Content: dependency.content, AffectsContract: true})
+		result.entries[dependency.family] = dependency
 	}
-	return pins, nil
+	return result, nil
 }
 
 func buildReleaseWorkflow(rootPath, configPath string, selection []string) (releaseWorkflow, error) {
@@ -604,11 +610,11 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 		if err != nil {
 			return releaseWorkflow{}, err
 		}
-		snapshotPins, err := entryImports(root, snapshot, catalog, config, intended, true)
+		snapshotImports, err := entryImports(root, snapshot, catalog, config, intended, true)
 		if err != nil {
 			return releaseWorkflow{}, err
 		}
-		planning := release.PlanningInput{Family: family, SnapshotContent: snapshot.content, SnapshotImports: snapshotPins, EnforceForward: config.Release.EnforceForward}
+		planning := release.PlanningInput{Family: family, SnapshotContent: snapshot.content, SnapshotImports: snapshotImports.pins, EnforceForward: config.Release.EnforceForward}
 		planning.Change, err = parseReleaseChange(settings.Release.Change)
 		if err != nil {
 			return releaseWorkflow{}, fmt.Errorf("family %s: %w", family, err)
@@ -618,6 +624,7 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 			planning.Intended = &version
 		}
 		comparisons := []releaseComparisonReport{}
+		latestImports := releaseEntryImports{pins: []release.ImportPin{}, entries: map[string]*releaseSchemaEntry{}}
 		for _, baseline := range baselines {
 			if err := compileReleaseEntry(root, baseline, catalog, config); err != nil {
 				return releaseWorkflow{}, err
@@ -629,11 +636,14 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 			if e != nil {
 				return releaseWorkflow{}, e
 			}
-			pins, e := entryImports(root, baseline, catalog, config, intended, false)
+			imports, e := entryImports(root, baseline, catalog, config, intended, false)
 			if e != nil {
 				return releaseWorkflow{}, e
 			}
-			planning.Releases = append(planning.Releases, release.ReleaseBaseline{Version: *baseline.version, Content: baseline.content, Imports: pins})
+			planning.Releases = append(planning.Releases, release.ReleaseBaseline{Version: *baseline.version, Content: baseline.content, Imports: imports.pins})
+			if baseline == baselines[len(baselines)-1] {
+				latestImports = imports
+			}
 			logical, e := analysis.Compare(baseline.program, baselineRoot, snapshot.program, snapshotRoot, validation.Limits{})
 			if e != nil {
 				return releaseWorkflow{}, e
@@ -650,6 +660,12 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 				ref := release.ComparisonRef{Family: family, Baseline: *baseline.version, BaselineContent: baseline.content, CandidateContent: snapshot.content, Direction: direction}
 				planning.Comparisons = append(planning.Comparisons, release.CompatibilityEvidence{Comparison: ref, Result: result, Detail: detail})
 				comparisons = append(comparisons, releaseComparisonReport{Baseline: baseline.version.String(), BaselineSHA256: string(baseline.content), SnapshotSHA256: string(snapshot.content), BaselinePolicySHA256: string(baseline.policyContent), SnapshotPolicySHA256: string(snapshot.policyContent), Direction: direction.String(), Logical: finding, Native: nativeFinding, JavaABI: abiFinding, Result: resultName(result), Detail: detail})
+			}
+		}
+		if len(baselines) > 0 {
+			planning.SnapshotImports, err = classifyDependencyImports(snapshotImports, latestImports, catalog, config)
+			if err != nil {
+				return releaseWorkflow{}, err
 			}
 		}
 		for _, item := range settings.Release.Overrides {

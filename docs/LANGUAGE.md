@@ -72,6 +72,16 @@ and multi-module compilation stage remain required work.
 `Null`/`NonNull`, and `Err`/`Ok`. These are language forms, not an extra JSON or
 Avro wire wrapper. Wire lowering remains a separate, required compiler stage.
 
+`JSON` is an intrinsic, zero-argument algebraic type for native JSON shapes
+that have no more precise common projection. Its constructors are `JSONNull`,
+`JSONBoolean Bool`, `JSONNumber Real`, `JSONString String`, `JSONArray [JSON]`,
+and `JSONObject (Map String JSON)`. It supports exhaustive case analysis,
+equality, and canonical `show`/`read`; it is not an ordered or numeric type.
+For example, `type Present = JSON where it /= JSONNull` adds a separately
+reported refinement without inventing a wire discriminator. Raw numbers remain
+exact rationals and text remains exact UTF-16; JSON serialization rejects
+non-decimal rationals and unpaired surrogates rather than changing them.
+
 ## Static checks
 
 The current checker checks declared names and arities, nominal types, parent

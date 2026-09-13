@@ -196,6 +196,12 @@ func (c *checker) requireCapability(class string, t *term, at Span, effective ma
 		capabilityFailure(class, at)
 		return false
 	}
+	if t.name == "JSON" {
+		if class == "Num" || class == "Integral" || class == "Ord" {
+			capabilityFailure(class, at)
+		}
+		return false
+	}
 	if primitive(t.name) {
 		if class == "Num" && !numericCapabilityPrimitive(t.name) {
 			capabilityFailure(class, at)

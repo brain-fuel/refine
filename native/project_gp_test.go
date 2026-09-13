@@ -170,7 +170,9 @@ func TestWireMetadataCheckedAndImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited, err := project.WithEditedSource(project.EditableSource() + "\ndata Payment = Card String | Bank Int64\ntype Exact = Real\n")
+	// An unconstrained native object now projects to a JSON map. This test is
+	// about explicit record metadata, so author that record view intentionally.
+	edited, err := project.WithEditedSource("type Envelope = {}\ndata Payment = Card String | Bank Int64\ntype Exact = Real\n")
 	if err != nil {
 		t.Fatal(err)
 	}

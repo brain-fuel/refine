@@ -226,7 +226,10 @@ func (n Node) Raw() string {
 
 // MemberCount reports object cardinality without copying the immutable member
 // slice, allowing allocation preflight before Members.
-func (n Node) MemberCount() int         { return len(n.members) }
+func (n Node) MemberCount() int { return len(n.members) }
+
+// ElementCount reports array cardinality before a defensive Elements copy.
+func (n Node) ElementCount() int        { return len(n.elements) }
 func (n Node) Members() []Member        { return append([]Member(nil), n.members...) }
 func (n Node) Elements() []Node         { return append([]Node(nil), n.elements...) }
 func (n Node) Text() (value.Text, bool) { return n.text, KindName(n.Kind()) == "string" }

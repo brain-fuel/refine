@@ -170,6 +170,20 @@ func TestDependencyContentAffectsPlan(t *testing.T) {
 	}
 }
 
+func TestDependencyEvidenceFlagDoesNotChangePinIdentity(t *testing.T) {
+	pin := ImportPin{Family: "dep", Version: Version{Major: 1}, Content: Digest([]byte("dep")), AffectsContract: true}
+	other := pin
+	other.AffectsContract = false
+	if !samePins([]ImportPin{pin}, []ImportPin{other}) {
+		t.Fatal("dependency evidence-only flag changed exact pin identity")
+	}
+	baseline := ReleaseBaseline{Version: Version{Major: 1}, Content: Digest([]byte("schema")), Imports: []ImportPin{pin}}
+	got := Plan(PlanningInput{Family: "foo", SnapshotContent: baseline.Content, SnapshotImports: []ImportPin{other}, Change: NoChange, Releases: []ReleaseBaseline{baseline}})
+	if !got.Ready || !got.NoPendingVersion {
+		t.Fatalf("evidence-only flag manufactured a pending release: %+v", got)
+	}
+}
+
 func TestInvalidEvidenceIdentityCannotControlVersion(t *testing.T) {
 	b := baseline(Version{Major: 1}, "old")
 	candidate := Digest([]byte("new"))

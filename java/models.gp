@@ -31,6 +31,7 @@ type modelEmitter struct {
     anonymous map[*language.Type]string
     anonymousLocations map[string]modelTypeLocation
     anonymousDecls []language.TypeDecl
+    usesJSON bool
 }
 func unrefined(t *language.Type)*language.Type{for{match t.Form{case language.RefinedType(base,_):t=base;case _:return t}}}
 func integerType(name string)bool{
@@ -62,7 +63,7 @@ func (m *modelEmitter) javaType(t *language.Type)string{
     case language.NamedType(name):
         if parameter:=m.parameters[name];parameter!=""{return parameter}
         if integerType(name){return "java.math.BigInteger"}
-        switch name{case "Real","Float32","Float64":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean";case "Timestamp":return "Timestamp"}
+        switch name{case "Real","Float32","Float64":return "Rational";case "String":return "java.lang.String";case "Bool":return "java.lang.Boolean";case "Timestamp":return "Timestamp";case "JSON":return "JSONValue"}
         if _,found:=m.declarations[name];found{return m.qualified(name)}
         unsupported(t.At,"unsupported Java model type "+name)
     case language.ListType(element):return "java.util.List<"+m.javaType(element)+">"
@@ -82,6 +83,7 @@ func (m *modelEmitter) encode(t *language.Type,input,location string)string{
     case language.NamedType(name):
         if witness:=m.witnesses[name];witness!=""{return witness+".encode("+input+","+location+")"}
         method:="";if integerType(name){method="integer"}else{switch name{case "Real":method="real";case "Float32":method="float32";case "Float64":method="float64";case "String":method="text";case "Bool":method="bool";case "Timestamp":method="timestamp"}}
+        if name=="JSON"{return "JSONValues.encode("+input+","+location+")"}
         if method!=""{return "ModelSupport."+method+"("+input+","+location+")"}
         m.javaType(t);return "ModelSupport.nonNull("+input+","+location+").rawData()"
     case language.ListType(element):
@@ -102,7 +104,7 @@ func (m *modelEmitter) decode(t *language.Type,input string)string{
     case language.NamedType(name):
         if witness:=m.witnesses[name];witness!=""{return witness+".decode("+input+")"}
         if integerType(name){return "((Data.Number)"+input+").value().numerator()"}
-        switch name{case "Real","Float32","Float64":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())"}
+        switch name{case "Real","Float32","Float64":return "((Data.Number)"+input+").value()";case "String":return "((Data.Text)"+input+").value()";case "Bool":return "((Data.Bool)"+input+").value()";case "Timestamp":return "Timestamp.parse(((Data.Text)"+input+").value())";case "JSON":return "JSONValues.decode("+input+")"}
         m.javaType(t);if m.genericFamilies[m.modelRoot(name)]&&m.parents[name]!=""{return m.witness(t)+".decode("+input+")"};return m.qualified(name)+".fromDataWithoutValidation("+input+")"
     case language.ListType(element):item:=m.fresh();return "ModelSupport.list("+input+","+item+" -> "+m.decode(element,item)+")"
     case language.AppliedType(_,_):
@@ -232,9 +234,10 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
     defer func(){if caught:=recover();caught!=nil{if err,ok:=caught.(*GenerationError);ok{files=nil;failure=err}else{panic(caught)}}}()
     files,failure=GenerateValidator(program,namespace,contractName);if failure!=nil{return nil,failure}
     m:=&modelEmitter{module:program.Syntax(),namespace:namespace,contract:contractName,declarations:map[string]language.TypeDecl{},parents:map[string]string{},children:map[string][]string{},fields:map[string][]modelField{},alternatives:map[string]map[string]string{},unionViews:map[string]string{},locals:map[string]bool{"value":true},typeLocations:map[*language.Type]modelTypeLocation{},genericFamilies:map[string]bool{},anonymous:map[*language.Type]string{},anonymousLocations:map[string]modelTypeLocation{}}
+    m.usesJSON=moduleUsesJSON(m.module)
     sourceNames:=map[string]bool{}
     for _,file:=range files{sourceNames[sourceNameKey(path.Base(file.Path))]=true}
-    for _,name:=range []string{"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes"}{sourceNames[sourceNameKey(name+".java")]=true}
+    for _,name:=range []string{"ModelSupport","ModelMaybe","ModelNullable","ModelResult","ModelType","ModelTypes"}{sourceNames[sourceNameKey(name+".java")]=true};if m.usesJSON{sourceNames[sourceNameKey("JSONValue.java")]=true;sourceNames[sourceNameKey("JSONValues.java")]=true}
     for _,decl:=range m.module.Types{
         if err:=javaClassName(decl.Name);err!=nil{unsupported(decl.At,err.Error())}
         if decl.Name==contractName{unsupported(decl.At,"model name conflicts with the chosen contract class")}
@@ -264,6 +267,7 @@ func GenerateModels(program *language.Program,namespace,contractName string)(fil
     for _,decl:=range m.module.Types{if parent:=m.parents[decl.Name];parent!=""{parents=append(parents,"java.util.Map.entry("+javaQuote(decl.Name)+","+javaQuote(parent)+")")}}
     supportSource:=strings.Replace(fmt.Sprintf(modelSupportJava,strings.Join(parents,","),contractName,contractName,contractName),"    private ModelSupport() {}","    private ModelSupport() {}\n"+strings.ReplaceAll(genericEvidenceJava,"@CONTRACT@",contractName),1)
     support:=[]struct{name string;body string}{{"ModelSupport",supportSource},{"ModelMaybe",modelMaybeJava},{"ModelNullable",modelNullableJava},{"ModelResult",modelResultJava},{"ModelType",strings.ReplaceAll(modelTypeJava,"@CONTRACT@",contractName)},{"ModelTypes",m.modelTypes()}}
+    if m.usesJSON{support=append(support,struct{name string;body string}{"JSONValue",modelJSONJava},struct{name string;body string}{"JSONValues",modelJSONValuesJava})}
     for _,item:=range support{files=append(files,File{Path:path.Join(prefix,item.name+".java"),Source:header+item.body})}
     for _,decl:=range m.module.Types{
         m.genericContext(decl)

@@ -11,7 +11,7 @@ import (
     "goforge.dev/refine/schemajson"
 )
 
-type sourceProjector struct { format Format; root schemajson.Document; names map[string]string; definitionNodes map[string]schemajson.Node; definitionPaths map[string]string; declarations []string; avroNames map[string]string; emitted map[string]bool; nextUnion int; openAPI bool }
+type sourceProjector struct { format Format; root schemajson.Document; names map[string]string; definitionNodes map[string]schemajson.Node; definitionPaths map[string]string; declarations []string; avroNames map[string]string; emitted map[string]bool; nextUnion int; openAPI bool; strictStructure bool }
 type jsonMapCandidate struct{node schemajson.Node;path string}
 
 func checkedTypeName(name string)bool{if name==""{return false};for i,r:=range name{if i==0{if !unicode.IsUpper(r){return false}}else if !unicode.IsLetter(r)&&!unicode.IsDigit(r)&&r!='_'{return false}};return true}
@@ -26,10 +26,12 @@ func projectJSON(doc schemajson.Document,selector ResourceSelector,openAPI bool)
 }
 
 func (p *sourceProjector) jsonType(node schemajson.Node,path string,openAPI bool)(string,error){
+    if carrier,handled:=p.jsonCarrierProjection(node);handled{return carrier,nil}
     if schemajson.KindName(node.Kind())=="boolean"{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path,Message:"Boolean schemas have no safe standalone language payload type; retain them in the native sidecar"}}
     if schemajson.KindName(node.Kind())!="object"{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path,Message:"schema position must be an object or Boolean"}}
+    if p.strictStructure{for _,keyword:=range []string{"allOf","anyOf","oneOf","if","then","else","dependentSchemas"}{if _,ok:=node.Lookup(keyword);ok{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/"+keyword,Message:"automatic operation type derivation cannot infer structure through "+keyword+"; provide explicit checked OpenAPI operation metadata"}}}}
     if unevaluated,ok:=node.Lookup("unevaluatedProperties");ok&&schemajson.KindName(unevaluated.Kind())=="object"{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/unevaluatedProperties",Message:"schema-valued unevaluatedProperties depends on applicator evaluation and cannot yet be projected as one homogeneous Map value type; provide an explicit checked source"}}
-    if ref,ok:=node.Lookup("$ref");ok{raw,ok:=nodeString(ref);if !ok{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/$ref",Message:"reference must be scalar text"}};if name,ok:=p.names[raw];ok{if !p.emitted[raw]{p.emitted[raw]=true;expr,err:=p.jsonType(p.definitionNodes[raw],p.definitionPaths[raw],p.openAPI);if err!=nil{return "",err};p.declarations=append(p.declarations,"type "+name+" = "+expr)};return name,nil};return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/$ref",Message:"only local named-definition references can currently be projected; the native sidecar still retains external references"}}
+    if ref,ok:=node.Lookup("$ref");ok{if p.strictStructure{for _,keyword:=range []string{"type","properties","required","items","prefixItems","additionalProperties","patternProperties","nullable"}{if _,sibling:=node.Lookup(keyword);sibling{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/"+keyword,Message:"automatic operation type derivation cannot merge a structural $ref sibling; provide explicit checked OpenAPI operation metadata"}}}};raw,ok:=nodeString(ref);if !ok{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/$ref",Message:"reference must be scalar text"}};if name,ok:=p.names[raw];ok{if !p.emitted[raw]{p.emitted[raw]=true;expr,err:=p.jsonType(p.definitionNodes[raw],p.definitionPaths[raw],p.openAPI);if err!=nil{return "",err};p.declarations=append(p.declarations,"type "+name+" = "+expr)};return name,nil};return "",&Error{Code:"native.projection",Format:p.format,Pointer:path+"/$ref",Message:"only local named-definition references can currently be projected; the native sidecar still retains external references"}}
     typeNode,ok:=node.Lookup("type");if !ok{return "",&Error{Code:"native.projection",Format:p.format,Pointer:path,Message:"a safe editable projection requires an explicit native type"}}
     nullable:=false;nativeType:=""
     switch schemajson.KindName(typeNode.Kind()){
@@ -55,16 +57,17 @@ func (p *sourceProjector) jsonType(node schemajson.Node,path string,openAPI bool
 // A JSON object projects as a typed map only when every possible value has one
 // checked type. Native pattern/required constraints remain authoritative in the
 // immutable schema; this projection only establishes the homogeneous value
-// domain. An open unmatched key domain is deliberately rejected.
+// domain. Heterogeneous and open domains use the explicit JSON carrier unless
+// this projector is operating under strict operation-derivation rules.
 func (p *sourceProjector) jsonMapType(node schemajson.Node,path string,openAPI bool)(string,bool,error){
     additional,hasAdditional:=node.Lookup("additionalProperties");additionalSchema:=hasAdditional&&schemajson.KindName(additional.Kind())=="object"
     patterns,hasPatterns:=node.Lookup("patternProperties");patterned:=hasPatterns&&schemajson.KindName(patterns.Kind())=="object"&&len(patterns.Members())>0
     if !additionalSchema&&!patterned{return "",false,nil}
     candidates:=[]jsonMapCandidate{}
-    if additionalSchema{candidates=append(candidates,jsonMapCandidate{additional,path+"/additionalProperties"})}else if patterned&&(!hasAdditional||additional.Raw()!="false"){return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:path+"/additionalProperties",Message:"patternProperties leaves unmatched keys with an untyped value domain; set additionalProperties to one homogeneous schema or false"}}
+    if additionalSchema{candidates=append(candidates,jsonMapCandidate{additional,path+"/additionalProperties"})}else if patterned&&(!hasAdditional||additional.Raw()!="false"){if !p.strictStructure{return "Map String JSON",true,nil};return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:path+"/additionalProperties",Message:"patternProperties leaves unmatched keys with an untyped value domain; set additionalProperties to one homogeneous schema or false"}}
     if patterned{for _,member:=range patterns.Members(){name,_:=member.Key.UTF8();candidates=append(candidates,jsonMapCandidate{member.Value,path+"/patternProperties/"+escapePointer(name)})}}
     if properties,ok:=node.Lookup("properties");ok{if schemajson.KindName(properties.Kind())!="object"{return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:path+"/properties",Message:"properties must be an object"}};for _,member:=range properties.Members(){name,_:=member.Key.UTF8();candidates=append(candidates,jsonMapCandidate{member.Value,path+"/properties/"+escapePointer(name)})}}
-    valueType:="";for _,candidate:=range candidates{projected,err:=p.jsonType(candidate.node,candidate.path,openAPI);if err!=nil{return "",false,err};if valueType==""{valueType=projected}else if projected!=valueType{return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:candidate.path,Message:"JSON map value schemas project to heterogeneous language types ("+valueType+" and "+projected+"); use an explicit annotated Refine source until a common value type is authored"}}}
+    valueType:="";for _,candidate:=range candidates{projected,err:=p.jsonType(candidate.node,candidate.path,openAPI);if err!=nil{return "",false,err};if valueType==""{valueType=projected}else if projected!=valueType{if !p.strictStructure{return "Map String JSON",true,nil};return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:candidate.path,Message:"JSON map value schemas project to heterogeneous language types ("+valueType+" and "+projected+"); use an explicit annotated Refine source until a common value type is authored"}}}
     if valueType==""{return "",false,&Error{Code:"native.projection",Format:p.format,Pointer:path,Message:"typed map has no projectable value schema"}}
     return "Map String ("+valueType+")",true,nil
 }

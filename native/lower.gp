@@ -146,6 +146,7 @@ func unwrap(t *language.Type,name string)(bool,*language.Type){match t.Form{case
 
 func (l *lowerer) named(name string)(any,error){
     switch name{
+    case "JSON":if l.format==Avro{return nil,l.unrepresentable(name,"the intrinsic JSON value carrier has no implicit Avro wire representation")};return map[string]any{"description":"Any JSON value, represented by the Refine JSON algebra. JSON wire numbers must be exact finite decimals; non-decimal rational values are rejected rather than rounded. Strings and object keys must be Unicode scalar text; object order is not semantic."},nil
     case "String":return map[string]any{"type":"string"},nil
     case "Bool":return map[string]any{"type":"boolean"},nil
     case "Int":if l.format==Avro{return nil,l.unrepresentable(name,"arbitrary-precision integers need an explicit lossless Avro wire encoding")};return map[string]any{"type":"integer"},nil

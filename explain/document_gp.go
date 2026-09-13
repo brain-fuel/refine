@@ -215,6 +215,8 @@ func describeType(t *language.Type) string {
 			return "a Boolean"
 		case "Timestamp":
 			return "an RFC 3339 timestamp retaining its original text"
+		case "JSON":
+			return "an immutable JSON value represented by one of JSONNull, JSONBoolean, JSONNumber, JSONString, JSONArray, or JSONObject; JSON numbers remain exact and JSON object keys are never normalized"
 		}
 		return "the declared type " + name
 	case language.ListType:

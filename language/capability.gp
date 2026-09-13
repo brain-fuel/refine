@@ -99,6 +99,7 @@ func (c *checker) requireCapability(class string,t *term,at Span,effective map[s
         switch class{case "Read":typeError(at,"read target type cannot be inferred; add an annotation");case "Eq":typeError(at,"equality operand type cannot be inferred; add a concrete annotation");case "Show":typeError(at,"show operand type cannot be inferred; add an annotation");case "Num":typeError(at,"numeric type cannot be inferred; add an annotation");case "Integral":typeError(at,"integer type cannot be inferred; add an annotation");case "Ord":typeError(at,"ordered type cannot be inferred; add an annotation")}
     }
     if t.name=="->"{capabilityFailure(class,at);return false}
+    if t.name=="JSON"{if class=="Num"||class=="Integral"||class=="Ord"{capabilityFailure(class,at)};return false}
     if primitive(t.name){
         if class=="Num" && !numericCapabilityPrimitive(t.name){capabilityFailure(class,at)}
         if class=="Integral" && !integralCapabilityPrimitive(t.name){capabilityFailure(class,at)}

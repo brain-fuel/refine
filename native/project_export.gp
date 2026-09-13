@@ -4,6 +4,7 @@ import (
     "crypto/sha256"
     "encoding/json"
     "fmt"
+    "math/big"
     "strings"
 
     "goforge.dev/refine/explain"
@@ -40,13 +41,23 @@ func (p *Project) Export(options LowerOptions)(*ProjectExport,error){
     raw:=[]byte(resources[rootIndex].Source);if p.Format()==OpenAPI{raw,err=openAPIResourceJSON(raw);if err!=nil{return nil,wrap(OpenAPI,"native.export",p.root.Resource,err)}};var document any;decoder:=json.NewDecoder(strings.NewReader(string(raw)));decoder.UseNumber();if err:=decoder.Decode(&document);err!=nil{return nil,wrap(p.Format(),"native.export",p.root.Resource,err)}
     targetPointer:=p.root.Pointer;if p.Format()==OpenAPI&&targetPointer==""{return nil,&Error{Code:"native.root",Format:OpenAPI,Message:"OpenAPI project export requires a selected Schema Object"}}
     if p.Format()==Avro{if _,ok:=document.(map[string]any);!ok{if name,scalar:=document.(string);scalar{document=map[string]any{"type":name}}else{return nil,&Error{Code:"native.unrepresentable",Format:Avro,Message:"an Avro union root cannot carry embedded Refine documentation without changing its wire schema"}}};targetPointer=""}
-    target,err:=effectiveSchemaObject(document,targetPointer);if err!=nil{return nil,&Error{Code:"native.export",Format:p.Format(),Pointer:targetPointer,Message:"selected schema cannot be updated",Cause:err}}
+    var target map[string]any;document,target,err=projectExportSchemaObject(document,targetPointer);if err!=nil{return nil,&Error{Code:"native.export",Format:p.Format(),Pointer:targetPointer,Message:"selected schema cannot be updated",Cause:err}}
     if addition!=nil{if p.Format()==OpenAPI{if err:=projectOpenAPIAddition(document,addition);err!=nil{return nil,err}};delete(addition,"description");existing,ok:=target["allOf"].([]any);if !ok&&target["allOf"]!=nil{return nil,&Error{Code:"native.export",Format:p.Format(),Pointer:targetPointer,Message:"selected schema has malformed allOf"}};target["allOf"]=append(existing,addition)}
     projectEmbedExplanation(target,p.Format(),companion,losses)
     if mode==Refined{annotation:=map[string]any{"source":p.source,"root":p.root.TypeName,"metadata":p.Metadata()};if p.Format()==OpenAPI{top,ok:=document.(map[string]any);if !ok{return nil,&Error{Code:"native.export",Format:OpenAPI,Message:"OpenAPI root is not an object"}};top["x-refine"]=annotation}else{target["x-refine"]=annotation}}
     encoded,err:=json.MarshalIndent(document,"","  ");if err!=nil{return nil,wrap(p.Format(),"native.export",p.root.Resource,err)};encoded=append(encoded,'\n');resources[rootIndex]=Resource{URI:resources[rootIndex].URI,Source:string(encoded)}
     if mode==Ordinary{resources,err=ordinaryProjectResources(p.Format(),resources,p.root);if err==nil{err=validateOrdinaryProjectResources(p.Format(),resources,p.root)}}else{_,err=IngestProjectResources(p.Format(),resources,ProjectOptions{ResourceID:p.root.Resource,Root:p.root,Metadata:p.metadata})};if err!=nil{return nil,&Error{Code:"native.export-invalid",Format:p.Format(),Message:"exported resource set failed native validation: "+err.Error(),Cause:err}}
     return &ProjectExport{format:p.Format(),version:p.Version(),root:p.root,metadata:copyMetadata(p.metadata),resources:resources,nativeConstraintSources:p.NativeConstraintSources(),companion:companion,losses:append([]Loss(nil),losses...)},nil
+}
+
+// projectExportSchemaObject makes a Boolean true Schema Object extensible
+// without discarding its exact assertion. The decoded document is private to
+// this export, so replacing a selected node cannot mutate Project.Resources.
+// Boolean false is never widened: it is a proven-empty selected contract.
+func projectExportSchemaObject(root any,pointer string)(any,map[string]any,error){tokens,err:=openAPI30PointerTokens(pointer);if err!=nil{return nil,nil,err};return projectExportSchemaAt(root,tokens)}
+func projectExportSchemaAt(current any,tokens []string)(any,map[string]any,error){
+    if len(tokens)==0{switch value:=current.(type){case map[string]any:return current,value,nil;case bool:if !value{return nil,nil,fmt.Errorf("selected Boolean false schema is proven empty")};wrapped:=map[string]any{"allOf":[]any{value}};return wrapped,wrapped,nil;default:return nil,nil,fmt.Errorf("selected Schema is neither an object nor a Boolean")}}
+    token:=tokens[0];switch value:=current.(type){case map[string]any:next,ok:=value[token];if !ok{return nil,nil,fmt.Errorf("object member does not exist")};updated,target,err:=projectExportSchemaAt(next,tokens[1:]);if err!=nil{return nil,nil,err};value[token]=updated;return current,target,nil;case []any:index,ok:=new(big.Int).SetString(token,10);if !ok||!index.IsInt64()||index.Sign()<0||index.Int64()>=int64(len(value)){return nil,nil,fmt.Errorf("array index does not exist")};updated,target,err:=projectExportSchemaAt(value[index.Int64()],tokens[1:]);if err!=nil{return nil,nil,err};value[index.Int64()]=updated;return current,target,nil;default:return nil,nil,fmt.Errorf("cannot descend into scalar")}
 }
 
 func projectExportObject(input []byte)(map[string]any,error){decoder:=json.NewDecoder(strings.NewReader(string(input)));decoder.UseNumber();var root map[string]any;if err:=decoder.Decode(&root);err!=nil{return nil,err};return root,nil}

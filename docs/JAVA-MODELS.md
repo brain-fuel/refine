@@ -80,6 +80,15 @@ lists, including nested collections, and semantically named element wrappers.
 do not promise to freeze arbitrary host objects in isolation; model boundaries
 encode their contents into the immutable representation.
 
+The intrinsic `JSON` type is exposed only where a checked declaration actually
+uses it. Its Java representation is the sealed `JSONValue` interface with the
+six immutable alternatives `NullValue`, `BooleanValue`, `NumberValue`,
+`StringValue`, `ArrayValue`, and `ObjectValue`. Arrays and objects defensively
+copy their children; object iteration follows exact UTF-16 key order. Values are
+not exposed as Jackson trees or coerced from Java primitives. An authored model
+whose source name would collide with `JSONValue` or its generated converter is
+rejected atomically. Contracts without `JSON` emit neither source.
+
 Nested named getters currently reconstruct their view through structural-only
 factories. They do not rerun predicates. Caching proven nested views is a possible
 performance improvement, not a reason to weaken their structural checks.

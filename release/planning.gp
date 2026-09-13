@@ -120,7 +120,7 @@ func validFamily(name string)bool{
 }
 func samePins(a,b []ImportPin)bool{
     if len(a)!=len(b){return false}
-    key:=func(p ImportPin)string{return p.Family+"\x00"+p.Version.String()+"\x00"+string(p.Content)+"\x00"+strconv.FormatBool(p.AffectsContract)}
+    key:=func(p ImportPin)string{return p.Family+"\x00"+p.Version.String()+"\x00"+string(p.Content)}
     left:=make([]string,len(a));right:=make([]string,len(b));for i,p:=range a{left[i]=key(p)};for i,p:=range b{right[i]=key(p)}
     sort.Strings(left);sort.Strings(right);for i:=range left{if left[i]!=right[i]{return false}};return true
 }

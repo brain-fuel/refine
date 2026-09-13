@@ -1,0 +1,44 @@
+package native
+
+import "goforge.dev/refine/schemajson"
+
+// jsonCarrierProjection preserves native shapes that cannot be represented by
+// a single precise record or homogeneous element type. It does not interpret
+// applicators as algebraic constructors: the immutable native schema remains
+// the authority for their meaning. Strict operation derivation is deliberately
+// kept separate until its supported-shape contract is expanded explicitly.
+func (p *sourceProjector) jsonCarrierProjection(node schemajson.Node)(string,bool){
+    if p.strictStructure{return "",false}
+    if schemajson.KindName(node.Kind())=="boolean"{if node.Raw()=="false"{return "JSON where False",true};return "JSON",true}
+    if schemajson.KindName(node.Kind())!="object"{return "",false}
+    // Preserve unsupported-reference errors, but do not discard members or
+    // positions introduced by legal structural siblings of a supported ref.
+    if reference,exists:=node.Lookup("$ref");exists{raw,ok:=nodeString(reference);if !ok{return "",false};if _,supported:=p.names[raw];!supported{return "",false};for _,keyword:=range []string{"allOf","anyOf","oneOf","if","then","else","dependentSchemas","type","properties","required","items","prefixItems","additionalProperties","patternProperties","unevaluatedProperties","nullable"}{if _,sibling:=node.Lookup(keyword);sibling{return "JSON",true}};return "",false}
+    structural:=false;for _,keyword:=range []string{"allOf","anyOf","oneOf","if","then","else","dependentSchemas","$dynamicRef"}{if _,ok:=node.Lookup(keyword);ok{structural=true}}
+    typeNode,hasType:=node.Lookup("type");if !hasType{return "JSON",true}
+    nativeType:="";nullable:=false
+    switch schemajson.KindName(typeNode.Kind()){
+    case "string":nativeType,_=nodeString(typeNode)
+    case "array":for _,item:=range typeNode.Elements(){name,ok:=nodeString(item);if !ok{return "",false};if name=="null"{nullable=true}else if nativeType==""{nativeType=name}else if nativeType!=name{return "JSON",true}};if nativeType==""&&nullable{nativeType="null"}
+    default:return "",false
+    }
+    wrap:=func(expr string)(string,bool){if nullable{expr="Nullable ("+expr+")"};return expr,true}
+    if p.openAPI{if value,exists:=node.Lookup("nullable");exists&&value.Raw()=="true"{nullable=true}}
+    // Applicators may add object members or heterogeneous array positions, but
+    // cannot widen an explicitly required scalar kind. Keep that precise view.
+    if structural&&(nativeType=="object"||nativeType=="array"){return "JSON",true}
+    switch nativeType{
+    case "null":return "JSON where it == JSONNull",true
+    case "array":if _,tuple:=node.Lookup("prefixItems");tuple{return wrap("[JSON]")};items,exists:=node.Lookup("items");if !exists||schemajson.KindName(items.Kind())=="array"{return wrap("[JSON]")}
+    case "object":
+        if _,exists:=node.Lookup("unevaluatedProperties");exists{return wrap("Map String JSON")}
+        properties,exists:=node.Lookup("properties");if !exists||schemajson.KindName(properties.Kind())=="object"&&properties.MemberCount()==0{
+            if patterns,exists:=node.Lookup("patternProperties");exists&&schemajson.KindName(patterns.Kind())=="object"&&patterns.MemberCount()>0{return "",false}
+            additional,hasAdditional:=node.Lookup("additionalProperties");if !hasAdditional||additional.Raw()=="true"{return wrap("Map String JSON")};return "",false
+        }
+        if schemajson.KindName(properties.Kind())!="object"{return "",false}
+        declared:=map[string]bool{};for _,member:=range properties.Members(){name,err:=member.Key.UTF8();if err!=nil||!memberPattern.MatchString(name){return wrap("Map String JSON")};declared[name]=true}
+        if required,exists:=node.Lookup("required");exists&&schemajson.KindName(required.Kind())=="array"{for _,item:=range required.Elements(){name,ok:=nodeString(item);if ok&&!declared[name]{return wrap("Map String JSON")}}}
+    }
+    return "",false
+}

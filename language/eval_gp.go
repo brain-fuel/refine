@@ -137,6 +137,9 @@ const evaluationNesting = 512
 
 func newEvaluator(module *Module, meter *validation.Meter) *evaluator {
 	e := &evaluator{module: module, meter: meter, functions: make(map[string]Function), constructors: map[string]int{"Nothing": 0, "Just": 1, "Null": 0, "NonNull": 1, "Err": 1, "Ok": 1}}
+	for _, item := range jsonConstructorSpecs() {
+		e.constructors[item.name] = len(item.arguments)
+	}
 	for _, fn := range module.Functions {
 		e.functions[fn.Name] = fn
 	}

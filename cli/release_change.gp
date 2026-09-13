@@ -50,6 +50,21 @@ func releaseSourcePackages(entry *releaseSchemaEntry,catalog releaseCatalog)(str
 func sameReleaseResources(a,b []native.Resource)bool{if len(a)!=len(b){return false};left,right:=append([]native.Resource(nil),a...),append([]native.Resource(nil),b...);sort.Slice(left,func(i,j int)bool{return left[i].URI<left[j].URI});sort.Slice(right,func(i,j int)bool{return right[i].URI<right[j].URI});for i:=range left{if left[i]!=right[i]{return false}};return true}
 func releaseConstraintSyntax(project *native.Project)(string,error){units:=project.NativeConstraintSources();sort.Slice(units,func(i,j int)bool{return units[i].URI<units[j].URI});for i:=range units{module,err:=language.Parse(units[i].Source);if err!=nil{return "",err};units[i].Source=language.Format(module)};encoded,err:=json.Marshal(units);return string(encoded),err}
 
+// Dependency evidence is deliberately narrower than compatibility evidence.
+// Only conclusive documentation equivalence makes a changed pin non-affecting;
+// unsupported native/resource comparisons remain contract-affecting.
+func dependencyAffectsContract(baseline,snapshot *releaseSchemaEntry,catalog releaseCatalog,config projectConfig)(bool,error){
+    if baseline==nil||snapshot==nil{return true,nil};if baseline.policyContent!=snapshot.policyContent{return true,nil}
+    baselineRoot,err:=releaseEntryRoot(baseline,baseline.family,config.Families[baseline.family]);if err!=nil{return true,err};snapshotRoot,err:=releaseEntryRoot(snapshot,snapshot.family,config.Families[snapshot.family]);if err!=nil{return true,err}
+    evidence,err:=documentationEvidence(baseline,snapshot,baselineRoot,snapshotRoot,catalog);if err!=nil{return true,err};return evidence.Outcome!=analysis.Yes,nil
+}
+
+func classifyDependencyImports(snapshot,baseline releaseEntryImports,catalog releaseCatalog,config projectConfig)([]release.ImportPin,error){
+    result:=append([]release.ImportPin(nil),snapshot.pins...);prior:=map[string]release.ImportPin{};for _,pin:=range baseline.pins{prior[pin.Family]=pin}
+    for i,pin:=range result{old,ok:=prior[pin.Family];if !ok{continue};if old.Version==pin.Version&&old.Content==pin.Content{result[i].AffectsContract=false;continue};affects,err:=dependencyAffectsContract(baseline.entries[pin.Family],snapshot.entries[pin.Family],catalog,config);if err!=nil{return nil,err};result[i].AffectsContract=affects}
+    return result,nil
+}
+
 func enforceDocumentationClaim(plan *release.PlanResult,evidence *releaseDocumentationEvidence){
     if evidence==nil||evidence.Outcome==analysis.Yes{return};plan.Ready=false;plan.Accepted=nil;plan.Suggested=nil;plan.NoPendingVersion=false
     plan.Issues=append(plan.Issues,release.Issue{Code:"release.documentation_unproven",Message:fmt.Sprintf("documentation-only classification against %s is not established; classify the change explicitly as fix, feature, or breaking before selecting a version",evidence.Baseline)})

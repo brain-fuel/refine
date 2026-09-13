@@ -1594,3 +1594,76 @@ current implementation still performs no Maven deployment or product release.
   the actual Maven lifecycle, 31.129s; CLI 6.059s; selector 3.953s. No separate
   Maven run or local fuzz campaign duplicated this gate. No release tag or
   Maven deployment is claimed; the full specification still has open gaps.
+
+## Intrinsic JSON, operation derivation and dependency evidence — 2026-09-12
+
+- Checkpoint `ab7cf86e298ab6b648e66f03100ecc2edf9ddfae` was pushed to `main`.
+  CI run `34717661193` completed successfully on both Linux and macOS, including
+  the selected fuzz campaigns. No unchanged job was rerun. The current changes
+  below are a separate batch, not covered by that result.
+- Dependency pin classification now uses conclusive documentation-equivalence
+  evidence for the exact old/new dependency entries, including their policies.
+  Unknown evidence remains contract-affecting. Evidence flags are not pin
+  identity: changing only that flag cannot invent a pending version. Changing
+  the actual pin still does. The single release regression passed in 0.190s;
+  the three new/affected CLI dependency tests passed in 0.267s.
+- Added intrinsic `JSON` with six explicit constructors, structured native
+  decode, transparent JSON lowering, and carrier fallback for unconstrained,
+  mixed-kind, heterogeneous object and tuple schemas. Native predicates remain
+  authoritative, with separate editable refinements. Selected `false` roots
+  are rejected as proven empty; empty arrays with impossible items still work.
+  No implicit Avro carrier representation is invented.
+- The initial native matrix passed its projection/precise-map/extra-policy
+  checks in a 0.257s selection. Its separate refinement/lowering test had a
+  fixture-only `!=` spelling error; after using the language's `/=`, only that
+  test was rerun and passed in 0.259s. One earlier GoPlus generation failure was
+  corrected before relying on new tests; a test invocation against the stale
+  generated tree was not counted as evidence for the new projection code.
+- Independent static review identified reference-sibling field loss and empty
+  `patternProperties` inconsistency; focused regressions accompany their fixes.
+  Explicit scalar types remain precise through applicators. The final focused
+  review checks and combined integration gate are pending for this batch.
+- The native review selection passed in 0.243s: the updated carrier matrix,
+  reference-sibling regression, two existing applicator/reference anchors,
+  two new Boolean export tests and four existing same-format export tests.
+  Selected `true` schemas now retain their exact assertion inside `allOf`
+  before adding refinements, including nested selected pointers; immutable
+  originals remain unchanged. The caller-level project-generation matrix
+  passed in 0.273s for unconstrained, mixed, heterogeneous-map and tuple roots,
+  checking models, native gates, generated properties and both output forms.
+- Intrinsic JSON language race tests passed in 1.235s; semantic explanation
+  race test in 1.211s. The grouped Java race selection passed in 3.624s with
+  Java 25, Jackson 3, networknt and JetCheck, including native/refinement null
+  gates, iterative deep-model conversion, transparent serde and properties.
+  The existing Jackson adapter anchor separately passed in 1.878s. Final
+  allocation review then moved object node preflights before defensive entry
+  copies and added a source-order regression; this tiny later edit is covered
+  by the pending integration gate, not the preceding Java result.
+- Added opt-in `Project.WithDerivedOpenAPIOperations` for existing selected-root
+  OpenAPI projects. It creates readable deterministic request/response types,
+  explicit field paths/media selections and authoritative native bindings,
+  without inventing context predicates or enabling extra-field preservation.
+  The four initial derivation tests passed in 0.263s. Naming and OAS 3.0
+  directional-required review fixes passed their two exact anchors in 0.503s.
+  Rootless documents, general structural applicator derivation, ambiguous
+  transport encodings and direction-aware OAS 3.0 native validation are still
+  explicit gaps, not capabilities inferred from a green focused test.
+- The frozen combined gate uses the same pinned dependency environment and
+  `go test -race ./...` command recorded at the previous checkpoint. Generation
+  consistency and vet passed. No standalone Maven run or local fuzz campaign
+  duplicates this gate; intrinsic JSON payload-type seeds replay in the normal
+  language tests. The README no longer recommends a redundant ordinary full
+  suite immediately before the full race suite.
+- The combined run completed: Java 199.337s, language 6.527s, project (actual
+  Maven lifecycle included) 30.288s, CLI 6.161s, analysis 4.197s, schemajson
+  2.901s, release 2.382s, provenance 2.166s, explain 1.931s, OpenAPI 1.508s
+  and examples 1.362s passed; unchanged selector/pattern/validation/value
+  results were cached. Native's 33.704s run had exactly one failed test,
+  `TestWireMetadataCheckedAndImmutable`: its unconstrained-object fixture
+  relied on the old empty-record projection. The fixture now explicitly
+  authors its intended record before applying record-only metadata. No
+  production source changed after the combined run. After scoped generation,
+  only `go test -race ./native -v -run '^TestWireMetadataCheckedAndImmutable$'`
+  was rerun; it passed in 1.292s. Together these checks cover the frozen batch
+  without repeating Java, Maven, or the full suite. This is checkpoint
+  evidence, not completion of the entire specification or a Maven deployment.

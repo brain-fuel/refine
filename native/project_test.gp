@@ -40,7 +40,9 @@ func TestAvroProjectionDoesNotDuplicateSelectedNamedRoot(t *testing.T){for _,sch
 
 func TestWireMetadataCheckedAndImmutable(t *testing.T){
     schema:=`{"type":"object","properties":{}}`;project,err:=IngestProject(JSONSchema,[]byte(schema),ProjectOptions{Root:ResourceSelector{TypeName:"Envelope"}});if err!=nil{t.Fatal(err)}
-    edited,err:=project.WithEditedSource(project.EditableSource()+"\ndata Payment = Card String | Bank Int64\ntype Exact = Real\n");if err!=nil{t.Fatal(err)}
+    // An unconstrained native object now projects to a JSON map. This test is
+    // about explicit record metadata, so author that record view intentionally.
+    edited,err:=project.WithEditedSource("type Envelope = {}\ndata Payment = Card String | Bank Int64\ntype Exact = Real\n");if err!=nil{t.Fatal(err)}
     metadata:=WireMetadata{ExtraFields:map[string]ExtraFieldMode{"Envelope":PreserveExtraFields},Scalars:map[string]ScalarEncoding{"Exact":{Kind:RationalRecord}},Discriminators:map[string]Discriminator{"Payment":{Field:"kind",Values:map[string]string{"Card":"card","Bank":"bank"},Arguments:map[string][]string{"Card":{"number"},"Bank":{"account"}}}},PublicationNamespace:"com.example.payments"}
     configured,err:=edited.WithMetadata(metadata);if err!=nil{t.Fatal(err)};metadata.Discriminators["Payment"].Values["Card"]="forged";got:=configured.Metadata();if got.Discriminators["Payment"].Values["Card"]!="card"{t.Fatal("metadata input alias escaped")};got.Discriminators["Payment"].Arguments["Card"][0]="forged";if configured.Metadata().Discriminators["Payment"].Arguments["Card"][0]!="number"{t.Fatal("metadata output alias escaped")}
     bad:=configured.Metadata();bad.Discriminators["Payment"]=Discriminator{Field:"kind",Values:map[string]string{"Card":"same","Bank":"same"},Arguments:map[string][]string{"Card":{"number"},"Bank":{"account"}}};if _,err:=configured.WithMetadata(bad);problemCode(err)!="native.metadata"{t.Fatalf("duplicate wire tags accepted: %v",err)}

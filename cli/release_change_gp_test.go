@@ -12,7 +12,17 @@ import (
 
 	"goforge.dev/refine/analysis"
 	"goforge.dev/refine/native"
+	"goforge.dev/refine/release"
 )
+
+func releasePlanHasIssue(plan release.PlanResult, code string) bool {
+	for _, issue := range plan.Issues {
+		if issue.Code == code {
+			return true
+		}
+	}
+	return false
+}
 
 func TestReleaseDocumentationClaimRetainsContractChanges(t *testing.T) {
 	cases := []struct {
@@ -160,5 +170,89 @@ func TestReleaseDocumentationClaimRetainsNativeSourceGraphWithOverrides(t *testi
 				t.Fatalf("native graph lost under flattened syntax: %+v", report)
 			}
 		})
+	}
+}
+
+func TestDocumentationOnlyDependencyCommentChangeIsNonAffectingButStillPending(t *testing.T) {
+	files := map[string]string{
+		"schemata/dep/v1.0.0.refine":   "package dependency.models\ntype Dependency = Int\n",
+		"schemata/dep/v1.0.1.refine":   "-- corrected dependency documentation\npackage dependency.models\ntype Dependency=Int\n",
+		"schemata/foo/v1.0.0.refine":   "import \"../dep/v1.0.0.refine\"\ntype Thing = Dependency\n",
+		"schemata/foo/SNAPSHOT.refine": "import \"../dep/v1.0.1.refine\"\ntype Thing = Dependency\n",
+	}
+	root := releaseFixture(t, files, releaseConfig("documentation", "1.0.1", ""))
+	workflow, err := buildReleaseWorkflow(root, "refine.project.json", []string{"foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := workflow.reports[0]
+	if report.Documentation == nil || report.Documentation.Outcome != analysis.Yes || releasePlanHasIssue(report.Plan, "release.dependency_contract") {
+		t.Fatalf("comment-only dependency was classified as contract-affecting: %+v", report)
+	}
+	if report.Plan.NoPendingVersion || report.Plan.Suggested == nil || report.Plan.Suggested.String() != "1.0.1" {
+		t.Fatalf("exact dependency pin change was lost: %+v", report.Plan)
+	}
+	comparison := report.Comparisons[0]
+	override := `,"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native and Java compatibility reviewed"}]`
+	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.1", override)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err = buildReleaseWorkflow(root, "refine.project.json", []string{"foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workflow.reports[0].Plan.Ready {
+		t.Fatalf("proven documentation-only dependency change rejected after compatibility acknowledgement: %+v", workflow.reports[0].Plan)
+	}
+}
+
+func TestDependencyDocumentationEvidenceIncludesEntryPolicyAndNativeResources(t *testing.T) {
+	files := map[string]string{
+		"schemata/dep/v1.0.0.refine":   "type Dependency = Int\n",
+		"schemata/dep/v1.1.0.refine":   "-- docs\ntype Dependency=Int\n",
+		"schemata/foo/v1.0.0.refine":   "import \"../dep/v1.0.0.refine\"\ntype Thing = Dependency\n",
+		"schemata/foo/SNAPSHOT.refine": "import \"../dep/v1.1.0.refine\"\ntype Thing = Dependency\n",
+	}
+	config := `{"families":{"foo":{"root":"Thing","release":{"change":"documentation","intended":"1.0.1"}},"dep":{"root":"Dependency","noCodegen":["v1.1.0"]}}}`
+	root := releaseFixture(t, files, config)
+	workflow, err := buildReleaseWorkflow(root, "refine.project.json", []string{"foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := workflow.reports[0]
+	if report.Documentation == nil || report.Documentation.Outcome != analysis.Yes || !releasePlanHasIssue(report.Plan, "release.dependency_contract") {
+		t.Fatalf("version-specific dependency policy change was treated as documentation: %+v", report)
+	}
+
+	bundle := func(description string) string {
+		project, err := native.IngestProject(native.JSONSchema, []byte(`{"type":"string","description":"`+description+`"}`), native.ProjectOptions{Root: native.ResourceSelector{TypeName: "Dependency"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := project.Bundle()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	nativeRoot := releaseFixture(t, map[string]string{"schemata/dep/v1.0.0.refined.json": bundle("old"), "schemata/dep/SNAPSHOT.refined.json": bundle("new")}, `{"families":{"dep":{"formats":["json-schema"],"release":{"change":"documentation","intended":"1.0.1"}}}}`)
+	nativeWorkflow, err := buildReleaseWorkflow(nativeRoot, "refine.project.json", []string{"dep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old, next *releaseSchemaEntry
+	for _, entry := range nativeWorkflow.catalog.byFamily["dep"] {
+		if entry.version == nil {
+			next = entry
+		} else {
+			old = entry
+		}
+	}
+	affects, err := dependencyAffectsContract(old, next, nativeWorkflow.catalog, nativeWorkflow.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !affects {
+		t.Fatal("opaque native resource change was proven documentation-only")
 	}
 }

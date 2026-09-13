@@ -154,6 +154,27 @@ go vet ./release ./project
 
 ## Evidence record
 
+The intrinsic-JSON/automatic-operation batch uses these focused selections:
+
+```sh
+go test ./native -run '^(TestJSONCarrierProjectionRetainsNativeApplicatorAndTupleAuthority|TestJSONCarrierReferenceSiblingsPreserveDeclaredMembers|TestJSONCarrierRefinementsAndOrdinaryLowering|TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains|TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema|TestJSONOrdinaryExtraFieldPoliciesRemainProjectable|TestApplicatorConstraintIsNotHoisted|TestLocalReferencesBecomeNamedRecursiveDeclarations)$'
+go test ./native -run '^TestJSONCarrierDecoderPreservesNativeKindsAndPreflights$'
+go test ./native -run '^TestWithDerivedOpenAPIOperations(BuildsAuthoritativeCheckedBoundary|RemainsEditableAndHasNoInferredContext|FailsClosedAtomically|VersionMatrix|RejectsOpenAPI30DirectionalRequiredBodies)$'
+go test ./java -run '^(TestGeneratedIntrinsicJSONValueModelsSerdeAndProperties|TestIntrinsicJSONModelEmissionIsLazyAndCollisionSafe|TestIntrinsicJSONModelObjectPreflightBeforeCopy)$'
+go test ./project -run '^TestGenerateNativeJSONCarriersComposeModelsOraclePropertiesAndExports$'
+go test ./release -run '^TestDependencyEvidenceFlagDoesNotChangePinIdentity$'
+go test ./cli -run '^(TestDocumentationOnlyDependencyCommentChangeIsNonAffectingButStillPending|TestDependencyDocumentationEvidenceIncludesEntryPolicyAndNativeResources|TestReleaseDocumentationClaimIncludesReachableDependencyBodies)$'
+```
+
+The native matrix covers native applicator/tuple authority and retained precise
+projections; the separate decoder test covers allocation/depth/ordering limits.
+Selected Boolean export changes additionally use
+`go test ./native -run '^(TestProjectExportRetainsSelectedBooleanTrueSchemaAtRootAndPointer|TestProjectRejectsSelectedBooleanFalseSchemaAsProvenEmpty|TestProjectExportComposesEffectiveNativeAndEditableJSONSchema|TestProjectOrdinaryExportRequiresAndReportsDocumentedLoss|TestProjectRefinedExportSupportsOpenAPI30AndAvroWithoutReplacingNative|TestUncomposedOrdinaryProjectExportNeverClaimsExactEditedStructure)$'`.
+The grouped Java harness exercises model, Jackson and JetCheck boundaries in
+one JVM. Run it with the pinned required-Java/Jackson/JetCheck environment, not
+with missing-dependency skips. These are development selections, not substitutes
+for the once-per-stable-batch integration gate for shared language/runtime edits.
+
 For each completed batch record: source revision (or exact dirty-file scope),
 command, result, environment, and any skipped coverage. A later relevant edit
 invalidates that evidence; an unrelated edit does not. Keep checkpoint results

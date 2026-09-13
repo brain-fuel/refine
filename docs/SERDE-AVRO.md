@@ -34,6 +34,11 @@ Avro maps correspond only to `Map String a`. Keys are decoded as exact strings,
 duplicate decoded keys are rejected, semantic maps use canonical UTF-16 key
 order, and binary/JSON writes reject unpaired surrogate keys before output.
 
+The intrinsic transparent `JSON` carrier has no implicit Avro representation.
+Java Avro generation rejects it explicitly; selecting a string, bytes, record,
+or union encoding requires a future declared wire policy rather than a hidden
+coercion.
+
 Explicit native scalar metadata supports canonical decimal strings for
 arbitrary `Int`, exact RFC 3339 strings for `Timestamp`, reduced rational records
 whose integer components use minimal signed two's-complement bytes, and Avro

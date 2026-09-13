@@ -38,7 +38,7 @@ func (m *modelEmitter) witness(t *language.Type)string{
         if found:=m.witnesses[name];found!=""{return found}
         if name=="Int"{return "ModelTypes.integer()"}
         if integerType(name){method:="integer";digits:=strings.TrimPrefix(name,"Int");if strings.HasPrefix(name,"UInt"){method="unsignedInteger";digits=strings.TrimPrefix(name,"UInt")};return "ModelTypes."+method+"("+digits+"L)"}
-        switch name{case "String":return "ModelTypes.text()";case "Bool":return "ModelTypes.bool()";case "Real":return "ModelTypes.real()";case "Float32":return "ModelTypes.float32()";case "Float64":return "ModelTypes.float64()";case "Timestamp":return "ModelTypes.timestamp()"}
+        switch name{case "String":return "ModelTypes.text()";case "Bool":return "ModelTypes.bool()";case "Real":return "ModelTypes.real()";case "Float32":return "ModelTypes.float32()";case "Float64":return "ModelTypes.float64()";case "Timestamp":return "ModelTypes.timestamp()";case "JSON":return "ModelTypes.json()"}
         if _,found:=m.declarations[name];found{return "ModelTypes.for"+name+"()"}
     case language.ListType(element):return "ModelTypes.list("+m.witness(element)+")"
     case language.AppliedType(_,_):
@@ -51,6 +51,7 @@ func (m *modelEmitter) witness(t *language.Type)string{
 }
 func (m *modelEmitter) modelTypes()string{
     var out strings.Builder;out.WriteString(modelTypesJava)
+    if m.usesJSON{out.WriteString("    public static ModelType<JSONValue> json() { return ModelType.of(ModelType.named(\"JSON\"),JSONValues::encode,JSONValues::decode); }\n")}
     declarations:=append([]language.TypeDecl(nil),m.module.Types...);declarations=append(declarations,m.anonymousDecls...)
     for _,decl:=range declarations{
         m.genericContext(decl);types,parameters,arguments:=m.genericParts(decl);suffix:=genericSuffix(types);full:=m.qualified(decl.Name)+suffix

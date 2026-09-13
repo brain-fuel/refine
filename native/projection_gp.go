@@ -25,6 +25,7 @@ type sourceProjector struct {
 	emitted         map[string]bool
 	nextUnion       int
 	openAPI         bool
+	strictStructure bool
 }
 type jsonMapCandidate struct {
 	node schemajson.Node
@@ -106,16 +107,33 @@ func projectJSON(doc schemajson.Document, selector ResourceSelector, openAPI boo
 }
 
 func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bool) (string, error) {
+	if carrier, handled := p.jsonCarrierProjection(node); handled {
+		return carrier, nil
+	}
 	if schemajson.KindName(node.Kind()) == "boolean" {
 		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path, Message: "Boolean schemas have no safe standalone language payload type; retain them in the native sidecar"}
 	}
 	if schemajson.KindName(node.Kind()) != "object" {
 		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path, Message: "schema position must be an object or Boolean"}
 	}
+	if p.strictStructure {
+		for _, keyword := range []string{"allOf", "anyOf", "oneOf", "if", "then", "else", "dependentSchemas"} {
+			if _, ok := node.Lookup(keyword); ok {
+				return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/" + keyword, Message: "automatic operation type derivation cannot infer structure through " + keyword + "; provide explicit checked OpenAPI operation metadata"}
+			}
+		}
+	}
 	if unevaluated, ok := node.Lookup("unevaluatedProperties"); ok && schemajson.KindName(unevaluated.Kind()) == "object" {
 		return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/unevaluatedProperties", Message: "schema-valued unevaluatedProperties depends on applicator evaluation and cannot yet be projected as one homogeneous Map value type; provide an explicit checked source"}
 	}
 	if ref, ok := node.Lookup("$ref"); ok {
+		if p.strictStructure {
+			for _, keyword := range []string{"type", "properties", "required", "items", "prefixItems", "additionalProperties", "patternProperties", "nullable"} {
+				if _, sibling := node.Lookup(keyword); sibling {
+					return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/" + keyword, Message: "automatic operation type derivation cannot merge a structural $ref sibling; provide explicit checked OpenAPI operation metadata"}
+				}
+			}
+		}
 		raw, ok := nodeString(ref)
 		if !ok {
 			return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/$ref", Message: "reference must be scalar text"}
@@ -249,7 +267,8 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 // A JSON object projects as a typed map only when every possible value has one
 // checked type. Native pattern/required constraints remain authoritative in the
 // immutable schema; this projection only establishes the homogeneous value
-// domain. An open unmatched key domain is deliberately rejected.
+// domain. Heterogeneous and open domains use the explicit JSON carrier unless
+// this projector is operating under strict operation-derivation rules.
 func (p *sourceProjector) jsonMapType(node schemajson.Node, path string, openAPI bool) (string, bool, error) {
 	additional, hasAdditional := node.Lookup("additionalProperties")
 	additionalSchema := hasAdditional && schemajson.KindName(additional.Kind()) == "object"
@@ -262,6 +281,9 @@ func (p *sourceProjector) jsonMapType(node schemajson.Node, path string, openAPI
 	if additionalSchema {
 		candidates = append(candidates, jsonMapCandidate{additional, path + "/additionalProperties"})
 	} else if patterned && (!hasAdditional || additional.Raw() != "false") {
+		if !p.strictStructure {
+			return "Map String JSON", true, nil
+		}
 		return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: path + "/additionalProperties", Message: "patternProperties leaves unmatched keys with an untyped value domain; set additionalProperties to one homogeneous schema or false"}
 	}
 	if patterned {
@@ -288,6 +310,9 @@ func (p *sourceProjector) jsonMapType(node schemajson.Node, path string, openAPI
 		if valueType == "" {
 			valueType = projected
 		} else if projected != valueType {
+			if !p.strictStructure {
+				return "Map String JSON", true, nil
+			}
 			return "", false, &Error{Code: "native.projection", Format: p.format, Pointer: candidate.path, Message: "JSON map value schemas project to heterogeneous language types (" + valueType + " and " + projected + "); use an explicit annotated Refine source until a common value type is authored"}
 		}
 	}

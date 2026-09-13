@@ -226,6 +226,9 @@ func buildOpenAPIOperationIndex(p *Project) (*openAPIOperationIndex, error) {
 }
 
 func indexOpenAPIDocumentOperations(rootResource string, docs map[string]schemajson.Document) (map[string]openAPIDocumentOperation, error) {
+	return indexOpenAPIDocumentOperationsMode(rootResource, docs, false)
+}
+func indexOpenAPIDocumentOperationsMode(rootResource string, docs map[string]schemajson.Document, requireOperationID bool) (map[string]openAPIDocumentOperation, error) {
 	doc, ok := docs[rootResource]
 	if !ok {
 		return nil, &Error{Code: "native.resource", Format: OpenAPI, Pointer: rootResource, Message: "OpenAPI root resource is absent"}
@@ -261,6 +264,9 @@ func indexOpenAPIDocumentOperations(rootResource string, docs map[string]schemaj
 			}
 			idNode, ok := operation.node.Lookup("operationId")
 			if !ok {
+				if requireOperationID {
+					return nil, &Error{Code: "native.projection", Format: OpenAPI, Pointer: operation.resource + "#" + operation.pointer, Message: "automatic operation derivation requires operationId on every selected operation"}
+				}
 				continue
 			}
 			id, ok := nodeString(idNode)
@@ -393,6 +399,7 @@ func mergeOpenAPIParameters(pathItems, operationItems []openAPINode, docs map[st
 		inNode, _ := resolved.node.Lookup("in")
 		name, _ := nodeString(nameNode)
 		location, _ := nodeString(inNode)
+		key := openAPIParameterKey(location, name)
 		replaced := false
 		for i, existing := range out {
 			checked, checkErr := resolveOpenAPIObject(existing, docs, 64)
@@ -403,7 +410,7 @@ func mergeOpenAPIParameters(pathItems, operationItems []openAPINode, docs map[st
 			leftIn, _ := checked.node.Lookup("in")
 			existingName, _ := nodeString(leftName)
 			existingIn, _ := nodeString(leftIn)
-			if existingName == name && existingIn == location {
+			if openAPIParameterKey(existingIn, existingName) == key {
 				out[i] = candidate
 				replaced = true
 				break

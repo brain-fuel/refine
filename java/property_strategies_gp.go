@@ -94,6 +94,9 @@ func (e *propertyEmitter) propertyStrategy(t *language.Type, active map[string]s
 		return result, nil
 	case language.NamedType:
 		name := __gp_m0.Name
+		if name == "JSON" {
+			return e.propertyJSON(), nil
+		}
 		primitive, ok, err := propertyPrimitive(name)
 		if ok || err != nil {
 			return primitive, err
@@ -183,6 +186,18 @@ func (e *propertyEmitter) propertyStrategy(t *language.Type, active map[string]s
 		return emptyPropertyStrategy(), fmt.Errorf("function payloads cannot be generated")
 	}
 	return emptyPropertyStrategy(), fmt.Errorf("unsupported payload generator")
+}
+
+// JSON values recurse only through arrays and objects. The base generator is
+// always viable, and number candidates are finite base-10 decimals so normal
+// transparent JSON properties never filter on representability.
+func (e *propertyEmitter) propertyJSON() propertyStrategy {
+	self := e.fresh("json")
+	items := e.fresh("items")
+	index := e.fresh("index")
+	base := `org.jetbrains.jetCheck.Generator.<Data>anyOf(org.jetbrains.jetCheck.Generator.<Data>constant(new Data.Variant("JSONNull",java.util.List.of())),org.jetbrains.jetCheck.Generator.booleans().<Data>map(v -> new Data.Variant("JSONBoolean",java.util.List.of(new Data.Bool(v)))),org.jetbrains.jetCheck.Generator.zipWith(org.jetbrains.jetCheck.Generator.integers(-10000,10000),org.jetbrains.jetCheck.Generator.integers(0,6),(n,p) -> (Data)new Data.Variant("JSONNumber",java.util.List.of(new Data.Number(new Rational(java.math.BigInteger.valueOf(n),java.math.BigInteger.TEN.pow(p)))))),org.jetbrains.jetCheck.Generator.stringsOf(org.jetbrains.jetCheck.IntDistribution.uniform(0,24),org.jetbrains.jetCheck.Generator.asciiPrintableChars()).<Data>map(v -> new Data.Variant("JSONString",java.util.List.of(new Data.Text(v)))))`
+	recursive := "org.jetbrains.jetCheck.Generator.<Data>anyOf(" + base + ",org.jetbrains.jetCheck.Generator.listsOf(org.jetbrains.jetCheck.IntDistribution.uniform(0,6)," + self + ").<Data>map(" + items + " -> new Data.Variant(\"JSONArray\",java.util.List.of(new Data.Sequence(" + items + ")))),org.jetbrains.jetCheck.Generator.listsOf(org.jetbrains.jetCheck.IntDistribution.uniform(0,6)," + self + ").<Data>map(" + items + " -> {var entries=new java.util.LinkedHashMap<String,Data>();for(int " + index + "=0;" + index + "<" + items + ".size();" + index + "++)entries.put(\"key\"+" + index + "," + items + ".get(" + index + "));return new Data.Variant(\"JSONObject\",java.util.List.of(new Data.Mapping(entries)));}))"
+	return propertySource("org.jetbrains.jetCheck.Generator.<Data>recursive(" + self + " -> " + recursive + ").withBase(" + base + ")")
 }
 
 func (e *propertyEmitter) propertyNominal(t *language.Type, name string, args []*language.Type, decl language.TypeDecl, active map[string]string, cut map[string]bool) (propertyStrategy, error) {

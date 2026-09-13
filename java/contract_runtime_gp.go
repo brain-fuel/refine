@@ -130,7 +130,7 @@ public final class ContractRuntime {
         final Budget.Meter meter;
         final Map<String, Definition> definitions;
         final Map<String, FunctionDef> functions;
-        final Map<String, Integer> constructors = new HashMap<>(Map.of("Nothing", 0, "Just", 1, "Null", 0, "NonNull", 1, "Err", 1, "Ok", 1));
+        final Map<String, Integer> constructors = new HashMap<>(Map.ofEntries(Map.entry("Nothing",0),Map.entry("Just",1),Map.entry("Null",0),Map.entry("NonNull",1),Map.entry("Err",1),Map.entry("Ok",1),Map.entry("JSONNull",0),Map.entry("JSONBoolean",1),Map.entry("JSONNumber",1),Map.entry("JSONString",1),Map.entry("JSONArray",1),Map.entry("JSONObject",1)));
         int depth;
         Eval(Budget.Meter meter, Map<String, Definition> definitions, Map<String, FunctionDef> functions) {
             this.meter = meter; this.definitions = definitions; this.functions = functions;
@@ -569,6 +569,21 @@ public final class ContractRuntime {
                     });
                     return;
                 }
+                case "JSON": {
+                    if (!args.isEmpty() || !(input instanceof VariantValue value)) { work.complete(done, wrong(path, "Expected an explicit JSON constructor.")); return; }
+                    Type argument = switch (value.name()) {
+                        case "JSONNull" -> null;
+                        case "JSONBoolean" -> namedType("Bool");
+                        case "JSONNumber" -> namedType("Real");
+                        case "JSONString" -> namedType("String");
+                        case "JSONArray" -> new Type("list", "", List.of(namedType("JSON")), List.of(), List.of());
+                        case "JSONObject" -> appliedType(appliedType(namedType("Map"),namedType("String")),namedType("JSON"));
+                        default -> { work.complete(done, wrong(path, "Constructor does not belong to JSON.")); yield null; }
+                    };
+                    if (argument == null) { if (value.name().equals("JSONNull") && value.values().isEmpty()) work.complete(done,new Checked(value,true)); else if (!value.name().equals("JSONNull")) {} else work.complete(done,wrong(path,"JSON constructor has the wrong number of arguments.")); return; }
+                    if (value.values().size()!=1) { work.complete(done,wrong(path,"JSON constructor has the wrong number of arguments.")); return; }
+                    schedule(argument,value.values().getFirst(),env,pointer(path,"0"),depth+1,checked -> work.complete(done,new Checked(checked.shape()?new VariantValue(value.name(),List.of(checked.data())):null,checked.shape())));return;
+                }
             }
             if (numericPrimitive(name)) {
                 if (!(input instanceof NumberValue n)) { work.complete(done, wrong(path, "Expected an exact number.")); return; }
@@ -605,6 +620,8 @@ public final class ContractRuntime {
             for (Scope scope : definition.scopes()) if (result.containsKey(scope.parameter())) result.put(scope.symbol(), result.get(scope.parameter()));
             return result;
         }
+        private static Type namedType(String name){return new Type("named",name,List.of(),List.of(),List.of());}
+        private static Type appliedType(Type function,Type argument){return new Type("applied","",List.of(function,argument),List.of(),List.of());}
         boolean optional(Type type, Map<String, Binding> env, int depth) {
             while (true) {
                 structure.step(1); if (depth++ >= 512) throw fail("evaluation.depth", "optional type expansion nesting limit exceeded");

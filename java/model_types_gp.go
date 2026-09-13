@@ -115,6 +115,8 @@ func (m *modelEmitter) witness(t *language.Type) string {
 			return "ModelTypes.float64()"
 		case "Timestamp":
 			return "ModelTypes.timestamp()"
+		case "JSON":
+			return "ModelTypes.json()"
 		}
 		if _, found := m.declarations[name]; found {
 			return "ModelTypes.for" + name + "()"
@@ -163,6 +165,9 @@ func (m *modelEmitter) witness(t *language.Type) string {
 func (m *modelEmitter) modelTypes() string {
 	var out strings.Builder
 	out.WriteString(modelTypesJava)
+	if m.usesJSON {
+		out.WriteString("    public static ModelType<JSONValue> json() { return ModelType.of(ModelType.named(\"JSON\"),JSONValues::encode,JSONValues::decode); }\n")
+	}
 	declarations := append([]language.TypeDecl(nil), m.module.Types...)
 	declarations = append(declarations, m.anonymousDecls...)
 	for _, decl := range declarations {

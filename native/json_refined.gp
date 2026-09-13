@@ -42,6 +42,7 @@ func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings
         if bound,ok:=bindings[name];ok{return d.decode(bound,node,bindings,path,depth+1,nominal)}
         if encoding,ok:=d.metadata.Scalars[name];ok{return d.scalar(name,encoding,node,path)}
         switch name{
+        case "JSON":return d.jsonValue(node,path,depth)
         case "Bool":if schemajson.KindName(node.Kind())!="boolean"{return value.Data{},d.failure(path,"expected a JSON Boolean")};return value.OfBool(node.Raw()=="true"),nil
         case "String":text,ok:=node.Text();if !ok{return value.Data{},d.failure(path,"expected a JSON string")};return value.OfText(text),nil
         case "Timestamp":text,ok:=node.Text();if !ok{return value.Data{},d.failure(path,"expected an RFC 3339 JSON string")};return value.OfText(text),nil

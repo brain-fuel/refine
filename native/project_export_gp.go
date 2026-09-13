@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"goforge.dev/refine/explain"
@@ -182,7 +183,8 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 		}
 		targetPointer = ""
 	}
-	target, err := effectiveSchemaObject(document, targetPointer)
+	var target map[string]any
+	document, target, err = projectExportSchemaObject(document, targetPointer)
 	if err != nil {
 		return nil, &Error{Code: "native.export", Format: p.Format(), Pointer: targetPointer, Message: "selected schema cannot be updated", Cause: err}
 	}
@@ -230,6 +232,61 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 		return nil, &Error{Code: "native.export-invalid", Format: p.Format(), Message: "exported resource set failed native validation: " + err.Error(), Cause: err}
 	}
 	return &ProjectExport{format: p.Format(), version: p.Version(), root: p.root, metadata: copyMetadata(p.metadata), resources: resources, nativeConstraintSources: p.NativeConstraintSources(), companion: companion, losses: append([]Loss(nil), losses...)}, nil
+}
+
+// projectExportSchemaObject makes a Boolean true Schema Object extensible
+// without discarding its exact assertion. The decoded document is private to
+// this export, so replacing a selected node cannot mutate Project.Resources.
+// Boolean false is never widened: it is a proven-empty selected contract.
+func projectExportSchemaObject(root any, pointer string) (any, map[string]any, error) {
+	tokens, err := openAPI30PointerTokens(pointer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return projectExportSchemaAt(root, tokens)
+}
+func projectExportSchemaAt(current any, tokens []string) (any, map[string]any, error) {
+	if len(tokens) == 0 {
+		switch value := current.(type) {
+		case map[string]any:
+			return current, value, nil
+		case bool:
+			if !value {
+				return nil, nil, fmt.Errorf("selected Boolean false schema is proven empty")
+			}
+			wrapped := map[string]any{"allOf": []any{value}}
+			return wrapped, wrapped, nil
+		default:
+			return nil, nil, fmt.Errorf("selected Schema is neither an object nor a Boolean")
+		}
+	}
+	token := tokens[0]
+	switch value := current.(type) {
+	case map[string]any:
+		next, ok := value[token]
+		if !ok {
+			return nil, nil, fmt.Errorf("object member does not exist")
+		}
+		updated, target, err := projectExportSchemaAt(next, tokens[1:])
+		if err != nil {
+			return nil, nil, err
+		}
+		value[token] = updated
+		return current, target, nil
+	case []any:
+		index, ok := new(big.Int).SetString(token, 10)
+		if !ok || !index.IsInt64() || index.Sign() < 0 || index.Int64() >= int64(len(value)) {
+			return nil, nil, fmt.Errorf("array index does not exist")
+		}
+		updated, target, err := projectExportSchemaAt(value[index.Int64()], tokens[1:])
+		if err != nil {
+			return nil, nil, err
+		}
+		value[index.Int64()] = updated
+		return current, target, nil
+	default:
+		return nil, nil, fmt.Errorf("cannot descend into scalar")
+	}
 }
 
 func projectExportObject(input []byte) (map[string]any, error) {

@@ -21,10 +21,17 @@ the actual pinned release.
 go mod download
 go generate ./...
 go tool goplus gen --check ./...
-go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+The full race suite above is a once-per-stable-checkpoint integration gate,
+not an edit/test loop. During development use the exact affected selections in
+[docs/TESTING.md](docs/TESTING.md), preserve cached results, and do not run the
+ordinary whole suite again before the race suite. Required Java/Maven dependency
+settings and checkpoint evidence are recorded in
+[docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md); missing-runtime skips are not
+release evidence.
 
 Implemented foundations (not the complete compiler): immutable exact numbers and
 UTF-16 text; three-outcome validation results and deterministic budget meters;

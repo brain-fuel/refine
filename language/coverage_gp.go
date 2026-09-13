@@ -109,6 +109,10 @@ func (c *checker) family(typ *term) []coverageConstructor {
 		names = []string{"Null", "NonNull"}
 	case "Result":
 		names = []string{"Err", "Ok"}
+	case "JSON":
+		for _, item := range jsonConstructorSpecs() {
+			names = append(names, item.name)
+		}
 	default:
 		if declaration, ok := c.declarations[typ.name]; ok {
 			for _, variant := range declaration.Variants {

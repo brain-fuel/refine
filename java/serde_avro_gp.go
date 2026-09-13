@@ -164,6 +164,9 @@ func avroSerdePair(t *language.Type, schema avro.Schema, decls map[string]langua
 	case language.NamedType:
 		name := __gp_m0.Name
 
+		if name == "JSON" {
+			unsupported(t.At, "intrinsic JSON has no Avro wire mapping")
+		}
 		if encoding, encoded := scalars[name]; encoded {
 			switch encoding.Kind {
 			case "decimal-string", "timestamp-string":

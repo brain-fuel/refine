@@ -42,6 +42,7 @@ type modelEmitter struct {
 	anonymous          map[*language.Type]string
 	anonymousLocations map[string]modelTypeLocation
 	anonymousDecls     []language.TypeDecl
+	usesJSON           bool
 }
 
 func unrefined(t *language.Type) *language.Type {
@@ -154,6 +155,8 @@ func (m *modelEmitter) javaType(t *language.Type) string {
 			return "java.lang.Boolean"
 		case "Timestamp":
 			return "Timestamp"
+		case "JSON":
+			return "JSONValue"
 		}
 		if _, found := m.declarations[name]; found {
 			return m.qualified(name)
@@ -237,6 +240,9 @@ func (m *modelEmitter) encode(t *language.Type, input, location string) string {
 				method = "timestamp"
 			}
 		}
+		if name == "JSON" {
+			return "JSONValues.encode(" + input + "," + location + ")"
+		}
 		if method != "" {
 			return "ModelSupport." + method + "(" + input + "," + location + ")"
 		}
@@ -295,6 +301,8 @@ func (m *modelEmitter) decode(t *language.Type, input string) string {
 			return "((Data.Bool)" + input + ").value()"
 		case "Timestamp":
 			return "Timestamp.parse(((Data.Text)" + input + ").value())"
+		case "JSON":
+			return "JSONValues.decode(" + input + ")"
 		}
 		m.javaType(t)
 		if m.genericFamilies[m.modelRoot(name)] && m.parents[name] != "" {
@@ -669,12 +677,17 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		return nil, failure
 	}
 	m := &modelEmitter{module: program.Syntax(), namespace: namespace, contract: contractName, declarations: map[string]language.TypeDecl{}, parents: map[string]string{}, children: map[string][]string{}, fields: map[string][]modelField{}, alternatives: map[string]map[string]string{}, unionViews: map[string]string{}, locals: map[string]bool{"value": true}, typeLocations: map[*language.Type]modelTypeLocation{}, genericFamilies: map[string]bool{}, anonymous: map[*language.Type]string{}, anonymousLocations: map[string]modelTypeLocation{}}
+	m.usesJSON = moduleUsesJSON(m.module)
 	sourceNames := map[string]bool{}
 	for _, file := range files {
 		sourceNames[sourceNameKey(path.Base(file.Path))] = true
 	}
 	for _, name := range []string{"ModelSupport", "ModelMaybe", "ModelNullable", "ModelResult", "ModelType", "ModelTypes"} {
 		sourceNames[sourceNameKey(name+".java")] = true
+	}
+	if m.usesJSON {
+		sourceNames[sourceNameKey("JSONValue.java")] = true
+		sourceNames[sourceNameKey("JSONValues.java")] = true
 	}
 	for _, decl := range m.module.Types {
 		if err := javaClassName(decl.Name); err != nil {
@@ -776,6 +789,15 @@ func GenerateModels(program *language.Program, namespace, contractName string) (
 		name string
 		body string
 	}{{"ModelSupport", supportSource}, {"ModelMaybe", modelMaybeJava}, {"ModelNullable", modelNullableJava}, {"ModelResult", modelResultJava}, {"ModelType", strings.ReplaceAll(modelTypeJava, "@CONTRACT@", contractName)}, {"ModelTypes", m.modelTypes()}}
+	if m.usesJSON {
+		support = append(support, struct {
+			name string
+			body string
+		}{"JSONValue", modelJSONJava}, struct {
+			name string
+			body string
+		}{"JSONValues", modelJSONValuesJava})
+	}
 	for _, item := range support {
 		files = append(files, File{Path: path.Join(prefix, item.name+".java"), Source: header + item.body})
 	}

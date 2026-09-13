@@ -156,12 +156,16 @@ retain statically checked predicate scope in nested model views.
 No serde or Maven publication is implied.
 
 Supported structural forms include records, aliases, lists, exact string-keyed maps, generic/recursive
-tagged unions, `Maybe`, `Nullable`, `Result`, Bool/String, arbitrary integers and
+tagged unions, `Maybe`, `Nullable`, `Result`, intrinsic `JSON`, Bool/String, arbitrary integers and
 rationals, and checked fixed-width integers. Primitive-looking user declarations
 such as `Int01` remain ordinary named types. Field and whole-structure predicates
 share Go's per-clause reporting, stable generated codes, default/custom messages,
 invalid-plus-unknown aggregation, and structural/expression budget accounting.
 Custom-message failure preserves the conclusive violation and generated fallback.
+Intrinsic `JSON` is a closed algebraic family with the exact constructors
+`JSONNull`, `JSONBoolean`, `JSONNumber`, `JSONString`, `JSONArray`, and
+`JSONObject`; validator inputs use those ordinary tagged `Data` values rather
+than a second dynamic tree representation.
 
 The expression emitter handles literals, `it`, field projection, numeric/Boolean
 operators, equality, concatenation/cons, conditionals, record/list/map literals, and
