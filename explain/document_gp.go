@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"goforge.dev/refine/language"
+	"goforge.dev/refine/validation"
 )
 
 type Instruction struct {
@@ -40,13 +41,21 @@ type Equation struct {
 	English  string
 	Entry    string
 }
+type SchemaLimits struct {
+	Total         uint64 `json:"total"`
+	Clause        uint64 `json:"clause"`
+	TotalDefault  bool   `json:"totalDefault"`
+	ClauseDefault bool   `json:"clauseDefault"`
+}
 type Document struct {
+	limits       SchemaLimits
 	definitions  []Definition
 	rules        []Rule
 	equations    []Equation
 	instructions []Instruction
 }
 
+func (d Document) Limits() SchemaLimits        { return d.limits }
 func (d Document) Definitions() []Definition   { return append([]Definition(nil), d.definitions...) }
 func (d Document) Rules() []Rule               { return append([]Rule(nil), d.rules...) }
 func (d Document) Instructions() []Instruction { return append([]Instruction(nil), d.instructions...) }
@@ -59,11 +68,12 @@ func (d Document) Equations() []Equation {
 }
 func (d Document) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
+		Limits       SchemaLimits  `json:"limits"`
 		Definitions  []Definition  `json:"definitions"`
 		Rules        []Rule        `json:"rules"`
 		Equations    []Equation    `json:"equations"`
 		Instructions []Instruction `json:"instructions"`
-	}{d.Definitions(), d.Rules(), d.Equations(), d.Instructions()})
+	}{d.Limits(), d.Definitions(), d.Rules(), d.Equations(), d.Instructions()})
 }
 
 type builder struct {
@@ -123,7 +133,15 @@ func generate(program *language.Program, payload *language.Type) (document Docum
 	}
 	checked := program.CheckedSyntax()
 	module := checked.Syntax
-	b := builder{functions: map[string]bool{}, locals: map[string]bool{}}
+	declared := program.SchemaLimits()
+	effective := SchemaLimits{Total: declared.Total, Clause: declared.Clause, TotalDefault: declared.Total == 0, ClauseDefault: declared.Clause == 0}
+	if effective.Total == 0 {
+		effective.Total = validation.DefaultTotalSteps
+	}
+	if effective.Clause == 0 {
+		effective.Clause = validation.DefaultClauseSteps
+	}
+	b := builder{doc: Document{limits: effective}, functions: map[string]bool{}, locals: map[string]bool{}}
 	for _, fn := range module.Functions {
 		b.functions[fn.Name] = true
 	}
@@ -570,7 +588,16 @@ func describePattern(p *language.Pattern) string {
 func (d Document) Markdown() string {
 	var out strings.Builder
 	out.WriteString("# Additional contract requirements\n\nThese requirements supplement the ordinary schema; this document does not claim that the schema enforces them. Apply referenced definitions recursively. Each where clause is one diagnostic unit, even when it contains several Boolean operands.\n\n")
-	out.WriteString("## Evaluation policy\n\nValues are immutable. Calculations do not change the payload. Integers are arbitrary precision by default; fractional arithmetic is exact. Text length counts UTF-16 code units, and equality performs no Unicode normalization. Timestamp ordering compares RFC 3339 instants. Ordinary calls evaluate arguments eagerly; conditional branches and Boolean short-circuit operators evaluate only the selected operands. Predicates cannot perform network or filesystem I/O.\n\nA false clause is invalid. An unhandled evaluation error or exhausted deterministic budget is indeterminate. A known violation keeps the aggregate invalid even when other checks are indeterminate, with diagnostics marked incomplete. Both invalid and indeterminate prevent normal construction, updates and serde. Caller limits may tighten but never relax schema limits. Custom-message failure preserves the original violation and uses the generated fallback. Instructions below are demand-driven: enter an instruction only when its caller requests it; do not execute the numbered list eagerly.\n\n")
+	out.WriteString("## Evaluation policy\n\nValues are immutable. Calculations do not change the payload. Integers are arbitrary precision by default; fractional arithmetic is exact. Text length counts UTF-16 code units, and equality performs no Unicode normalization. Timestamp ordering compares RFC 3339 instants. Ordinary calls evaluate arguments eagerly; conditional branches and Boolean short-circuit operators evaluate only the selected operands. Predicates cannot perform network or filesystem I/O.\n\n")
+	totalSource, clauseSource := "declared by this schema", "declared by this schema"
+	if d.limits.TotalDefault {
+		totalSource = "the documented runtime default"
+	}
+	if d.limits.ClauseDefault {
+		clauseSource = "the documented runtime default"
+	}
+	fmt.Fprintf(&out, "The total validation limit is %d logical steps (%s). The default limit for each where clause is %d logical steps (%s); an explicit clause @steps annotation replaces that clause default. Caller limits may tighten but never relax either schema limit.\n\n", d.limits.Total, totalSource, d.limits.Clause, clauseSource)
+	out.WriteString("A false clause is invalid. An unhandled evaluation error or exhausted deterministic budget is indeterminate. A known violation keeps the aggregate invalid even when other checks are indeterminate, with diagnostics marked incomplete. Both invalid and indeterminate prevent normal construction, updates and serde. Custom-message failure preserves the original violation and uses the generated fallback. Instructions below are demand-driven: enter an instruction only when its caller requests it; do not execute the numbered list eagerly.\n\n")
 	out.WriteString("## Definitions\n\n")
 	for _, definition := range d.definitions {
 		out.WriteString(prose(definition.Name+": "+definition.English) + "\n\n")
@@ -591,9 +618,9 @@ func (d Document) Markdown() string {
 			out.WriteString("The runtime derives the error code from the clause and concrete payload path.\n\n")
 		}
 		if rule.Steps > 0 {
-			fmt.Fprintf(&out, "Declared clause limit: %d logical steps (also constrained by enclosing and caller limits).\n\n", rule.Steps)
+			fmt.Fprintf(&out, "Declared clause limit: %d logical steps (also constrained by the schema total and caller limits).\n\n", rule.Steps)
 		} else {
-			out.WriteString("Use the runtime's default clause limit, also constrained by enclosing and caller limits.\n\n")
+			fmt.Fprintf(&out, "Use the schema's default clause limit of %d logical steps, also constrained by the schema total and caller limits.\n\n", d.limits.Clause)
 		}
 		if rule.Message != "" {
 			out.WriteString("Author-defined failure message: evaluate " + rule.MessageEntry + " only when this clause fails. This wording supplements, and does not replace, the predicate algorithm.\n\n" + fence(rule.Message))

@@ -5,6 +5,7 @@ package language
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -68,7 +69,7 @@ type Child = Person
 		}
 		if tc.age == 18 {
 			diagnostic := report.Diagnostics()[0]
-			if diagnostic.Code != "person.child_age_range" || diagnostic.Message != "Expected 0 <= age < 18; got 18" || len(diagnostic.Paths) != 1 || diagnostic.Paths[0] != "" {
+			if diagnostic.Code != "person.child_age_range" || diagnostic.Message != "Expected 0 <= age < 18; got 18" || len(diagnostic.Paths) != 1 || diagnostic.Paths[0] != "/age" {
 				t.Fatalf("wrong custom diagnostic: %+v", diagnostic)
 			}
 		}
@@ -231,7 +232,13 @@ func TestValidateDataFieldAndWholeRecordEquivalence(t *testing.T) {
 		if age >= 21 {
 			expected = "valid"
 		}
-		return validation.StateName(a.State()) == expected && validation.StateName(b.State()) == expected
+		if validation.StateName(a.State()) != expected || validation.StateName(b.State()) != expected {
+			return false
+		}
+		if age < 21 {
+			return reflect.DeepEqual(a.Diagnostics()[0].Paths, []string{"/age"}) && reflect.DeepEqual(b.Diagnostics()[0].Paths, []string{"/age"})
+		}
+		return true
 	}
 	if err := quick.Check(property, &quick.Config{MaxCount: 3000}); err != nil {
 		t.Fatal(err)

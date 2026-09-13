@@ -93,8 +93,15 @@ func Compare(oldProgram *language.Program, oldRoot string, newProgram *language.
 	return Compatibility{Fingerprint: fingerprint, Backward: includes(oldTarget, oldDomain, newTarget, newDomain, same, limits), Forward: includes(newTarget, newDomain, oldTarget, oldDomain, same, limits)}, nil
 }
 
-func analysisExpansionLimit(limits validation.Limits) uint64 {
-	total, clause := uint64(validation.DefaultTotalSteps), uint64(validation.DefaultClauseSteps)
+func analysisExpansionLimit(program *language.Program, limits validation.Limits) uint64 {
+	declared := program.SchemaLimits()
+	total, clause := declared.Total, declared.Clause
+	if total == 0 {
+		total = uint64(validation.DefaultTotalSteps)
+	}
+	if clause == 0 {
+		clause = uint64(validation.DefaultClauseSteps)
+	}
 	if limits.Total != 0 && limits.Total < total {
 		total = limits.Total
 	}
@@ -115,7 +122,7 @@ func inspect(program *language.Program, root string, limits validation.Limits) (
 	if err != nil {
 		return nil, interval{}, err
 	}
-	i := inspector{types: map[string]language.TypeDecl{}, active: map[string]bool{}, expansionLimit: analysisExpansionLimit(limits)}
+	i := inspector{types: map[string]language.TypeDecl{}, active: map[string]bool{}, expansionLimit: analysisExpansionLimit(program, limits)}
 	for _, decl := range program.Syntax().Types {
 		i.types[decl.Name] = decl
 	}

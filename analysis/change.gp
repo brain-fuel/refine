@@ -9,7 +9,7 @@ import (
     "goforge.dev/refine/language"
 )
 
-const ContractSyntaxVersion="refine.contract-syntax/v1"
+const ContractSyntaxVersion="refine.contract-syntax/v2"
 
 // SyntaxDifference names the changed surface, never the predicate literal,
 // function body, or diagnostic-message contents. Order is deterministic.
@@ -37,6 +37,7 @@ func CompareContractSyntax(baseline *language.Program,baselineRoot string,candid
     result:=ContractSyntaxEvidence{Version:ContractSyntaxVersion,BaselineFingerprint:contractSyntaxDigest(baselineRoot,oldCanonical),CandidateFingerprint:contractSyntaxDigest(candidateRoot,nextCanonical),Equal:baselineRoot==candidateRoot&&oldCanonical==nextCanonical,Differences:[]SyntaxDifference{}}
     if result.Equal{return result,nil}
     if baselineRoot!=candidateRoot{result.Differences=append(result.Differences,SyntaxDifference{Kind:"root"})}
+    if old.Limits.Total!=next.Limits.Total||old.Limits.Clause!=next.Limits.Clause{result.Differences=append(result.Differences,SyntaxDifference{Kind:"limits"})}
     if old.Package!=next.Package{result.Differences=append(result.Differences,SyntaxDifference{Kind:"package"})}
     if !sameSyntaxImports(old.Imports,next.Imports){result.Differences=append(result.Differences,SyntaxDifference{Kind:"imports"})}
     oldTypes,nextTypes:=map[string]string{},map[string]string{};for _,decl:=range old.Types{oldTypes[decl.Name]=language.Format(&language.Module{Types:[]language.TypeDecl{decl}})};for _,decl:=range next.Types{nextTypes[decl.Name]=language.Format(&language.Module{Types:[]language.TypeDecl{decl}})}

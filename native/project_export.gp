@@ -13,10 +13,12 @@ import (
 // ProjectExport is an immutable same-format SNAPSHOT. Resource URI/order and
 // checked wire metadata remain explicit; Project.Resources remains the exact
 // immutable baseline.
-type ProjectExport struct{format Format;version string;root ResourceSelector;metadata WireMetadata;resources []Resource;nativeConstraintSources []Resource;companion string;losses []Loss}
+type ProjectExport struct{format Format;version string;target ProjectTarget;root ResourceSelector;metadata WireMetadata;resources []Resource;nativeConstraintSources []Resource;companion string;losses []Loss}
 func (e *ProjectExport) Format()Format{if e==nil{return ""};return e.format}
 func (e *ProjectExport) Version()string{if e==nil{return ""};return e.version}
 func (e *ProjectExport) Root()ResourceSelector{if e==nil{return ResourceSelector{}};return e.root}
+func (e *ProjectExport) Target()ProjectTarget{if e==nil{return ProjectTarget{}};return normalizedProjectTarget(e.target,e.root)}
+func (e *ProjectExport) EntryResource()string{if e==nil{return ""};return e.Target().Resource}
 func (e *ProjectExport) Metadata()WireMetadata{if e==nil{return WireMetadata{}};return copyMetadata(e.metadata)}
 func (e *ProjectExport) Resources()[]Resource{if e==nil{return nil};return append([]Resource(nil),e.resources...)}
 func (e *ProjectExport) NativeConstraintSources()[]Resource{if e==nil{return nil};return append([]Resource(nil),e.nativeConstraintSources...)}
@@ -29,7 +31,7 @@ func (e *ProjectExport) Losses()[]Loss{if e==nil{return nil};return append([]Los
 // conversion remains the separate LowerPayload API and never consumes opaque
 // project constraints.
 func (p *Project) Export(options LowerOptions)(*ProjectExport,error){
-    if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};mode:=options.Mode;if mode==""{mode=Ordinary};if mode!=Ordinary&&mode!=Refined{return nil,&Error{Code:"native.export",Format:p.Format(),Message:"mode must be ordinary or refined"}}
+    if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};mode:=options.Mode;if mode==""{mode=Ordinary};if mode!=Ordinary&&mode!=Refined{return nil,&Error{Code:"native.export",Format:p.Format(),Message:"mode must be ordinary or refined"}};if p.Kind()==OpenAPIOperationsProject{return p.exportOpenAPIOperations(options,mode)}
     payload,err:=p.PayloadType();if err!=nil{return nil,err};explained,err:=explain.GeneratePayload(payload);if err!=nil{return nil,wrap(p.Format(),"native.export","",err)};companion:=explained.Markdown();losses:=[]Loss{};var addition map[string]any
     canCompose:=p.Format()==JSONSchema||p.Format()==OpenAPI&&!strings.HasPrefix(p.Version(),"3.0.")
     if canCompose{lowered,lowerErr:=LowerPayloadWithMetadata(JSONSchema,payload,p.metadata,LowerOptions{Mode:Ordinary,AllowDocumentedLoss:true,nativeJSONNumbers:true});if lowerErr!=nil{if mode==Ordinary{return nil,&Error{Code:"native.unrepresentable",Format:p.Format(),Message:"editable payload cannot be composed with the native project",Cause:lowerErr}};losses=projectExplanationLosses(explained)}else{losses=lowered.Losses();addition,err=projectExportObject(lowered.Bytes());if err!=nil{return nil,err};digest:=sha256.Sum256(lowered.Bytes());addition["$id"]=fmt.Sprintf("urn:refine:snapshot:%x",digest[:16]);companion=lowered.CompanionMarkdown()}}
@@ -47,7 +49,7 @@ func (p *Project) Export(options LowerOptions)(*ProjectExport,error){
     if mode==Refined{annotation:=map[string]any{"source":p.source,"root":p.root.TypeName,"metadata":p.Metadata()};if p.Format()==OpenAPI{top,ok:=document.(map[string]any);if !ok{return nil,&Error{Code:"native.export",Format:OpenAPI,Message:"OpenAPI root is not an object"}};top["x-refine"]=annotation}else{target["x-refine"]=annotation}}
     encoded,err:=json.MarshalIndent(document,"","  ");if err!=nil{return nil,wrap(p.Format(),"native.export",p.root.Resource,err)};encoded=append(encoded,'\n');resources[rootIndex]=Resource{URI:resources[rootIndex].URI,Source:string(encoded)}
     if mode==Ordinary{resources,err=ordinaryProjectResources(p.Format(),resources,p.root);if err==nil{err=validateOrdinaryProjectResources(p.Format(),resources,p.root)}}else{_,err=IngestProjectResources(p.Format(),resources,ProjectOptions{ResourceID:p.root.Resource,Root:p.root,Metadata:p.metadata})};if err!=nil{return nil,&Error{Code:"native.export-invalid",Format:p.Format(),Message:"exported resource set failed native validation: "+err.Error(),Cause:err}}
-    return &ProjectExport{format:p.Format(),version:p.Version(),root:p.root,metadata:copyMetadata(p.metadata),resources:resources,nativeConstraintSources:p.NativeConstraintSources(),companion:companion,losses:append([]Loss(nil),losses...)},nil
+    return &ProjectExport{format:p.Format(),version:p.Version(),target:payloadProjectTarget(p.root),root:p.root,metadata:copyMetadata(p.metadata),resources:resources,nativeConstraintSources:p.NativeConstraintSources(),companion:companion,losses:append([]Loss(nil),losses...)},nil
 }
 
 // projectExportSchemaObject makes a Boolean true Schema Object extensible

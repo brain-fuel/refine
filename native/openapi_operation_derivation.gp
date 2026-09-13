@@ -6,6 +6,7 @@ import (
     "sort"
     "strings"
 
+    "goforge.dev/refine/language"
     refineopenapi "goforge.dev/refine/openapi"
     "goforge.dev/refine/schemajson"
 )
@@ -30,7 +31,7 @@ func (p *Project)WithDerivedOpenAPIOperations(options OpenAPIDerivationOptions)(
     if p.metadata.OpenAPI!=nil{return nil,&Error{Code:"native.metadata",Format:OpenAPI,Message:"automatic operation derivation will not replace existing OpenAPI metadata"}}
     if len(options.OperationIDs)>4096{return nil,&Error{Code:"native.limit",Format:OpenAPI,Message:"at most 4,096 operation IDs may be selected"}}
     resources,err:=p.canonicalJSONResources();if err!=nil{return nil,err};docs:=map[string]schemajson.Document{};for _,resource:=range resources{doc,parseErr:=schemajson.Parse([]byte(resource.Source),schemajson.Limits{});if parseErr!=nil{return nil,wrap(OpenAPI,"native.structure",resource.URI,parseErr)};docs[resource.URI]=doc}
-    requireIDs:=len(options.OperationIDs)==0;operations,err:=indexOpenAPIDocumentOperationsMode(p.root.Resource,docs,requireIDs);if err!=nil{return nil,err}
+    requireIDs:=len(options.OperationIDs)==0;operations,err:=indexOpenAPIDocumentOperationsMode(p.EntryResource(),docs,requireIDs);if err!=nil{return nil,err}
     selected,err:=selectedDerivedOperationIDs(options.OperationIDs,operations);if err!=nil{return nil,err};if len(selected)==0{return nil,&Error{Code:"native.projection",Format:OpenAPI,Message:"no OpenAPI operations were selected for derivation"}}
     used:=map[string]bool{};for _,decl:=range p.program.Syntax().Types{used[decl.Name]=true}
     declarations:=[]string{};refined:=[]refineopenapi.OperationBinding{};nativeBindings:=[]refineopenapi.NativeOperationBinding{}
@@ -47,8 +48,9 @@ func selectedDerivedOperationIDs(requested []string,available map[string]openAPI
 func (p *Project)withDerivedOpenAPISource(declarations []string)(*Project,error){
     addition:=strings.Join(declarations,"\n\n");if addition==""{return nil,&Error{Code:"native.projection",Format:OpenAPI,Message:"operation derivation produced no checked declarations"}}
     appendSource:=func(source string)string{if source!=""&&!strings.HasSuffix(source,"\n"){source+="\n"};return source+"\n"+addition+"\n"}
-    if p.languageEntry==""{return p.WithEditedSource(appendSource(p.source))}
-    sources:=map[string]string{};found:=false;for _,file:=range p.languageFiles{source:=file.Source;if file.ID==p.languageEntry{source=appendSource(source);found=true};sources[file.ID]=source};if !found{return nil,&Error{Code:"native.project",Format:OpenAPI,Pointer:p.languageEntry,Message:"language entry source is absent"}};return p.WithEditedSources(p.languageEntry,sources)
+    copy:=*p;copy.metadata=copyMetadata(p.metadata);copy.resources=append([]Resource(nil),p.resources...);copy.nativeUnitsInEditable=copyBoolMap(p.nativeUnitsInEditable)
+    if p.languageEntry==""{source:=appendSource(p.source);program,err:=language.Compile(source);if err!=nil{return nil,wrap(OpenAPI,"native.refinement","",err)};if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(OpenAPI,"native.metadata","",err)};copy.source=source;copy.program=program;copy.languageEntry="";copy.languageFiles=nil;copy.nativeUnitSources=p.editedUnitSources(source);return &copy,nil}
+    sources:=map[string]string{};found:=false;for _,file:=range p.languageFiles{source:=file.Source;if file.ID==p.languageEntry{source=appendSource(source);found=true};sources[file.ID]=source};if !found{return nil,&Error{Code:"native.project",Format:OpenAPI,Pointer:p.languageEntry,Message:"language entry source is absent"}};bundle,err:=language.CompileSources(p.languageEntry,sources);if err!=nil{return nil,wrap(OpenAPI,"native.refinement","",err)};program:=bundle.Program();if err:=validateMetadata(program,p.metadata);err!=nil{return nil,wrap(OpenAPI,"native.metadata","",err)};copy.source=program.Source();copy.program=program;copy.languageEntry=bundle.Entry();copy.languageFiles=bundle.Files();copy.nativeUnitSources=p.editedUnitSources(copy.source);return &copy,nil
 }
 
 func deriveOpenAPIOperation(document openAPIDocumentOperation,docs map[string]schemajson.Document,used map[string]bool,openAPI30 bool)(derivedOpenAPIOperation,error){

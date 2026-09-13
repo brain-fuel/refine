@@ -113,6 +113,7 @@ func Parse(source string) (module *Module, failure error) {
 	result := &Module{Source: source}
 	functions := make(map[string]int)
 	types := make(map[string]bool)
+	hasLimits := false
 	for {
 		p.lines()
 		if p.is("eof") {
@@ -121,6 +122,40 @@ func Parse(source string) (module *Module, failure error) {
 		}
 		start := p.peek().at.Start
 		switch {
+		case p.accept("@"):
+			name := p.name()
+			if name.text != "limits" {
+				syntax(name.at, "unknown module annotation")
+			}
+			if hasLimits {
+				syntax(name.at, "duplicate module limits")
+			}
+			hasLimits = true
+			seen := map[string]bool{}
+			for !p.is("newline") && !p.is("eof") {
+				key := p.name()
+				if seen[key.text] {
+					syntax(key.at, "duplicate module limit")
+				}
+				seen[key.text] = true
+				raw := p.need("number")
+				value, err := strconv.ParseUint(raw.text, 10, 64)
+				if err != nil || value == 0 || strconv.FormatUint(value, 10) != raw.text {
+					syntax(raw.at, "module limit must be a positive canonical unsigned integer")
+				}
+				switch key.text {
+				case "total":
+					result.Limits.Total = value
+				case "clause":
+					result.Limits.Clause = value
+				default:
+					syntax(key.at, "unknown module limit")
+				}
+			}
+			if len(seen) == 0 {
+				syntax(name.at, "module limits require total, clause, or both")
+			}
+			result.Limits.At = p.span(start)
 		case p.accept("package"):
 			if result.Package != "" {
 				syntax(p.previous().at, "duplicate package declaration")

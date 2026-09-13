@@ -46,16 +46,18 @@ func CompileSources(entry string,sources map[string]string)(*SourceBundle,error)
     r:=sourceResolver{sources:make(map[string]string,len(sources)),modules:map[string]*Module{},state:map[string]uint8{}}
     for id,source:=range sources{if !sourceID(id){return nil,&ImportError{Code:"language.import_path",SourceID:id,Message:"source IDs must be canonical relative paths"}};r.sources[id]=source}
     if err:=r.visit(entry,0);err!=nil{return nil,err}
+    minimum:=func(current,next uint64)uint64{if current==0||next!=0&&next<current{return next};return current};effective:=SchemaLimits{};for _,file:=range r.files{declared:=r.modules[file.ID].Limits;effective.Total=minimum(effective.Total,declared.Total);effective.Clause=minimum(effective.Clause,declared.Clause)}
     types,terms:=map[string]string{},map[string]string{}
     var flattened strings.Builder
     if namespace:=r.modules[entry].Package;namespace!=""{flattened.WriteString("package "+namespace+"\n\n")}
+    if effective.Total!=0||effective.Clause!=0{flattened.WriteString("@limits");if effective.Total!=0{flattened.WriteString(" total "+fmt.Sprint(effective.Total))};if effective.Clause!=0{flattened.WriteString(" clause "+fmt.Sprint(effective.Clause))};flattened.WriteString("\n\n")}
     type segment struct { id string; start int; end int };segments:=[]segment{}
     for _,file:=range r.files{
         module:=r.modules[file.ID]
         bind:=func(table map[string]string,name string)error{if owner,exists:=table[name];exists{return &ImportError{Code:"language.import_collision",SourceID:file.ID,Message:"declaration "+name+" conflicts with "+owner}};table[name]=file.ID;return nil}
         for _,decl:=range module.Types{if err:=bind(types,decl.Name);err!=nil{return nil,err};for _,variant:=range decl.Variants{if err:=bind(terms,variant.Name);err!=nil{return nil,err}}}
         for _,fn:=range module.Functions{if err:=bind(terms,fn.Name);err!=nil{return nil,err}}
-        clean:=*module;clean.Package="";clean.Imports=nil
+        clean:=*module;clean.Package="";clean.Imports=nil;clean.Limits=SchemaLimits{}
         text:=Format(&clean)
         if len(text)>(16<<20)-flattened.Len(){return nil,&ImportError{Code:"language.import_limit",SourceID:file.ID,Message:"flattened source exceeds 16 MiB"}}
         start:=flattened.Len();flattened.WriteString(text);flattened.WriteByte('\n');segments=append(segments,segment{id:file.ID,start:start,end:flattened.Len()})

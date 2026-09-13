@@ -46,7 +46,7 @@ func (t *PayloadType) ValidateData(data value.Data,caller validation.Limits)vali
 func (t *PayloadType) ValidateDataWithoutRefinements(data value.Data,caller validation.Limits)validation.Report{return t.validateData(data,caller,true)}
 func (t *PayloadType) validateData(data value.Data,caller validation.Limits,withoutRefinements bool)validation.Report{
     if t==nil||t.typ==nil||t.program==nil{return invalidPayloadType()}
-    v:=&payloadValidator{program:t.program,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(validation.Limits{},caller),withoutRefinements:withoutRefinements}
+    v:=&payloadValidator{program:t.program,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(t.program.validationLimits(),caller),withoutRefinements:withoutRefinements}
     for _,decl:=range t.program.module.Types{v.declarations[decl.Name]=decl}
     v.structure=newEvaluator(t.program.module,v.budget.BeginStructure());v.run(t.typ,data)
     return validation.Collect(v.checks)

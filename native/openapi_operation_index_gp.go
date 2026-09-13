@@ -182,7 +182,7 @@ func buildOpenAPIOperationIndex(p *Project) (*openAPIOperationIndex, error) {
 		}
 		docs[resource.URI] = doc
 	}
-	documentOperations, err := indexOpenAPIDocumentOperations(p.root.Resource, docs)
+	documentOperations, err := indexOpenAPIDocumentOperations(p.EntryResource(), docs)
 	if err != nil {
 		return nil, err
 	}

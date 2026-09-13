@@ -11,10 +11,15 @@ import (
 	"goforge.dev/refine/schemajson"
 )
 
+type bundleTarget struct {
+	Kind     ProjectKind `json:"kind"`
+	Resource string      `json:"resource"`
+}
 type bundleFile struct {
 	Version                 int                   `json:"version"`
 	Format                  Format                `json:"format"`
-	Root                    ResourceSelector      `json:"root"`
+	Root                    *ResourceSelector     `json:"root,omitempty"`
+	Target                  *bundleTarget         `json:"target,omitempty"`
 	Resources               []Resource            `json:"resources"`
 	EditableSource          string                `json:"editableSource"`
 	LanguageEntry           string                `json:"languageEntry,omitempty"`
@@ -26,10 +31,26 @@ type bundleFile struct {
 // Bundle returns one self-contained JSON distribution. Native resources remain
 // byte-for-byte strings and retain their URI identities for offline resolution.
 func (p *Project) Bundle() ([]byte, error) {
-	if p == nil {
-		return nil, &Error{Code: "native.project", Message: "a project is required"}
+	if p == nil || p.program == nil || p.document == nil {
+		return nil, &Error{Code: "native.project", Message: "a checked project is required"}
 	}
-	wire := bundleFile{Version: 1, Format: p.Format(), Root: p.root, Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), NativeConstraintSources: p.NativeConstraintSources(), Metadata: p.Metadata()}
+	wire := bundleFile{Version: 1, Format: p.Format(), Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), NativeConstraintSources: p.NativeConstraintSources(), Metadata: p.Metadata()}
+	switch p.Kind() {
+	case PayloadProject:
+		if !p.HasPayloadRoot() {
+			return nil, &Error{Code: "native.project", Format: p.Format(), Message: "payload project target is invalid"}
+		}
+		root := p.root
+		wire.Root = &root
+	case OpenAPIOperationsProject:
+		if p.target.Kind != OpenAPIOperationsProject || p.root != (ResourceSelector{}) || p.EntryResource() == "" || p.openAPIOperations == nil {
+			return nil, &Error{Code: "native.project", Format: p.Format(), Message: "OpenAPI operations project target is invalid or unchecked"}
+		}
+		wire.Version = 2
+		wire.Target = &bundleTarget{Kind: OpenAPIOperationsProject, Resource: p.EntryResource()}
+	default:
+		return nil, &Error{Code: "native.project", Format: p.Format(), Message: "project target kind is invalid"}
+	}
 	data, err := json.MarshalIndent(wire, "", "  ")
 	if err != nil {
 		return nil, err
@@ -47,13 +68,44 @@ func ParseBundle(input []byte) (*Project, error) {
 	if err := decoder.Decode(&wire); err != nil {
 		return nil, wrap("", "native.bundle", "", err)
 	}
-	if wire.Version != 1 {
+	if wire.Version == 1 {
+		if wire.Root == nil || wire.Target != nil {
+			return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "version 1 bundle requires root and forbids target"}
+		}
+		project, err := IngestProjectResources(wire.Format, wire.Resources, ProjectOptions{ResourceID: wire.Root.Resource, Root: *wire.Root})
+		if err != nil {
+			return nil, err
+		}
+		project, err = applyBundledSource(project, wire)
+		if err != nil {
+			return nil, err
+		}
+		for _, unit := range wire.NativeConstraintSources {
+			project, err = project.WithEditedNativeConstraintSource(unit.URI, unit.Source)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return project.WithMetadata(wire.Metadata)
+	}
+	if wire.Version != 2 {
 		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "unsupported bundle version"}
 	}
-	project, err := IngestProjectResources(wire.Format, wire.Resources, ProjectOptions{ResourceID: wire.Root.Resource, Root: wire.Root})
+	if wire.Format != OpenAPI || wire.Root != nil || wire.Target == nil || wire.Target.Kind != OpenAPIOperationsProject || wire.Target.Resource == "" {
+		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "version 2 operations bundle requires an OpenAPI target resource and forbids root"}
+	}
+	if len(wire.NativeConstraintSources) > 0 {
+		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "OpenAPI operations bundle cannot contain unrelated native constraint source units"}
+	}
+	bundled, err := compileBundledOperationSource(wire)
 	if err != nil {
 		return nil, err
 	}
+	return ingestOpenAPIOperationResources(wire.Resources, OpenAPIOperationIngestOptions{EntryResource: wire.Target.Resource, Metadata: wire.Metadata}, bundled)
+}
+
+func applyBundledSource(project *Project, wire bundleFile) (*Project, error) {
+	var err error
 	if wire.LanguageEntry != "" {
 		sources := make(map[string]string)
 		for _, file := range wire.LanguageFiles {
@@ -69,14 +121,30 @@ func ParseBundle(input []byte) (*Project, error) {
 	} else {
 		project, err = project.WithEditedSource(wire.EditableSource)
 	}
-	if err != nil {
-		return nil, err
-	}
-	for _, unit := range wire.NativeConstraintSources {
-		project, err = project.WithEditedNativeConstraintSource(unit.URI, unit.Source)
+	return project, err
+}
+
+func compileBundledOperationSource(wire bundleFile) (*openAPIOperationSource, error) {
+	if wire.LanguageEntry == "" {
+		program, err := language.Compile(wire.EditableSource)
 		if err != nil {
-			return nil, err
+			return nil, wrap(OpenAPI, "native.refinement", "", err)
 		}
+		return &openAPIOperationSource{source: wire.EditableSource, program: program}, nil
 	}
-	return project.WithMetadata(wire.Metadata)
+	sources := map[string]string{}
+	for _, file := range wire.LanguageFiles {
+		if _, duplicate := sources[file.ID]; duplicate {
+			return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "duplicate language source ID"}
+		}
+		sources[file.ID] = file.Source
+	}
+	bundle, err := language.CompileSources(wire.LanguageEntry, sources)
+	if err != nil {
+		return nil, wrap(OpenAPI, "native.refinement", "", err)
+	}
+	if bundle.Program().Source() != wire.EditableSource {
+		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "editableSource does not match the bundled language import graph"}
+	}
+	return &openAPIOperationSource{source: wire.EditableSource, program: bundle.Program(), entry: bundle.Entry(), files: bundle.Files()}, nil
 }

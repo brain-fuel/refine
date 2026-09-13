@@ -19,6 +19,7 @@ import (
 type ProjectExport struct {
 	format                  Format
 	version                 string
+	target                  ProjectTarget
 	root                    ResourceSelector
 	metadata                WireMetadata
 	resources               []Resource
@@ -44,6 +45,18 @@ func (e *ProjectExport) Root() ResourceSelector {
 		return ResourceSelector{}
 	}
 	return e.root
+}
+func (e *ProjectExport) Target() ProjectTarget {
+	if e == nil {
+		return ProjectTarget{}
+	}
+	return normalizedProjectTarget(e.target, e.root)
+}
+func (e *ProjectExport) EntryResource() string {
+	if e == nil {
+		return ""
+	}
+	return e.Target().Resource
 }
 func (e *ProjectExport) Metadata() WireMetadata {
 	if e == nil {
@@ -91,6 +104,9 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	}
 	if mode != Ordinary && mode != Refined {
 		return nil, &Error{Code: "native.export", Format: p.Format(), Message: "mode must be ordinary or refined"}
+	}
+	if p.Kind() == OpenAPIOperationsProject {
+		return p.exportOpenAPIOperations(options, mode)
 	}
 	payload, err := p.PayloadType()
 	if err != nil {
@@ -231,7 +247,7 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	if err != nil {
 		return nil, &Error{Code: "native.export-invalid", Format: p.Format(), Message: "exported resource set failed native validation: " + err.Error(), Cause: err}
 	}
-	return &ProjectExport{format: p.Format(), version: p.Version(), root: p.root, metadata: copyMetadata(p.metadata), resources: resources, nativeConstraintSources: p.NativeConstraintSources(), companion: companion, losses: append([]Loss(nil), losses...)}, nil
+	return &ProjectExport{format: p.Format(), version: p.Version(), target: payloadProjectTarget(p.root), root: p.root, metadata: copyMetadata(p.metadata), resources: resources, nativeConstraintSources: p.NativeConstraintSources(), companion: companion, losses: append([]Loss(nil), losses...)}, nil
 }
 
 // projectExportSchemaObject makes a Boolean true Schema Object extensible

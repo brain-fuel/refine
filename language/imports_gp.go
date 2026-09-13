@@ -116,10 +116,32 @@ func CompileSources(entry string, sources map[string]string) (*SourceBundle, err
 	if err := r.visit(entry, 0); err != nil {
 		return nil, err
 	}
+	minimum := func(current, next uint64) uint64 {
+		if current == 0 || next != 0 && next < current {
+			return next
+		}
+		return current
+	}
+	effective := SchemaLimits{}
+	for _, file := range r.files {
+		declared := r.modules[file.ID].Limits
+		effective.Total = minimum(effective.Total, declared.Total)
+		effective.Clause = minimum(effective.Clause, declared.Clause)
+	}
 	types, terms := map[string]string{}, map[string]string{}
 	var flattened strings.Builder
 	if namespace := r.modules[entry].Package; namespace != "" {
 		flattened.WriteString("package " + namespace + "\n\n")
+	}
+	if effective.Total != 0 || effective.Clause != 0 {
+		flattened.WriteString("@limits")
+		if effective.Total != 0 {
+			flattened.WriteString(" total " + fmt.Sprint(effective.Total))
+		}
+		if effective.Clause != 0 {
+			flattened.WriteString(" clause " + fmt.Sprint(effective.Clause))
+		}
+		flattened.WriteString("\n\n")
 	}
 	type segment struct {
 		id    string
@@ -154,6 +176,7 @@ func CompileSources(entry string, sources map[string]string) (*SourceBundle, err
 		clean := *module
 		clean.Package = ""
 		clean.Imports = nil
+		clean.Limits = SchemaLimits{}
 		text := Format(&clean)
 		if len(text) > (16<<20)-flattened.Len() {
 			return nil, &ImportError{Code: "language.import_limit", SourceID: file.ID, Message: "flattened source exceeds 16 MiB"}

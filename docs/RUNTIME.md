@@ -132,6 +132,16 @@ collected as resources permit; known invalid dominates indeterminate and sets
 `incomplete` when some checks could not finish. A malformed structure is invalid,
 whereas evaluation failure/resource exhaustion is indeterminate.
 
+Clause diagnostics list every distinct projection chain rooted directly at that
+clause's `it`, in deterministic source order. Thus `it.start < it.end` reports
+both `/start` and `/end`, and a rule on a nested list element prefixes those
+relative paths with the element's runtime path. Calls such as `all positive
+it.items` identify `/items`; named function bodies, local aliases, collection
+indices, and map keys are not symbolically expanded or guessed. A whole-value
+use such as `ordered it`, or a clause with no narrower direct projection, retains
+the enclosing path. Field names use JSON Pointer escaping. This is static source
+dependency reporting and never inspects or includes payload values.
+
 Default diagnostics contain source predicates but not actual payload values.
 Custom message expressions are the explicit opt-in to include values. Failure,
 budget exhaustion, or an unrepresentable text result during message computation
@@ -267,9 +277,12 @@ tested at exact thresholds. It must be mirrored by the future Java runtime:
   states), and rune-class work. Exact accounting is in `pattern/regex.gp`; fixed
   threshold and differential tests guard it. Budget exhaustion is indeterminate.
 
-Defaults remain 1,000,000 overall and 100,000 per clause. Caller limits can only
-tighten these; `@steps` overrides the schema's clause default while retaining
-the caller cap. An unaffordable operation does not run or consume another
+Defaults remain 1,000,000 overall and 100,000 per clause. A source header such as
+`@limits total 500000 clause 50000` replaces either default explicitly. Linked
+imports take the component-wise minimum of explicitly declared values, so an
+imported cap cannot be relaxed by its consumer. Caller limits can only tighten
+the effective schema limits; `@steps` overrides the schema's clause default while
+retaining the schema total and caller caps. An unaffordable operation does not run or consume another
 clause's allowance. These are logical work units, not milliseconds or a complete
 bound on host memory/CPU usage.
 
@@ -295,8 +308,7 @@ The following are explicitly unfinished, not silently interpreted as success:
   capability inference remains deferred.
 - Full numeric literal typing and removal/replacement of the current
   65,536-bit numeric-backend guard with a consistent resource policy.
-- Source-level overall budget/record-policy metadata, complete affected-path
-  analysis, native payload decoding, HTTP request/response context, and CLI
+- Source-level record-policy metadata, native payload decoding, HTTP request/response context, and CLI
   payload validation.
 - Complete English export, Java runtime/code generation/serde, cross-runtime
   canonical read/show conformance, compatibility, versioning, Maven, and all

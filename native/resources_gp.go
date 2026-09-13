@@ -192,11 +192,21 @@ func validateJSONResources(resources map[string][]byte, root ResourceSelector) (
 }
 
 func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector) (document *Document, failure error) {
-	defer recoverRegexEvaluation(OpenAPI, &failure)
 	if !strings.HasPrefix(root.Pointer, "/components/schemas/") {
 		return nil, &Error{Code: "native.root", Format: OpenAPI, Pointer: root.Pointer, Message: "selected OpenAPI root must be a Schema Object under /components/schemas"}
 	}
-	main := resources[root.Resource]
+	return validateOpenAPIDocumentResources(resources, root.Resource)
+}
+
+// validateOpenAPIDocumentResources validates a complete OpenAPI entry document
+// and its explicit offline closure without inventing or requiring a payload
+// Schema Object. Operation projects use this document-level oracle.
+func validateOpenAPIDocumentResources(resources map[string][]byte, entryResource string) (document *Document, failure error) {
+	defer recoverRegexEvaluation(OpenAPI, &failure)
+	main, exists := resources[entryResource]
+	if !exists {
+		return nil, &Error{Code: "native.resource", Format: OpenAPI, Pointer: entryResource, Message: "OpenAPI entry resource is not in the explicit resource set"}
+	}
 	l, _ := limits(Options{})
 	var yamlRoot *yaml.Node
 	numericExpansion := 0
@@ -215,7 +225,7 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 				return nil, wrap(OpenAPI, "native.encoding", uri, err)
 			}
 		}
-		if uri == root.Resource {
+		if uri == entryResource {
 			yamlRoot = node
 		}
 	}
@@ -237,7 +247,7 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 		}
 		return nil, fmt.Errorf("resource %s is not in the explicit bundle", copy.String())
 	}
-	location, _ := url.Parse(root.Resource)
+	location, _ := url.Parse(entryResource)
 	parsed, err := loader.LoadFromDataWithPath(oracleInput, location)
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.structure", "", err)

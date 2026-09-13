@@ -215,7 +215,7 @@ func (e *initializer) typ(t *language.Type) string {
 			if rule.Message != nil {
 				message = e.expr(rule.Message, scope)
 			}
-			source := fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s))", e.literal(rule.Code), rule.At.Start.Offset, e.literal(language.FormatExpression(rule.Predicate)), e.expr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps)))
+			source := fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s),%s)", e.literal(rule.Code), rule.At.Start.Offset, e.literal(language.FormatExpression(rule.Predicate)), e.expr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps)), e.strings(language.AffectedPaths(rule.Predicate, "")))
 			rules = append(rules, e.node("ContractRuntime.Rule", source))
 		}
 	case language.AppliedType:
@@ -348,19 +348,20 @@ public final class %s {
     private %s() {}
     private static final java.util.Map<String, ContractRuntime.Definition> DEFINITIONS = definitions();
     private static final java.util.Map<String, ContractRuntime.FunctionDef> FUNCTIONS = %s;
-    static Validation.Outcome modelValidate(ContractRuntime.Type type, Data input, Budget.Limits caller, boolean refinements) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,caller,refinements); }
-    static ContractRuntime.ReadResult modelRead(ContractRuntime.Type type, String text, Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,caller); }
+    private static final Budget.Limits SCHEMA_LIMITS = new Budget.Limits(new java.math.BigInteger(%s),new java.math.BigInteger(%s));
+    static Validation.Outcome modelValidate(ContractRuntime.Type type, Data input, Budget.Limits caller, boolean refinements) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,SCHEMA_LIMITS,caller,refinements); }
+    static ContractRuntime.ReadResult modelRead(ContractRuntime.Type type, String text, Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,SCHEMA_LIMITS,caller); }
     static ContractRuntime.Type modelRefinement(String owner, int[] path, java.util.List<ContractRuntime.Type> arguments) { return ContractRuntime.modelRefinement(DEFINITIONS.get(owner),path,arguments); }
     static ContractRuntime.Type modelType(String owner, int[] path, java.util.List<ContractRuntime.Type> arguments) { return ContractRuntime.modelType(DEFINITIONS.get(owner),path,arguments); }
     public static Validation.Outcome validate(String root, Data input) { return validate(root, input, Budget.Limits.defaults()); }
-    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, caller); }
-    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, caller); }
+    public static Validation.Outcome validate(String root, Data input, Budget.Limits caller) { return ContractRuntime.validate(DEFINITIONS, FUNCTIONS, root, input, SCHEMA_LIMITS, caller); }
+    public static Validation.Outcome validateStructure(String root, Data input, Budget.Limits caller) { return ContractRuntime.validateStructure(DEFINITIONS, FUNCTIONS, root, input, SCHEMA_LIMITS, caller); }
     public static Data requireValid(String root, Data input) { validate(root, input).orThrow(); return input; }
     public static String showWithoutValidation(Data input) { return showWithoutValidation(input, Budget.Limits.defaults()); }
     public static String showWithoutValidation(Data input, Budget.Limits caller) { return ContractRuntime.showWithoutValidation(input, caller); }
     public static ContractRuntime.ReadResult read(String root, String text) { return read(root, text, Budget.Limits.defaults()); }
-    public static ContractRuntime.ReadResult read(String root, String text, Budget.Limits caller) { return ContractRuntime.read(DEFINITIONS, FUNCTIONS, root, text, caller); }
-`, className, className, functions) + payloadHandlesJava(className, targetMap) + e.source(definitions, signatures)
+    public static ContractRuntime.ReadResult read(String root, String text, Budget.Limits caller) { return ContractRuntime.read(DEFINITIONS, FUNCTIONS, root, text, SCHEMA_LIMITS, caller); }
+`, className, className, functions, javaQuote(fmt.Sprint(module.Limits.Total)), javaQuote(fmt.Sprint(module.Limits.Clause))) + payloadHandlesJava(className, targetMap) + e.source(definitions, signatures)
 	files, failure = GenerateRuntime(namespace)
 	if failure != nil {
 		return nil, failure
@@ -458,7 +459,7 @@ func (e *initializer) meta(t *language.Type) string {
 			if rule.Message != nil {
 				message = e.expr(rule.Message, scope)
 			}
-			source := fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s))", e.literal(rule.Code), rule.At.Start.Offset, e.literal(language.FormatExpression(rule.Predicate)), e.expr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps)))
+			source := fmt.Sprintf("new ContractRuntime.Rule(%s,%d,%s,%s,%s,new java.math.BigInteger(%s),%s)", e.literal(rule.Code), rule.At.Start.Offset, e.literal(language.FormatExpression(rule.Predicate)), e.expr(rule.Predicate, scope), message, javaQuote(fmt.Sprint(rule.Steps)), e.strings(language.AffectedPaths(rule.Predicate, "")))
 			rules = append(rules, e.node("ContractRuntime.Rule", source))
 		}
 	default:

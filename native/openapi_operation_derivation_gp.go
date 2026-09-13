@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"goforge.dev/refine/language"
 	refineopenapi "goforge.dev/refine/openapi"
 	"goforge.dev/refine/schemajson"
 )
@@ -60,7 +61,7 @@ func (p *Project) WithDerivedOpenAPIOperations(options OpenAPIDerivationOptions)
 		docs[resource.URI] = doc
 	}
 	requireIDs := len(options.OperationIDs) == 0
-	operations, err := indexOpenAPIDocumentOperationsMode(p.root.Resource, docs, requireIDs)
+	operations, err := indexOpenAPIDocumentOperationsMode(p.EntryResource(), docs, requireIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +136,25 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 		}
 		return source + "\n" + addition + "\n"
 	}
+	copy := *p
+	copy.metadata = copyMetadata(p.metadata)
+	copy.resources = append([]Resource(nil), p.resources...)
+	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
 	if p.languageEntry == "" {
-		return p.WithEditedSource(appendSource(p.source))
+		source := appendSource(p.source)
+		program, err := language.Compile(source)
+		if err != nil {
+			return nil, wrap(OpenAPI, "native.refinement", "", err)
+		}
+		if err := validateMetadata(program, p.metadata); err != nil {
+			return nil, wrap(OpenAPI, "native.metadata", "", err)
+		}
+		copy.source = source
+		copy.program = program
+		copy.languageEntry = ""
+		copy.languageFiles = nil
+		copy.nativeUnitSources = p.editedUnitSources(source)
+		return &copy, nil
 	}
 	sources := map[string]string{}
 	found := false
@@ -151,7 +169,20 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 	if !found {
 		return nil, &Error{Code: "native.project", Format: OpenAPI, Pointer: p.languageEntry, Message: "language entry source is absent"}
 	}
-	return p.WithEditedSources(p.languageEntry, sources)
+	bundle, err := language.CompileSources(p.languageEntry, sources)
+	if err != nil {
+		return nil, wrap(OpenAPI, "native.refinement", "", err)
+	}
+	program := bundle.Program()
+	if err := validateMetadata(program, p.metadata); err != nil {
+		return nil, wrap(OpenAPI, "native.metadata", "", err)
+	}
+	copy.source = program.Source()
+	copy.program = program
+	copy.languageEntry = bundle.Entry()
+	copy.languageFiles = bundle.Files()
+	copy.nativeUnitSources = p.editedUnitSources(copy.source)
+	return &copy, nil
 }
 
 func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]schemajson.Document, used map[string]bool, openAPI30 bool) (derivedOpenAPIOperation, error) {

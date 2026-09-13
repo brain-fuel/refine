@@ -12,7 +12,7 @@ import (
 	"goforge.dev/refine/language"
 )
 
-const ContractSyntaxVersion = "refine.contract-syntax/v1"
+const ContractSyntaxVersion = "refine.contract-syntax/v2"
 
 // SyntaxDifference names the changed surface, never the predicate literal,
 // function body, or diagnostic-message contents. Order is deterministic.
@@ -54,6 +54,9 @@ func CompareContractSyntax(baseline *language.Program, baselineRoot string, cand
 	}
 	if baselineRoot != candidateRoot {
 		result.Differences = append(result.Differences, SyntaxDifference{Kind: "root"})
+	}
+	if old.Limits.Total != next.Limits.Total || old.Limits.Clause != next.Limits.Clause {
+		result.Differences = append(result.Differences, SyntaxDifference{Kind: "limits"})
 	}
 	if old.Package != next.Package {
 		result.Differences = append(result.Differences, SyntaxDifference{Kind: "package"})

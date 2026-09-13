@@ -15,11 +15,11 @@ func payloadHandlesJava(contract,targetMap string)string{
         private final ContractRuntime.Type type;
         private %s(ContractRuntime.Type type) { this.type = type; }
         public Validation.Outcome validate(Data input) { return validate(input,Budget.Limits.defaults()); }
-        public Validation.Outcome validate(Data input,Budget.Limits caller) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,caller,true); }
+        public Validation.Outcome validate(Data input,Budget.Limits caller) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,SCHEMA_LIMITS,caller,true); }
         public Validation.Outcome validateWithoutRefinements(Data input) { return validateWithoutRefinements(input,Budget.Limits.defaults()); }
-        public Validation.Outcome validateWithoutRefinements(Data input,Budget.Limits caller) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,caller,false); }
+        public Validation.Outcome validateWithoutRefinements(Data input,Budget.Limits caller) { return ContractRuntime.validateType(DEFINITIONS,FUNCTIONS,type,input,SCHEMA_LIMITS,caller,false); }
         public ContractRuntime.ReadResult read(String text) { return read(text,Budget.Limits.defaults()); }
-        public ContractRuntime.ReadResult read(String text,Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,caller); }
+        public ContractRuntime.ReadResult read(String text,Budget.Limits caller) { return ContractRuntime.readType(DEFINITIONS,FUNCTIONS,type,text,SCHEMA_LIMITS,caller); }
     }
 `,targetMap,name,name,name,name)
 }

@@ -48,7 +48,7 @@ const modelRefinementJava = `
                         if (rule < type.rules().size()) {
                             Rule original = type.rules().get(rule); index++;
                             expression(work,original.expression(),predicate -> expression(work,original.message(),message -> {
-                                rules.add(new Rule(original.code(),original.offset(),original.predicate(),predicate,message,original.steps())); work.later(this);
+                                rules.add(new Rule(original.code(),original.offset(),original.predicate(),predicate,message,original.steps(),original.paths())); work.later(this);
                             })); return;
                         }
                         work.complete(done,new Type(type.kind(),type.name(),arguments,fields,rules));

@@ -30,6 +30,7 @@ type Module struct {
 	Source    string
 	Package   string
 	Imports   []Import
+	Limits    SchemaLimits
 	Types     []TypeDecl
 	Functions []Function
 	// Immutable after Compile; deliberately absent from fresh Syntax() copies.
@@ -37,6 +38,15 @@ type Module struct {
 	functionScopes       map[string]map[string]string
 	declarationScopes    map[string]map[string]string
 	functionCapabilities map[string][]CapabilityConstraint
+}
+
+// SchemaLimits are the contract-authored total validation budget and the
+// default budget for a where clause. Zero is the immutable unspecified value;
+// runtimes substitute the documented defaults.
+type SchemaLimits struct {
+	Total  uint64
+	Clause uint64
+	At     Span
 }
 type Import struct {
 	Path string

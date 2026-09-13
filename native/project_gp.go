@@ -39,6 +39,7 @@ type Resource struct {
 // the language projection.
 type Project struct {
 	document              *Document
+	target                ProjectTarget
 	root                  ResourceSelector
 	source                string
 	program               *language.Program
@@ -192,6 +193,9 @@ func (p *Project) RecoverResourceNative(resource, name, source string) (string, 
 func (p *Project) PayloadType() (*language.PayloadType, error) {
 	if p == nil || p.program == nil {
 		return nil, &Error{Code: "native.project", Message: "a checked project is required"}
+	}
+	if err := p.requirePayloadRoot(); err != nil {
+		return nil, err
 	}
 	return p.program.PayloadType(p.root.TypeName)
 }
@@ -424,11 +428,8 @@ func (p *Project) WithEditedSource(source string) (*Project, error) {
 	if err != nil {
 		return nil, wrap(p.Format(), "native.refinement", "", err)
 	}
-	if _, err := program.PayloadType(p.root.TypeName); err != nil {
-		return nil, wrap(p.Format(), "native.root", p.root.Pointer, err)
-	}
-	if err := validateMetadata(program, p.metadata); err != nil {
-		return nil, wrap(p.Format(), "native.metadata", "", err)
+	if err := p.validateEditedProgram(program); err != nil {
+		return nil, err
 	}
 	copy := *p
 	copy.source = source
@@ -453,11 +454,8 @@ func (p *Project) WithEditedSources(entry string, sources map[string]string) (*P
 		return nil, wrap(p.Format(), "native.refinement", "", err)
 	}
 	program := bundle.Program()
-	if _, err := program.PayloadType(p.root.TypeName); err != nil {
-		return nil, wrap(p.Format(), "native.root", p.root.Pointer, err)
-	}
-	if err := validateMetadata(program, p.metadata); err != nil {
-		return nil, wrap(p.Format(), "native.metadata", "", err)
+	if err := p.validateEditedProgram(program); err != nil {
+		return nil, err
 	}
 	copy := *p
 	copy.source = program.Source()
@@ -471,12 +469,27 @@ func (p *Project) WithEditedSources(entry string, sources map[string]string) (*P
 	return validateProject(&copy)
 }
 
+func (p *Project) validateEditedProgram(program *language.Program) error {
+	if p.HasPayloadRoot() {
+		if _, err := program.PayloadType(p.root.TypeName); err != nil {
+			return wrap(p.Format(), "native.root", p.root.Pointer, err)
+		}
+	}
+	if err := validateMetadata(program, p.metadata); err != nil {
+		return wrap(p.Format(), "native.metadata", "", err)
+	}
+	return nil
+}
+
 func (p *Project) WithMetadata(metadata WireMetadata) (*Project, error) {
 	if p == nil || p.program == nil {
 		return nil, &Error{Code: "native.project", Message: "a checked project is required"}
 	}
 	if err := validateMetadata(p.program, metadata); err != nil {
 		return nil, wrap(p.Format(), "native.metadata", "", err)
+	}
+	if p.Kind() == OpenAPIOperationsProject && (metadata.OpenAPI == nil || metadata.OpenAPI.Native == nil) {
+		return nil, &Error{Code: "native.metadata", Format: OpenAPI, Pointer: p.EntryResource(), Message: "an OpenAPI operations project must retain authoritative checked native operation bindings"}
 	}
 	copy := *p
 	copy.metadata = copyMetadata(metadata)
@@ -492,6 +505,9 @@ func (p *Project) ValidateJSON(input []byte) (failure error) {
 	defer recoverRegexEvaluation(p.Format(), &failure)
 	if p == nil || p.document == nil {
 		return &Error{Code: "native.project", Message: "a project is required"}
+	}
+	if err := p.requirePayloadRoot(); err != nil {
+		return err
 	}
 	if p.Format() == OpenAPI {
 		return p.validateOpenAPIJSON(input)
@@ -543,6 +559,9 @@ func (p *Project) ValidateJSON(input []byte) (failure error) {
 func (p *Project) Summary() string {
 	if p == nil {
 		return ""
+	}
+	if p.Kind() == OpenAPIOperationsProject {
+		return fmt.Sprintf("%s %s, operations %s", p.Format(), p.Version(), p.EntryResource())
 	}
 	return fmt.Sprintf("%s %s, root %s", p.Format(), p.Version(), p.root.TypeName)
 }

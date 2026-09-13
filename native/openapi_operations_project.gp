@@ -1,0 +1,43 @@
+package native
+
+import (
+    "net/url"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+)
+
+// OpenAPIOperationIngestOptions identifies an OpenAPI entry document and an
+// optional deterministic operation subset. Metadata may provide a complete
+// authoritative native operation binding instead of requesting derivation.
+type OpenAPIOperationIngestOptions struct { EntryResource string; OperationIDs []string; Metadata WireMetadata }
+
+func normalizeOpenAPIOperationOptions(options OpenAPIOperationIngestOptions)(OpenAPIOperationIngestOptions,error){
+    if options.EntryResource==""{options.EntryResource="urn:refine:openapi"};parsed,err:=url.Parse(options.EntryResource);if err!=nil||!parsed.IsAbs()||parsed.Fragment!=""{return options,&Error{Code:"native.resource",Format:OpenAPI,Message:"EntryResource must be an absolute URI without a fragment"}}
+    if len(options.OperationIDs)>4096{return options,&Error{Code:"native.limit",Format:OpenAPI,Message:"at most 4,096 operation IDs may be selected"}};options.OperationIDs=append([]string(nil),options.OperationIDs...);options.Metadata=copyMetadata(options.Metadata);return options,nil
+}
+
+// IngestOpenAPIOperations ingests an operations-only OpenAPI document. It does
+// not add a components object, synthetic Schema Object, or payload root.
+func IngestOpenAPIOperations(input []byte,options OpenAPIOperationIngestOptions)(*Project,error){options,err:=normalizeOpenAPIOperationOptions(options);if err!=nil{return nil,err};if len(input)>64<<20{return nil,&Error{Code:"native.resource",Format:OpenAPI,Pointer:options.EntryResource,Message:"resource bundle exceeds 64 MiB"}};return ingestOpenAPIOperationResources([]Resource{{URI:options.EntryResource,Source:string(input)}},options,nil)}
+
+// IngestOpenAPIOperationResources validates references only against the
+// supplied immutable resource set. EntryResource selects the OpenAPI document;
+// every resource URI and byte string is retained in caller order.
+func IngestOpenAPIOperationResources(resources []Resource,options OpenAPIOperationIngestOptions)(*Project,error){options,err:=normalizeOpenAPIOperationOptions(options);if err!=nil{return nil,err};return ingestOpenAPIOperationResources(resources,options,nil)}
+
+type openAPIOperationSource struct { source string;program *language.Program;entry string;files []language.SourceFile }
+
+func ingestOpenAPIOperationResources(resources []Resource,options OpenAPIOperationIngestOptions,bundled *openAPIOperationSource)(*Project,error){
+    if len(resources)==0{return nil,&Error{Code:"native.resource",Format:OpenAPI,Message:"at least one resource is required"}};if len(resources)>10000{return nil,&Error{Code:"native.resource",Format:OpenAPI,Message:"at most 10,000 resources may be supplied"}}
+    ordered:=make([]Resource,len(resources));byURI:=map[string][]byte{};total:=0;for i,resource:=range resources{if len(resource.Source)>(64<<20)-total{return nil,&Error{Code:"native.resource",Format:OpenAPI,Message:"resource bundle exceeds 64 MiB"}};total+=len(resource.Source);parsed,err:=url.Parse(resource.URI);if err!=nil||!parsed.IsAbs()||parsed.Fragment!=""{return nil,&Error{Code:"native.resource",Format:OpenAPI,Pointer:resource.URI,Message:"resource URI must be absolute without a fragment"}};if _,duplicate:=byURI[resource.URI];duplicate{return nil,&Error{Code:"native.resource",Format:OpenAPI,Pointer:resource.URI,Message:"duplicate resource URI"}};ordered[i]=Resource{URI:resource.URI,Source:resource.Source};byURI[resource.URI]=[]byte(resource.Source)}
+    document,err:=validateOpenAPIDocumentResources(byURI,options.EntryResource);if err!=nil{return nil,err};source:="";var program *language.Program;languageEntry:="";languageFiles:=[]language.SourceFile(nil)
+    if bundled!=nil{if options.Metadata.OpenAPI==nil||options.Metadata.OpenAPI.Native==nil{return nil,&Error{Code:"native.bundle",Format:OpenAPI,Pointer:options.EntryResource,Message:"version 2 operations bundles require complete authoritative native OpenAPI bindings; bindings are never rederived while loading a bundle"}};source=bundled.source;program=bundled.program;languageEntry=bundled.entry;languageFiles=append([]language.SourceFile(nil),bundled.files...)}else if annotation,ok:=openAPIOperationsAnnotation(document);ok{if annotation.Root!=""{return nil,&Error{Code:"native.root",Format:OpenAPI,Pointer:annotation.Pointer+"/root",Message:"an operations-only OpenAPI annotation must not declare a payload root"}};source=annotation.Source;if annotation.HasMetadata{options.Metadata,err=mergeAnnotationMetadata(OpenAPI,options.Metadata,annotation);if err!=nil{return nil,err}}}
+    if program==nil{program,err=language.Compile(source);if err!=nil{return nil,wrap(OpenAPI,"native.projection","",err)}};if err:=validateMetadata(program,options.Metadata);err!=nil{return nil,wrap(OpenAPI,"native.metadata","",err)}
+    project:=&Project{document:document,target:operationProjectTarget(options.EntryResource),source:source,program:program,metadata:copyMetadata(options.Metadata),resources:ordered,languageEntry:languageEntry,languageFiles:languageFiles,jsonOrigins:map[string]*provenance.JSONSchema{},nativeUnitSources:map[string]string{},nativeUnitsInEditable:map[string]bool{}}
+    if options.Metadata.OpenAPI!=nil&&options.Metadata.OpenAPI.Native!=nil{if len(options.OperationIDs)>0{return nil,&Error{Code:"native.metadata",Format:OpenAPI,Pointer:options.EntryResource,Message:"OperationIDs cannot override embedded or configured authoritative native operation bindings"}};return validateProject(project)}
+    if options.Metadata.OpenAPI!=nil{return nil,&Error{Code:"native.metadata",Format:OpenAPI,Pointer:options.EntryResource,Message:"operations-only ingestion requires complete native OpenAPI bindings or automatic derivation without existing OpenAPI metadata"}}
+    return project.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{OperationIDs:options.OperationIDs})
+}
+
+func openAPIOperationsAnnotation(document *Document)(Annotation,bool){if document==nil{return Annotation{},false};for _,annotation:=range document.Annotations(){if annotation.Pointer=="/x-refine"{return annotation,true}};return Annotation{},false}

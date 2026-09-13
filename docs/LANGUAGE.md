@@ -39,6 +39,15 @@ Boolean expressions within a clause. Optional per-clause metadata uses `@code`,
 `@message`, and positive integer `@steps`. This metadata syntax makes the agreed
 behavior concrete; it does not make metadata mandatory.
 
+An optional module header such as `@limits total 1000000 clause 100000`
+declares schema-wide logical evaluation limits. `total` bounds structural
+validation and all clauses together; `clause` is the default for each `where`
+without its own `@steps`. Either component may be omitted. Authored values are
+positive canonical unsigned 64-bit decimals. A linked import graph takes the
+component-wise minimum of all explicitly declared reachable values; an absent
+component does not constrain another module. Caller limits can tighten but
+never relax the effective schema limits.
+
 `import "relative/path.refine"` is parsed and formatted without file access.
 The standalone static checker currently refuses unresolved imports. The bundler
 and multi-module compilation stage remain required work.

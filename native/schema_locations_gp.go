@@ -128,18 +128,21 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 		}
 		return nil
 	}
-	rootDoc, ok := docs[p.root.Resource]
+	entry := p.EntryResource()
+	rootDoc, ok := docs[entry]
 	if !ok {
-		return fmt.Errorf("root resource is absent")
+		return fmt.Errorf("OpenAPI entry resource is absent")
 	}
-	rootIsOpenAPI := false
-	if _, ok := rootDoc.Root().Lookup("openapi"); ok {
-		rootIsOpenAPI = true
+	if _, isOpenAPI := rootDoc.Root().Lookup("openapi"); !isOpenAPI {
+		return fmt.Errorf("OpenAPI entry resource is not an OpenAPI document")
 	}
-	if rootIsOpenAPI && !strings.HasPrefix(p.root.Pointer, "/components/schemas/") {
-		return fmt.Errorf("selected OpenAPI root must be a Schema Object under /components/schemas")
+	seeds := []ResourceSelector{}
+	if p.HasPayloadRoot() {
+		if !strings.HasPrefix(p.root.Pointer, "/components/schemas/") {
+			return fmt.Errorf("selected OpenAPI root must be a Schema Object under /components/schemas")
+		}
+		seeds = append(seeds, p.root)
 	}
-	seeds := []ResourceSelector{p.root}
 	if p.openAPIOperations != nil {
 		for _, operation := range p.openAPIOperations.catalog.Operations {
 			for _, part := range operation.RequestParts {
@@ -151,6 +154,9 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 				}
 			}
 		}
+	}
+	if len(seeds) == 0 {
+		return fmt.Errorf("OpenAPI project has no selected payload or checked operation Schema Object locations")
 	}
 	for _, seed := range seeds {
 		doc, found := docs[seed.Resource]
@@ -166,7 +172,7 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 		}
 	}
 	for uri, doc := range docs {
-		if uri == p.root.Resource {
+		if uri == entry {
 			continue
 		}
 		if _, isOpenAPI := doc.Root().Lookup("openapi"); !isOpenAPI {

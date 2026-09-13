@@ -1756,3 +1756,77 @@ current implementation still performs no Maven deployment or product release.
   required Java 25 plus pinned Jackson/NetworkNT/Graal). It retained all native
   exactness/direction/immutability assertions. Other Java and Maven evidence was
   reused: those generator inputs and nongeneric fixtures did not change.
+- Checkpoint `db4931447712a766eeb1e1aad16156b4089d21c6` was pushed to `main`.
+  Its dry-run plan selected all 25 fuzz targets because the workflow changed;
+  the dry run launched no tests. CI run `34732738854` passed generation, the
+  complete race suite, vet and CLI gates on both platforms. Linux Java took
+  617.896s, native 158.029s and project/Maven 161.856s. macOS also completed all
+  25 fuzz campaigns successfully. Linux then failed `FuzzRuntimePackageNames`
+  at its ten-second fuzz deadline with only `context deadline exceeded`; no
+  failing input was reported. The overall CI run is therefore failed, not green.
+
+## Counted fuzz execution and remaining contract boundaries — in progress
+
+- The Linux fuzz result matches the upstream Go fuzz-deadline race in
+  [golang/go#75804](https://github.com/golang/go/issues/75804). Local Go 1.26.5
+  still has the affected deadline/error-suppression path. The test target has
+  no context/deadline logic, and the planner used plain `exec.Command`.
+  No successful suite or CI job was rerun, and no error is treated as success.
+- The planner now defaults to a requested 10,000-iteration campaign budget,
+  retains explicit duration opt-in, rejects conflicting/zero/out-of-range
+  options, and always emits a two-minute test timeout. JSON records the exact
+  execution policy; stderr prints each command. The focused argument/policy
+  table passed in 0.384s. One `FuzzRuntimePackageNames` campaign with
+  `-fuzztime=10000x -fuzzminimizetime=1000x -timeout=2m` passed in 0.681s
+  (10,030 executions including in-flight worker work). This verifies the new
+  counted path, not a retroactive success for the previous CI run.
+- Added checked module-level `@limits total N clause N` declarations, canonical
+  formatting, and component-wise minima across explicitly declared import
+  limits. Effective limits flow through Go and generated Java validation/read
+  boundaries, native bundles, explanations, and versioned syntax evidence.
+  Initial focused checks passed for language (0.243s), analysis (0.460s),
+  explanations (0.714s), and the Java schema-limit harness (1.780s). The native
+  bundle case shared the operations selection below, not a separate rerun.
+- Clause diagnostics now identify statically visible `it` field projections,
+  with source-order deduplication and conservative enclosing-path fallback for
+  opaque helpers or bounded extraction. A compound predicate still produces
+  one diagnostic. Initial language selection passed in 0.319s; generated Java
+  contract and inline-refinement harnesses passed in 5.839s. Independent review
+  identified runtime prefix amplification and missing legacy runtime overloads;
+  those are being corrected before the shared integration gate.
+- Added native operations-only OpenAPI ingestion without inventing a payload
+  root or `components/schemas` entry. Original resources and URI identities are
+  retained; edited predicates survive v2 bundles and refined exports. Rooted
+  projects retain the v1 bundle shape. The eight-anchor native selection passed
+  in 0.299s. Review fixes reran only the zero/invalid-project bundle rejection
+  anchor (0.263s) and the v2 edited-authority anchor (0.232s). A v2 bundle missing
+  authoritative native bindings now rejects instead of silently deriving a new
+  contract from replacement source.
+- Operations-only project/Maven assembly remains explicitly unsupported until
+  operation-aware generated property tests are integrated. Both normal and
+  `no-codegen` assembly currently reject early and emit no output; the focused
+  project guard test passed in 0.368s. Native ingestion, validation and export
+  support must not be confused with completed CLI/project assembly support.
+- Runtime diagnostic paths now preflight the complete prefixed output against
+  a one-MiB UTF-8 byte cap before concatenating strings. Go/Java use the same
+  scalar-Unicode byte accounting, including supplementary characters; this
+  resource bound does not change language string-length semantics. The focused
+  language race anchor passed in 1.271s. A Java test-only reflection target was
+  corrected from the outer runtime to its private validator; the two affected
+  Java race anchors then passed in 9.966s. That final focused run overlapped
+  the root integration gate because its handoff arrived late; no additional
+  focused rerun followed. Future gate starts must wait for the owner's explicit
+  green/frozen handoff, not merely completion of shared generation.
+- Restored the legacy six-argument `Rule` constructor and all caller-only public
+  runtime validation/structure/read overloads as delegates. Generated contracts
+  retain schema-aware limits. The existing schema-limit harness compiles and
+  executes every restored method and passed in 1.411s. Whole-tree GoPlus
+  generation consistency, vet and diff checks passed before the integration
+  run; the subsequent reflection correction changed only its generated test.
+- The single frozen local integration command from TESTING.md passed with
+  required Java 25, pinned JetCheck/Jackson/Avro/NetworkNT/Graal dependencies,
+  and required Maven 3.9.16. `go test -race -timeout=20m ./...` passed every
+  package: Java 210.762s, native 37.459s, project/Maven 33.407s, language 6.932s,
+  and CLI 6.147s. This includes the existing Maven regeneration/reproducibility
+  lifecycle and all checked-in fuzz seeds, not extra local fuzz campaigns.
+  No package or Maven rerun followed the successful integration result.

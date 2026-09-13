@@ -2,6 +2,7 @@ package native
 
 import (
     "errors"
+    "net/url"
     "sort"
 
     "goforge.dev/refine/analysis"
@@ -25,4 +26,6 @@ func (p *Project) SchemaChecks()analysis.SchemaReport{if p==nil{return analysis.
 // rejects; impossible unused declarations remain reported without making an
 // inhabitable project fail. Conservative unknowns remain inspectable. Avro's
 // exact reader-default checks run only after this scoped language gate.
-func validateProject(p *Project)(*Project,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};report,err:=analysis.CheckSchemaRoots(p.program,SchemaEntrypoints(p.root.TypeName,p.metadata),validation.Limits{});p.schemaChecks=copySchemaReport(report);if err!=nil{var proof *analysis.SchemaError;if errors.As(err,&proof){return nil,&Error{Code:"native.schema",Format:p.Format(),Pointer:proof.Type,Message:proof.Error(),Cause:err}};return nil,wrap(p.Format(),"native.schema","",err)};checked,err:=validateAvroRefinementDefaults(p);if err!=nil{return nil,err};return validateOpenAPINativeBindings(checked)}
+func validateProject(p *Project)(*Project,error){if p==nil||p.program==nil{return nil,&Error{Code:"native.project",Message:"a checked project is required"}};if err:=normalizeAndValidateProjectTarget(p);err!=nil{return nil,err};root:="";if p.HasPayloadRoot(){root=p.root.TypeName};report,err:=analysis.CheckSchemaRoots(p.program,SchemaEntrypoints(root,p.metadata),validation.Limits{});p.schemaChecks=copySchemaReport(report);if err!=nil{var proof *analysis.SchemaError;if errors.As(err,&proof){return nil,&Error{Code:"native.schema",Format:p.Format(),Pointer:proof.Type,Message:proof.Error(),Cause:err}};return nil,wrap(p.Format(),"native.schema","",err)};checked,err:=validateAvroRefinementDefaults(p);if err!=nil{return nil,err};return validateOpenAPINativeBindings(checked)}
+
+func normalizeAndValidateProjectTarget(p *Project)error{target:=normalizedProjectTarget(p.target,p.root);switch target.Kind{case PayloadProject:if target.Root!=p.root||target.Resource!=p.root.Resource||p.root.Resource==""||p.root.TypeName==""{return &Error{Code:"native.root",Format:p.Format(),Message:"payload project target must exactly identify its selected root"}};p.target=target;case OpenAPIOperationsProject:parsed,err:=url.Parse(target.Resource);if p.Format()!=OpenAPI||err!=nil||!parsed.IsAbs()||parsed.Fragment!=""||target.Root!=(ResourceSelector{})||p.root!=(ResourceSelector{}){return &Error{Code:"native.root",Format:p.Format(),Pointer:target.Resource,Message:"operations project target must identify one absolute OpenAPI entry resource and must not contain a payload root"}};found:=false;for _,resource:=range p.resources{if resource.URI==target.Resource{found=true;break}};if !found{return &Error{Code:"native.resource",Format:OpenAPI,Pointer:target.Resource,Message:"OpenAPI entry resource is absent"}};p.target=target;default:return &Error{Code:"native.project",Format:p.Format(),Message:"unknown project target kind"}};return nil}

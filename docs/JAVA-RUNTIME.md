@@ -47,6 +47,16 @@ contextual-keyword packages with Java 25.
   every enclosing meter and the overall budget once. Instances belong to one
   execution; they are not shared mutable global state.
 
+Generated contracts embed the checked module's effective `@limits total N clause
+N` policy as immutable `Budget.Limits`. Contract, payload-handle, model, read,
+update, and serde validation pass schema limits separately from caller limits.
+Zero in generated metadata means the documented defaults of 1,000,000 total and
+100,000 per clause; caller values only tighten. An explicit per-where `@steps`
+replaces the schema clause default while retaining the schema total and caller
+caps. The low-level `ContractRuntime` caller-limit-only overloads remain source
+compatible and delegate with those default schema limits; generated `Contract`
+entry points use the checked schema limits instead.
+
 These are runtime primitives; [semantic models](JAVA-MODELS.md) are emitted by a
 separate generation API. The initial
 generated contract validator below uses them and precharges literal expansion;
@@ -119,6 +129,14 @@ String canonical = Contract.showWithoutValidation(age); // "21", without checkin
 typed view and diagnostics. The input is never modified, even when the typed
 record view excludes extras or supplies an absent optional field. This API uses
 explicit language payload constructors, **not JSON or Avro wire conventions**.
+Generated rule metadata carries the same statically extracted affected paths as
+the Go validator. Direct `it` projection chains are prefixed with the runtime
+enclosing record/list/union path; compound clauses retain source-ordered distinct
+paths, while opaque named-function and collection internals conservatively keep
+the enclosing or directly supplied container path. No runtime payload value is
+used to construct this metadata. Static extraction and runtime prefixing each
+preflight fixed work and 1 MiB aggregate UTF-8 byte ceilings before allocating
+their result; exhaustion conservatively reports only the existing enclosing path.
 
 `GenerateValidatorWithTypes(program, packageName, className, targets)` additionally
 registers closed payload-type expressions under application-chosen labels:

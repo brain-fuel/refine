@@ -153,7 +153,7 @@ func (p *Program) readDataType(rootType *Type,text value.Text,caller validation.
 }
 
 func (p *Program) readDataTypeMode(rootType *Type,text value.Text,caller validation.Limits,withoutRefinements bool)(data value.Data,report validation.Report) {
-    e:=newEvaluator(p.module,validation.NewBudget(validation.Limits{},caller).BeginStructure())
+    e:=newEvaluator(p.module,validation.NewBudget(p.validationLimits(),caller).BeginStructure())
     defer func(){if caught:=recover();caught!=nil{
         if failure,ok:=caught.(*evalFailure);ok{
             detail:=validation.Diagnostic{Code:failure.code,Paths:[]string{""},Message:failure.message}

@@ -13,6 +13,7 @@ func normalizeContract(c Contract)(Contract,error){
     if c.NativeProject==nil{return c,nil}
     if c.Program!=nil{return c,fmt.Errorf("project.native: Program and NativeProject are mutually exclusive")}
     if projectWireConfigured(c.Wire){return c,fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")}
+    if !c.NativeProject.HasPayloadRoot(){return c,fmt.Errorf("project.native: operations-only OpenAPI project assembly is not yet supported; normal code generation must include operation-aware generated property tests")}
     root:=c.NativeProject.Root().TypeName;if c.RootType!=""&&c.RootType!=root{return c,fmt.Errorf("project.native: configured root disagrees with bundled root")};c.RootType=root
     program,err:=language.Compile(c.NativeProject.EditableSource());if err!=nil{return c,err};c.Program=program;c.Wire=c.NativeProject.Metadata()
     if c.JavaPackage==""&&c.LogicalNamespace==""{c.LogicalNamespace=c.Wire.PublicationNamespace}

@@ -1,0 +1,25 @@
+package native
+
+// ProjectKind distinguishes a traditional single-payload schema project from
+// an OpenAPI document whose checked entrypoints are its operations. A project
+// never has both target forms.
+type ProjectKind string
+
+const PayloadProject ProjectKind = "payload"
+const OpenAPIOperationsProject ProjectKind = "openapi-operations"
+
+// ProjectTarget is a value snapshot of the immutable native selection.
+// Payload projects have a nonzero Root and Resource == Root.Resource.
+// Operation projects have an absolute OpenAPI entry Resource and a zero Root.
+type ProjectTarget struct { Kind ProjectKind `json:"kind"`; Resource string `json:"resource,omitempty"`; Root ResourceSelector `json:"root,omitempty"` }
+
+func payloadProjectTarget(root ResourceSelector)ProjectTarget{return ProjectTarget{Kind:PayloadProject,Resource:root.Resource,Root:root}}
+func operationProjectTarget(resource string)ProjectTarget{return ProjectTarget{Kind:OpenAPIOperationsProject,Resource:resource}}
+func normalizedProjectTarget(target ProjectTarget,root ResourceSelector)ProjectTarget{if target.Kind==""&&root!=(ResourceSelector{}){return payloadProjectTarget(root)};return target}
+
+func (p *Project)Target()ProjectTarget{if p==nil{return ProjectTarget{}};return normalizedProjectTarget(p.target,p.root)}
+func (p *Project)Kind()ProjectKind{if p==nil{return ""};return p.Target().Kind}
+func (p *Project)HasPayloadRoot()bool{return p!=nil&&p.Kind()==PayloadProject&&p.root.Resource!=""&&p.root.TypeName!=""}
+func (p *Project)EntryResource()string{if p==nil{return ""};return p.Target().Resource}
+
+func (p *Project)requirePayloadRoot()error{if p==nil{return &Error{Code:"native.project",Message:"a project is required"}};if !p.HasPayloadRoot(){return &Error{Code:"native.root",Format:p.Format(),Pointer:p.EntryResource(),Message:"this OpenAPI operations project has no standalone payload root; use its checked request and response operation boundary"}};return nil}

@@ -53,7 +53,10 @@ public final class ContractRuntime {
     public record Arm(Pattern pattern, Expr body) {}
     public record Equation(List<Pattern> patterns, Expr body) { public Equation { patterns = List.copyOf(patterns); } }
     public record FunctionDef(Type signature, List<Equation> equations, List<Scope> scopes) { public FunctionDef { equations = List.copyOf(equations); scopes = List.copyOf(scopes); } }
-    public record Rule(String code, int offset, String predicate, Expr expression, Expr message, BigInteger steps) {}
+    public record Rule(String code, int offset, String predicate, Expr expression, Expr message, BigInteger steps, List<String> paths) {
+        public Rule { paths = List.copyOf(paths); }
+        public Rule(String code, int offset, String predicate, Expr expression, Expr message, BigInteger steps) { this(code, offset, predicate, expression, message, steps, List.of()); }
+    }
     public record Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names, Supplier<Type> inferred, List<Arm> arms, Type annotation) {
         public Expr { arguments = List.copyOf(arguments); names = List.copyOf(names); arms = List.copyOf(arms); }
         public Expr(String kind, String text, boolean flag, List<Expr> arguments, List<String> names) { this(kind, text, flag, arguments, names, null, List.of(), null); }
@@ -399,29 +402,41 @@ public final class ContractRuntime {
     }
 
     public static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, Map.of(), root, input, caller, true);
+        return validate(definitions, Map.of(), root, input, Budget.Limits.defaults(), caller, true);
     }
     public static Validation.Outcome validateStructure(Map<String, Definition> definitions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, Map.of(), root, input, caller, false);
+        return validate(definitions, Map.of(), root, input, Budget.Limits.defaults(), caller, false);
     }
     public static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, functions, root, input, caller, true);
+        return validate(definitions, functions, root, input, Budget.Limits.defaults(), caller, true);
     }
     public static Validation.Outcome validateStructure(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller) {
-        return validate(definitions, functions, root, input, caller, false);
+        return validate(definitions, functions, root, input, Budget.Limits.defaults(), caller, false);
     }
-    private static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits caller, boolean refinements) {
+    public static Validation.Outcome validate(Map<String, Definition> definitions, String root, Data input, Budget.Limits schema, Budget.Limits caller) {
+        return validate(definitions, Map.of(), root, input, schema, caller, true);
+    }
+    public static Validation.Outcome validateStructure(Map<String, Definition> definitions, String root, Data input, Budget.Limits schema, Budget.Limits caller) {
+        return validate(definitions, Map.of(), root, input, schema, caller, false);
+    }
+    public static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits schema, Budget.Limits caller) {
+        return validate(definitions, functions, root, input, schema, caller, true);
+    }
+    public static Validation.Outcome validateStructure(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits schema, Budget.Limits caller) {
+        return validate(definitions, functions, root, input, schema, caller, false);
+    }
+    private static Validation.Outcome validate(Map<String, Definition> definitions, Map<String, FunctionDef> functions, String root, Data input, Budget.Limits schema, Budget.Limits caller, boolean refinements) {
         Definition definition = root == null ? null : definitions.get(root);
         if (definition == null || !definition.parameters().isEmpty()) return new Validation.Invalid(List.of(
             new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a declared root type with no unbound type parameters.")), false);
-        return validateType(definitions,functions,new Type("named",root,List.of(),List.of(),List.of()),input,caller,refinements);
+        return validateType(definitions,functions,new Type("named",root,List.of(),List.of(),List.of()),input,schema,caller,refinements);
     }
     // Package-private execution of statically checked emitted type metadata.
     // The generated contract exposes immutable handles, not an AST ingestion API.
-    static Validation.Outcome validateType(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Type target, Data input, Budget.Limits caller, boolean refinements) {
+    static Validation.Outcome validateType(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Type target, Data input, Budget.Limits schema, Budget.Limits caller, boolean refinements) {
         if (target == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.root", List.of(""), "", "Choose a checked payload type.")), false);
         if (input == null) return new Validation.Invalid(List.of(new Validation.Diagnostic("validation.structure", List.of(""), "", "Java null is not a language value; use an explicit optional or nullable constructor.")), false);
-        return new Validator(definitions, functions, caller, refinements).run(target, input);
+        return new Validator(definitions, functions, schema, caller, refinements).run(target, input);
     }
     private static final class Validator {
         final Map<String, Definition> definitions;
@@ -433,8 +448,8 @@ public final class ContractRuntime {
         final Eval enclosing;
         final Work work;
         String currentPath = "";
-        Validator(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Budget.Limits caller, boolean refinements) {
-            this.definitions = definitions; this.functions = functions; this.refinements = refinements; budget = new Budget(Budget.Limits.defaults(), caller); structure = new Eval(budget.beginStructure(), definitions, functions); enclosing = null; work = new Work();
+        Validator(Map<String, Definition> definitions, Map<String, FunctionDef> functions, Budget.Limits schema, Budget.Limits caller, boolean refinements) {
+            this.definitions = definitions; this.functions = functions; this.refinements = refinements; budget = new Budget(schema, caller); structure = new Eval(budget.beginStructure(), definitions, functions); enclosing = null; work = new Work();
         }
         Validator(Eval enclosing, Work work) {
             this.enclosing = enclosing; this.structure = enclosing; this.work = work;
@@ -635,6 +650,21 @@ public final class ContractRuntime {
                 env = bindings(definition, type.arguments(), env); type = definition.body();
             }
         }
+        private static final int AFFECTED_PATH_WORK_LIMIT=1_000_000;
+        private static final int AFFECTED_PATH_UTF8_LIMIT=1<<20;
+        private static int utf8SizeAtMost(String text,int limit){
+            int used=0;for(int i=0;i<text.length();i++){char unit=text.charAt(i);int width;
+                if(unit<=0x7f)width=1;else if(unit<=0x7ff)width=2;else if(Character.isHighSurrogate(unit)&&i+1<text.length()&&Character.isLowSurrogate(text.charAt(i+1))){width=4;i++;}else width=3;
+                if(width>limit-used)return limit+1;used+=width;
+            };return used;
+        }
+        private static List<String> affectedPaths(String enclosing,List<String> relative) {
+            if(relative.isEmpty()||relative.size()>AFFECTED_PATH_WORK_LIMIT)return List.of(enclosing);
+            int enclosingUnits=utf8SizeAtMost(enclosing,AFFECTED_PATH_UTF8_LIMIT);if(enclosingUnits>AFFECTED_PATH_UTF8_LIMIT)return List.of(enclosing);
+            long used=(long)enclosingUnits*relative.size();if(used>AFFECTED_PATH_UTF8_LIMIT)return List.of(enclosing);
+            for(String path:relative){int remaining=AFFECTED_PATH_UTF8_LIMIT-(int)used;int units=utf8SizeAtMost(path,remaining);if(units>remaining)return List.of(enclosing);used+=units;}
+            var result=new ArrayList<String>(relative.size());for(String path:relative)result.add(enclosing+path);return List.copyOf(result);
+        }
         void rule(Rule rule, Val input, String path, Map<String, Binding> types, int level, Runnable done) {
             String code = rule.code();
             if (code.isEmpty()) {
@@ -646,7 +676,8 @@ public final class ContractRuntime {
             String defaultMessage = "Value must satisfy the declared condition: " + rule.predicate() + ".", diagnosticCode = code;
             Eval evaluator = new Eval(enclosing == null ? budget.beginClause(rule.steps()) : enclosing.meter.nested(rule.steps()), definitions, functions);
             int start = enclosing == null ? 0 : level; evaluator.depth = start; var env = Map.of("it", input); Eval.Engine engine = evaluator.new Engine(work);
-            Consumer<String> violated = message -> { checks.add(new Validation.Violated(new Validation.Diagnostic(diagnosticCode, List.of(path), rule.predicate(), message))); work.later(done); };
+            List<String> paths=affectedPaths(path,rule.paths());
+            Consumer<String> violated = message -> { checks.add(new Validation.Violated(new Validation.Diagnostic(diagnosticCode, paths, rule.predicate(), message))); work.later(done); };
             work.<Val>attempt(receiver -> engine.visit(rule.expression(), env, types, start, receiver), result -> {
                 if (((BoolValue)result).value()) { checks.add(new Validation.Satisfied()); work.later(done); return; }
                 if (rule.message() == null) { work.complete(violated, defaultMessage); return; }
@@ -656,7 +687,7 @@ public final class ContractRuntime {
                     work.complete(violated, message);
                 }, failure -> work.complete(violated, defaultMessage));
             }, failure -> {
-                checks.add(new Validation.Undecided(new Validation.Diagnostic(diagnosticCode, List.of(path), rule.predicate(), "Could not determine whether the condition holds: " + failure.code + ": " + failure.getMessage() + "."))); work.later(done);
+                checks.add(new Validation.Undecided(new Validation.Diagnostic(diagnosticCode, paths, rule.predicate(), "Could not determine whether the condition holds: " + failure.code + ": " + failure.getMessage() + "."))); work.later(done);
             });
         }
     }

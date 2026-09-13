@@ -91,7 +91,7 @@ func (t *PayloadType) validateData(data value.Data, caller validation.Limits, wi
 	if t == nil || t.typ == nil || t.program == nil {
 		return invalidPayloadType()
 	}
-	v := &payloadValidator{program: t.program, declarations: make(map[string]TypeDecl), budget: validation.NewBudget(validation.Limits{}, caller), withoutRefinements: withoutRefinements}
+	v := &payloadValidator{program: t.program, declarations: make(map[string]TypeDecl), budget: validation.NewBudget(t.program.validationLimits(), caller), withoutRefinements: withoutRefinements}
 	for _, decl := range t.program.module.Types {
 		v.declarations[decl.Name] = decl
 	}

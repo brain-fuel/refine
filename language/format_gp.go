@@ -220,6 +220,16 @@ func Format(module *Module) string {
 	if len(module.Imports) > 0 {
 		b.WriteByte('\n')
 	}
+	if module.Limits.Total != 0 || module.Limits.Clause != 0 {
+		b.WriteString("@limits")
+		if module.Limits.Total != 0 {
+			b.WriteString(" total " + strconv.FormatUint(module.Limits.Total, 10))
+		}
+		if module.Limits.Clause != 0 {
+			b.WriteString(" clause " + strconv.FormatUint(module.Limits.Clause, 10))
+		}
+		b.WriteString("\n\n")
+	}
 	for _, declaration := range module.Types {
 		name := declaration.Name
 		if len(declaration.Parameters) > 0 {

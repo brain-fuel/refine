@@ -180,9 +180,12 @@ turn absence into null/default, or strip constraints silently.
 
 ## Editable native projects and bundles
 
-`IngestProject` combines one validated native document with a required
+`IngestProject` combines one validated native document with a required payload
 `ResourceSelector` and produces checked editable source. `IngestProjectResources`
-does the same for an ordered, explicit resource set. Resource IDs must be
+does the same for an ordered, explicit resource set. OpenAPI documents that have
+operations but no payload schema root use `IngestOpenAPIOperations` or
+`IngestOpenAPIOperationResources`; their target is the entry resource and they do
+not acquire a fake component schema or payload root. Resource IDs must be
 absolute URIs without fragments. Resolution is confined to supplied bytes:
 there is no filesystem or network fallback. A bundle accepts at most 10,000
 resources and 64 MiB total, in addition to each parser's per-document limits.
@@ -394,11 +397,12 @@ local named definitions in the Schema Object's containing explicit resource;
 cross-resource Schema Object `$ref` projection remains an authored-source case,
 even though the native validator continues to resolve and enforce such bundled
 references. An explicit operation-ID selection may intentionally bind a subset.
-Callback operations, webhooks, and OpenAPI documents without the separately
-required `/components/schemas/...` project root remain outside this helper.
-Those cases continue to use authored checked source and bindings where the
-existing semantic boundary can represent them; rootless OpenAPI projects need a
-later project-model change.
+Callback operations and webhooks remain outside this helper. Operations-only
+OpenAPI projects need no `/components/schemas/...` payload root: direct ingest
+derives checked source and authoritative bindings, while annotation/configured
+source may supply complete bindings. Root-only APIs such as `PayloadType` and
+`ValidateJSON` reject these projects; operation request/response boundaries use
+the entry-resource target instead.
 
 For OpenAPI 3.0, a required `readOnly` property is response-only and a required
 `writeOnly` property is request-only. Checked operation compilation creates
@@ -499,14 +503,18 @@ imports only from the supplied bounded source map. `PayloadType` exposes the
 checked root to Java and other generators.
 
 `Project.Bundle` emits one versioned JSON distribution containing the exact text
-of every native resource and its URI, root selector, editable source, original
-language import graph where present, and wire metadata. `ParseBundle` revalidates
-native resources, rebuilds and checks the language graph, verifies its flattened
-source, restores explicit per-resource native constraint-unit edits, and
-rechecks metadata. Bundle JSON duplicate keys are rejected.
+of every native resource and its URI, the payload-root or operations-entry target,
+editable source, original language import graph where present, and wire metadata.
+Rooted projects retain the version-1 root form. Operations-only projects use a
+version-2 target and must carry complete authoritative native operation bindings;
+`ParseBundle` never silently rederives missing bindings from bundled resources.
+It revalidates native resources, rebuilds and checks the language graph, verifies
+its flattened source, restores explicit per-resource native constraint-unit
+edits, and rechecks metadata. Bundle JSON duplicate keys are rejected.
 
 `Project.Export(LowerOptions)` emits an immutable same-format `ProjectExport`.
-The result retains resource URI/order, root selector, metadata, the exact
+The result retains resource URI/order, its payload-root or operations-entry
+target, metadata, the exact
 resource-scoped native constraint sources, complete English companion text, and
 an explicit loss list. JSON Schema exports start from the
 effective provenance-aware resources; opaque and untouched native keywords are

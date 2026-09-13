@@ -4,6 +4,8 @@ import (
     "fmt"
     "strconv"
     "strings"
+
+    "goforge.dev/refine/validation"
 )
 
 // Program owns a parsed and statically checked module. It exposes no mutable
@@ -12,6 +14,8 @@ import (
 type Program struct { module *Module }
 func (p *Program) Source() string { return p.module.Source }
 func (p *Program) Formatted() string { return Format(p.module) }
+func (p *Program)SchemaLimits()validation.Limits{if p==nil||p.module==nil{return validation.Limits{}};limits:=p.module.Limits;return validation.Limits{Total:limits.Total,Clause:limits.Clause}}
+func (p *Program)validationLimits()validation.Limits{return p.SchemaLimits()}
 func (p *Program) Syntax() *Module {
     // A fresh parse prevents callers from mutating the checked representation.
     copy, err := Parse(p.module.Source)

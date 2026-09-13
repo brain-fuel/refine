@@ -17,6 +17,7 @@ type payloadValidator struct {
     budget *validation.Budget
     structure *evaluator
     checks []validation.Check
+    pathCache map[*Expr][]string
     currentPath string
     enclosing *evaluator
     withoutRefinements bool
@@ -40,7 +41,7 @@ func (p *Program) ValidateDataWithoutRefinements(root string,data value.Data,cal
 }
 
 func (p *Program) validateData(root string,data value.Data,caller validation.Limits,withoutRefinements bool) validation.Report {
-    v:=&payloadValidator{program:p,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(validation.Limits{},caller),withoutRefinements:withoutRefinements}
+    v:=&payloadValidator{program:p,declarations:make(map[string]TypeDecl),budget:validation.NewBudget(p.validationLimits(),caller),withoutRefinements:withoutRefinements}
     for _,decl:=range p.module.Types {v.declarations[decl.Name]=decl}
     decl,found:=v.declarations[root]
     if !found || len(decl.Parameters)!=0 {
@@ -236,7 +237,8 @@ func (v *payloadValidator) rule(rule Where,input evalValue,path string,types map
     predicate:=FormatExpression(rule.Predicate)
     code:=rule.Code
     if code==""{digest:=sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s",path,rule.At.Start.Offset,predicate)));code=fmt.Sprintf("refine.%x",digest[:8])}
-    detail:=validation.Diagnostic{Code:code,Paths:[]string{path},Predicate:predicate,Message:"Value must satisfy the declared condition: "+predicate+"."}
+    if v.pathCache==nil{v.pathCache=make(map[*Expr][]string)};relative,found:=v.pathCache[rule.Predicate];if !found{relative=AffectedPaths(rule.Predicate,"");v.pathCache[rule.Predicate]=relative}
+    detail:=validation.Diagnostic{Code:code,Paths:prefixAffectedPaths(relative,path),Predicate:predicate,Message:"Value must satisfy the declared condition: "+predicate+"."}
     var meter *validation.Meter
     depth:=0
     if v.enclosing!=nil{meter=v.enclosing.meter.Nested(rule.Steps);depth=v.enclosing.depth}else{meter=v.budget.BeginClause(rule.Steps)}

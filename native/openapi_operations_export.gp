@@ -1,0 +1,25 @@
+package native
+
+import (
+    "encoding/json"
+    "fmt"
+    "strings"
+
+    "goforge.dev/refine/explain"
+)
+
+// exportOpenAPIOperations preserves the complete operation document and its
+// offline resource closure. Ordinary mode adds self-contained English and
+// explicitly reports that Refine operation assembly/predicates are not native
+// OpenAPI assertions. Refined mode embeds checked source and metadata only at
+// the existing top-level extension point; it never creates components/schemas.
+func (p *Project)exportOpenAPIOperations(options LowerOptions,mode ExportMode)(*ProjectExport,error){
+    if p.Format()!=OpenAPI||p.openAPIOperations==nil{return nil,&Error{Code:"native.enforcement",Format:p.Format(),Message:"an operations-only export requires checked native OpenAPI operation bindings"}}
+    explained,err:=explain.Generate(p.program);if err!=nil{return nil,wrap(OpenAPI,"native.export","",err)};losses:=projectExplanationLosses(explained);companion:=explained.Markdown();companion,losses,err=projectOpenAPIExplanation(p.program,p.metadata,companion,losses);if err!=nil{return nil,wrap(OpenAPI,"native.explain","",err)};if mode==Ordinary&&len(losses)>0&&!options.AllowDocumentedLoss{return nil,&Error{Code:"native.unrepresentable",Format:OpenAPI,Message:fmt.Sprintf("%d refinement rule(s) require documented-loss permission in an ordinary operations export",len(losses))}}
+    resources:=p.Resources();entryIndex:=-1;for i,resource:=range resources{if resource.URI==p.EntryResource(){entryIndex=i;break}};if entryIndex<0{return nil,&Error{Code:"native.resource",Format:OpenAPI,Pointer:p.EntryResource(),Message:"OpenAPI entry resource is absent"}}
+    raw,err:=openAPIResourceJSON([]byte(resources[entryIndex].Source));if err!=nil{return nil,wrap(OpenAPI,"native.export",p.EntryResource(),err)};decoder:=json.NewDecoder(strings.NewReader(string(raw)));decoder.UseNumber();var document map[string]any;if err:=decoder.Decode(&document);err!=nil{return nil,wrap(OpenAPI,"native.export",p.EntryResource(),err)}
+    if mode==Refined{document["x-refine"]=map[string]any{"source":p.source,"metadata":p.Metadata()}}else{info,ok:=document["info"].(map[string]any);if !ok{return nil,&Error{Code:"native.export",Format:OpenAPI,Pointer:"/info",Message:"OpenAPI info object is absent"}};description:="Refine operation contract explanation:\n\n"+companion;if existing,ok:=info["description"].(string);ok&&existing!=""{description=existing+"\n\n"+description};info["description"]=description}
+    encoded,err:=json.MarshalIndent(document,"","  ");if err!=nil{return nil,wrap(OpenAPI,"native.export",p.EntryResource(),err)};resources[entryIndex]=Resource{URI:resources[entryIndex].URI,Source:string(append(encoded,'\n'))}
+    if mode==Ordinary{resources,err=ordinaryProjectResources(OpenAPI,resources,ResourceSelector{Resource:p.EntryResource()});if err==nil{byURI:=map[string][]byte{};for _,resource:=range resources{byURI[resource.URI]=[]byte(resource.Source)};_,err=validateOpenAPIDocumentResources(byURI,p.EntryResource())}}else{_,err=IngestOpenAPIOperationResources(resources,OpenAPIOperationIngestOptions{EntryResource:p.EntryResource()})};if err!=nil{return nil,&Error{Code:"native.export-invalid",Format:OpenAPI,Message:"exported operation resource set failed native validation: "+err.Error(),Cause:err}}
+    return &ProjectExport{format:OpenAPI,version:p.Version(),target:operationProjectTarget(p.EntryResource()),metadata:p.Metadata(),resources:resources,companion:companion,losses:append([]Loss(nil),losses...)},nil
+}

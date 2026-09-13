@@ -242,6 +242,11 @@ public final class ContractConformance {
                 var result = Contract.validate("Interval", raw);
                 require(!result.incomplete());
                 require(result.diagnostics().size() == (p.start() > p.end() ? 1 : 0) + (p.start() < 0 ? 1 : 0));
+                for(var diagnostic:result.diagnostics())switch(diagnostic.code()){
+                    case "interval.order" -> require(diagnostic.paths().equals(List.of("/start","/end")));
+                    case "interval.start" -> require(diagnostic.paths().equals(List.of("/start")));
+                    default -> throw new AssertionError("unexpected interval diagnostic");
+                }
                 return true;
             });
         // All generated trees fit the evaluator's documented depth/work caps.
@@ -285,6 +290,12 @@ public final class ContractConformance {
         try { copied.fields().clear(); throw new AssertionError("mutable payload escaped"); } catch (UnsupportedOperationException expected) {}
         // Caller-supplied numeric metadata never overrides the declared type.
         require(Contract.validate("Age", new Data.Number(Rational.of(-1), "UInt8")).state() == Validation.State.INVALID);
+        var legacyRule = new ContractRuntime.Rule("legacy", 0, "False", new ContractRuntime.Expr("bool", "", false, List.of(), List.of()), null, java.math.BigInteger.ZERO);
+        require(legacyRule.paths().isEmpty());
+        var affected = Class.forName("example.contract.ContractRuntime$Validator").getDeclaredMethod("affectedPaths", String.class, List.class); affected.setAccessible(true);
+        require(affected.invoke(null, "/😀", List.of("/left", "/right")).equals(List.of("/😀/left", "/😀/right")));
+        String largeEnclosing = "/" + "😀".repeat(200_000); Object bounded = affected.invoke(null, largeEnclosing, List.of("/left", "/right"));
+        require(bounded instanceof List<?> paths && paths.size() == 1 && paths.getFirst() == largeEnclosing);
         try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
             for (int i = 0; i < 200; i++) { final int age = i - 100; futures.add(executor.submit(() -> require(

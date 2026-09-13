@@ -2,6 +2,7 @@ package language
 
 import (
     "encoding/json"
+    "reflect"
     "strings"
     "sync"
     "testing"
@@ -31,7 +32,7 @@ type Child = Person
         if validation.StateName(report.State())!=tc.state || len(report.Diagnostics())!=tc.count {t.Fatalf("%d: %+v",tc.age,report.Diagnostics())}
         if tc.age==18 {
             diagnostic:=report.Diagnostics()[0]
-            if diagnostic.Code!="person.child_age_range" || diagnostic.Message!="Expected 0 <= age < 18; got 18" || len(diagnostic.Paths)!=1 || diagnostic.Paths[0]!="" {t.Fatalf("wrong custom diagnostic: %+v",diagnostic)}
+            if diagnostic.Code!="person.child_age_range" || diagnostic.Message!="Expected 0 <= age < 18; got 18" || len(diagnostic.Paths)!=1 || diagnostic.Paths[0]!="/age" {t.Fatalf("wrong custom diagnostic: %+v",diagnostic)}
         }
         if tc.age == -1 && report.Diagnostics()[0].Paths[0]!="/age" {t.Fatal("lost nested field path")}
         age,_:=raw.Lookup("age");n,_:=age.Number();if n.Show()!=value.Integer(tc.age).Show(){t.Fatal("validation modified payload")}
@@ -122,7 +123,9 @@ func TestValidateDataFieldAndWholeRecordEquivalence(t *testing.T) {
         record,_:=value.Record([]value.DataField{{Name:"age",Value:integerPayload(age)}})
         a:=p.ValidateData("Field",record,validation.Limits{});b:=p.ValidateData("Whole",record,validation.Limits{})
         expected:="invalid";if age>=21{expected="valid"}
-        return validation.StateName(a.State())==expected && validation.StateName(b.State())==expected
+        if validation.StateName(a.State())!=expected||validation.StateName(b.State())!=expected{return false}
+        if age<21{return reflect.DeepEqual(a.Diagnostics()[0].Paths,[]string{"/age"})&&reflect.DeepEqual(b.Diagnostics()[0].Paths,[]string{"/age"})}
+        return true
     }
     if err:=quick.Check(property,&quick.Config{MaxCount:3000});err!=nil{t.Fatal(err)}
 }

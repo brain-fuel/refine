@@ -31,7 +31,8 @@ selection is evidence only for that selection, not a release-readiness claim.
    coherent feature batch; use it immediately for concurrency/transaction
    changes. Do not repeat the same selection after unrelated edits.
 7. Fuzz during development only for an affected parser/codec/evaluator, using
-   one named target and a stated duration. Fuzz campaigns are not deterministic
+   one named target and an explicit iteration budget (or deliberate duration).
+   Fuzz campaigns are not deterministic
    enumerations; their selected target, seed corpus and replayed failures are.
    Ordinary test runs already replay checked-in fuzz seeds.
 8. The coordinating agent owns whole-repository integration runs. Subagents
@@ -39,7 +40,7 @@ selection is evidence only for that selection, not a release-readiness claim.
    repeat their checks on unchanged inputs merely to obtain a second report.
 
 At an integration checkpoint, freeze source generation, then run generation
-consistency, `go test -race ./...`, and `go vet ./...` once with required Java and
+consistency, `go test -race -timeout=20m ./...`, and `go vet ./...` once with required Java and
 Maven dependencies provisioned. A failed check is rerun for its affected scope
 after the fix; expand that scope only if the fix changes other contracts. CI
 provides the separate Linux/macOS environment coverage. Module/toolchain pins,
@@ -54,7 +55,7 @@ Java harnesses on slower runners. Individual harness process limits still apply.
 
 If the real Maven lifecycle test already passed on the checkpoint's unchanged
 generator/dependency inputs, the local integration command may use
-`go test -race ./... -skip '^TestMavenRegenerationAndReproducibleArtifact$'`.
+`go test -race -timeout=20m ./... -skip '^TestMavenRegenerationAndReproducibleArtifact$'`.
 Record the reused Maven command/result alongside it. That test launches Maven
 and a separately built CLI, so enabling Go race instrumentation in its harness
 does not add race coverage to those processes. CI still runs the Maven check in
@@ -72,12 +73,22 @@ go run ./cmd/refine-testplan --base <baseline-commit-sha> --head HEAD
 ```
 
 The versioned JSON report lists changed paths, sorted package/target names,
-test input files, and selection reasons. Add `--run` to execute exactly that
-plan, with anchored fuzz names, no ordinary tests, ten seconds per campaign,
-and at most 1,000 minimization iterations. `--duration` changes the campaign
-duration; `--full` explicitly selects every discovered target. Campaign timing
-and generated inputs are stochastic; the selection, corpus, and failure replay
-are deterministic for the same commits, source tree, and build environment.
+test input files, selection reasons, and an `execution` policy. Add `--run` to
+execute that plan with anchored fuzz names, no ordinary tests, a requested
+10,000-iteration budget per campaign, a 1,000-iteration minimization budget, and
+an explicit two-minute Go test timeout. `--iterations` accepts 1 through 100,000.
+`--duration` deliberately selects wall-clock mode (1s through 1m) and conflicts
+with an explicitly supplied `--iterations`; `--full` selects every target.
+Campaign timing and generated inputs are stochastic. Parallel workers may
+finish in-flight work beyond the requested iteration count. Selection and
+requested budgets are deterministic for the same commits, tree, and build
+environment; retained failing inputs support deterministic replay.
+
+Counted mode avoids the Go 1.26 fuzz deadline race tracked in
+[golang/go#75804](https://github.com/golang/go/issues/75804). It does not suppress
+errors: any fuzz failure or test timeout aborts nonzero. Explicit duration mode
+can still encounter that upstream race on affected toolchains. There is no
+automatic retry of a failed target or rerun of successful campaigns.
 
 Targets are discovered from the build-selected Go test files, including newly
 added fuzzers. Production changes follow reverse `Imports`, `TestImports`, and
@@ -109,6 +120,30 @@ targets from the working tree, not by compiling an arbitrary historical tree.
 
 These are development selections, not substitutes for the integration gate.
 Extend a selection when a change adds a new test or affects another behavior.
+
+The schema-limit, diagnostic-path, and operations-only OpenAPI batch uses the
+following focused checks. Commands already run by the owning agent are reused;
+review fixes rerun only the affected anchors, not this whole list. Java commands
+use required Java 25 and the pinned dependency directories described below.
+
+```sh
+go test ./cmd/refine-testplan -run '^TestFuzzExecutionPolicyIsExplicitBoundedAndDeterministic$'
+go test ./language -run '^(TestSchemaLimitsParseFormatAndRejectMalformedDeclarations|TestImportedSchemaLimitsUseExplicitComponentMinimum|TestSchemaAndCallerBudgetsApplyToValidatePayloadAndRead)$'
+go test ./language -run '^(TestAffectedDiagnosticPaths|TestValidateDataEachWhereInheritanceAndMessages|TestValidateDataFieldAndWholeRecordEquivalence)$'
+go test ./analysis -run '^TestAnalysisAndSyntaxEvidenceRetainSchemaLimits$'
+go test ./explain -run '^TestExplanationIncludesEffectiveSchemaLimits$'
+go test ./native -run '^(TestRootlessOpenAPIOperationsIngestAndBoundary|TestRootlessOpenAPIOperationsBundleRestoresEditedAuthority|TestRootlessOpenAPIOperationsExportDoesNotInventSchemaRoot|TestRootlessOpenAPIOperationsRejectBadInputsAndKeepRootedV1|TestWithDerivedOpenAPIOperationsBuildsAuthoritativeCheckedBoundary|TestOpenAPIOperationIndexAndSemanticBoundary|TestOpenAPI30DirectionalRequirednessUsesFixedNativeViews|TestNativeBundleRetainsSchemaValidationLimits)$'
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^(TestGeneratedContractValidation|TestInlineRefinementModels)$'
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedSchemaLimitsApplyToValidationAndRead$'
+go test ./project -run '^TestGenerateOperationsOnlyOpenAPIRejectsMissingPropertyAssembly$'
+```
+
+The planner change also used exactly one local campaign: the previously failing
+`FuzzRuntimePackageNames`, with `-run '^$' -fuzz '^FuzzRuntimePackageNames$'
+-fuzztime=10000x -fuzzminimizetime=1000x -timeout=2m` in `./java`. No unchanged
+campaign or full suite was repeated to investigate the upstream deadline race.
+The shared AST/runtime changes require one frozen integration gate, including
+the existing Maven lifecycle: earlier Maven evidence predates these inputs.
 
 | Change | Selected checks | Why |
 | --- | --- | --- |

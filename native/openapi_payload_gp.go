@@ -304,9 +304,10 @@ func (p *Project) validateOpenAPIDialects(resources []Resource) error {
 		}
 		docs[resource.URI] = doc
 	}
-	if root, ok := docs[p.root.Resource]; ok {
+	entry := p.EntryResource()
+	if root, ok := docs[entry]; ok {
 		if dialectNode, ok := root.Root().Lookup("jsonSchemaDialect"); ok {
-			if err := supportedOpenAPIDialectValue(dialectNode, p.root.Resource+"#/jsonSchemaDialect"); err != nil {
+			if err := supportedOpenAPIDialectValue(dialectNode, entry+"#/jsonSchemaDialect"); err != nil {
 				return err
 			}
 		}

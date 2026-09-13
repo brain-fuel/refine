@@ -1,0 +1,24 @@
+package main
+
+import (
+    "encoding/json"
+    "io"
+    "reflect"
+    "testing"
+
+    "goforge.dev/refine/internal/testplan"
+)
+
+func TestFuzzExecutionPolicyIsExplicitBoundedAndDeterministic(t *testing.T){
+    cases:=[]struct{name string;args []string;amount string;mode string}{
+        {"default",nil,"10000x","iterations"},
+        {"minimum",[]string{"--iterations=1"},"1x","iterations"},
+        {"maximum",[]string{"--iterations=100000"},"100000x","iterations"},
+        {"duration opt-in",[]string{"--duration=3s"},"3s","duration"},
+        {"duration maximum",[]string{"--duration=1m"},"1m0s","duration"},
+    }
+    target:=testplan.Target{Package:"./java",Name:"FuzzName.+"}
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){options,err:=parseRunOptions(tc.args,io.Discard);if err!=nil{t.Fatal(err)};if options.execution.Mode!=tc.mode{t.Fatal("wrong execution mode")};want:=[]string{"test","./java","-run","^$","-fuzz",`^FuzzName\.\+$`,"-fuzztime="+tc.amount,"-fuzzminimizetime=1000x","-timeout=2m"};if got:=fuzzArguments(target,options.execution);!reflect.DeepEqual(got,want){t.Fatalf("arguments=%q want=%q",got,want)};encoded,err:=json.Marshal(options.execution);if err!=nil{t.Fatal(err)};var decoded executionPolicy;if err=json.Unmarshal(encoded,&decoded);err!=nil||decoded!=options.execution{t.Fatalf("policy JSON roundtrip: %s %v",encoded,err)}})}
+    invalid:=[][]string{{"--iterations=0"},{"--iterations=-1"},{"--iterations=100001"},{"--iterations=18446744073709551616"},{"--iterations=1.5"},{"--duration=0"},{"--duration=999ms"},{"--duration=61s"},{"--iterations=10000","--duration=3s"},{"--iterations=0","--duration=3s"},{"--unknown"},{"positional"}}
+    for _,args:=range invalid{if _,err:=parseRunOptions(args,io.Discard);err==nil{t.Fatalf("invalid execution policy accepted: %q",args)}}
+}
