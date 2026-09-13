@@ -1,0 +1,101 @@
+package java
+
+import (
+    "os"
+    "os/exec"
+    "path/filepath"
+    "reflect"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/native"
+    refineopenapi "goforge.dev/refine/openapi"
+    "goforge.dev/refine/validation"
+)
+
+const openAPIDirectionSource=`
+type NestedDirectional = { serverNested :: Maybe Int, clientNested :: Maybe Int }
+type Directional = { stable :: Real, server :: Maybe Real, client :: Maybe Real, nullable :: Nullable String, nested :: NestedDirectional, note :: Maybe String }
+type RequestEnvelope a = { parameters :: {}, headers :: {}, body :: a }
+type ResponseEnvelope a = { headers :: {}, body :: a }
+type RequestValue = RequestEnvelope Directional
+type ResponseValue = ResponseEnvelope Directional
+type Root = {}
+`
+
+const openAPIDirectionDocument=`{
+  "openapi":"3.0.4","info":{"title":"Directional operations","version":"1"},
+  "paths":{"/directional":{"post":{"operationId":"directional",
+    "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"https://direction.test/schemas.json#/definitions/Directional"}}}},
+    "responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"https://direction.test/schemas.json#/definitions/Directional"}}}}}
+  }}},"components":{"schemas":{"Root":{"type":"object","additionalProperties":false}}}
+}`
+
+const openAPIDirectionSchemas=`{
+  "definitions":{
+    "Exact":{"type":"number","multipleOf":0.1,"minimum":9007199254740993.1},
+    "Directional":{"type":"object","additionalProperties":false,
+      "required":["stable","server","client","nullable","nested"],
+      "properties":{
+        "stable":{"$ref":"#/definitions/Exact"},
+        "server":{"type":"number","multipleOf":0.1,"readOnly":true},
+        "client":{"type":"number","multipleOf":0.1,"writeOnly":true},
+        "nullable":{"type":"string","nullable":true},
+        "nested":{"$ref":"https://direction.test/nested.json#/definitions/NestedDirectional"},
+        "note":{"type":"string"}
+      }
+    }
+  }
+}`
+
+const openAPIDirectionNested=`{
+  "definitions":{"NestedDirectional":{"type":"object","additionalProperties":false,
+    "required":["serverNested","clientNested"],
+    "properties":{
+      "serverNested":{"type":"integer","readOnly":true},
+      "clientNested":{"type":"integer","writeOnly":true}
+    }
+  }}
+}`
+
+func openAPIDirectionProject(t *testing.T)*native.Project{
+    t.Helper();resources:=[]native.Resource{{URI:"https://direction.test/api.json",Source:openAPIDirectionDocument},{URI:"https://direction.test/schemas.json",Source:openAPIDirectionSchemas},{URI:"https://direction.test/nested.json",Source:openAPIDirectionNested}}
+    project,err:=native.IngestProjectResources(native.OpenAPI,resources,native.ProjectOptions{Root:native.ResourceSelector{Resource:"https://direction.test/api.json",Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};project,err=project.WithEditedSource(openAPIDirectionSource);if err!=nil{t.Fatal(err)}
+    operation:=refineopenapi.OperationBinding{OperationID:"directional",Method:"POST",Path:"/directional",RequestType:"RequestValue",Responses:[]refineopenapi.ResponseBinding{{Status:"200",ResponseType:"ResponseValue"}}};binding:=refineopenapi.NativeOperationBinding{OperationID:"directional",RequestBody:&refineopenapi.NativeMediaBinding{MediaType:"application/json"},Responses:[]refineopenapi.NativeResponseBinding{{Status:"200",Body:&refineopenapi.NativeMediaBinding{MediaType:"application/json"}}}};metadata:=native.WireMetadata{PublicationNamespace:"example.direction",OpenAPI:&refineopenapi.Schema{Version:refineopenapi.SchemaVersion,Operations:[]refineopenapi.OperationBinding{operation},Native:&refineopenapi.NativeBindings{Version:refineopenapi.NativeBindingsVersion,Operations:[]refineopenapi.NativeOperationBinding{binding}}}}
+    project,err=project.WithMetadata(metadata);if err!=nil{t.Fatal(err)};return project
+}
+
+func openAPIDirectionBody(stable,server,client,nullable,nested string)string{fields:=[]string{`"stable":`+stable};if server!=""{fields=append(fields,`"server":`+server)};if client!=""{fields=append(fields,`"client":`+client)};if nullable!=""{fields=append(fields,`"nullable":`+nullable)};fields=append(fields,`"nested":`+nested);return "{"+strings.Join(fields,",")+"}"}
+func openAPIDirectionNestedValue(server,client string)string{fields:=[]string{};if server!=""{fields=append(fields,`"serverNested":`+server)};if client!=""{fields=append(fields,`"clientNested":`+client)};return "{"+strings.Join(fields,",")+"}"}
+
+func TestGeneratedOpenAPI30DirectionAwareNativeValidation(t *testing.T){
+    project:=openAPIDirectionProject(t);canonical,err:=project.CanonicalJSONResources();if err!=nil{t.Fatal(err)};catalog,err:=project.OpenAPIOperationIndex();if err!=nil{t.Fatal(err)};bundle,err:=project.Bundle();if err!=nil{t.Fatal(err)};requestResources,err:=project.OpenAPIValidationResources(native.OpenAPIRequest);if err!=nil{t.Fatal(err)};responseResources,err:=project.OpenAPIValidationResources(native.OpenAPIResponse);if err!=nil{t.Fatal(err)};if reflect.DeepEqual(requestResources,responseResources){t.Fatal("request and response resource closures were not direction-specific")};requestResources[0].Source="mutated";again,err:=project.OpenAPIValidationResources(native.OpenAPIRequest);if err!=nil{t.Fatal(err)};if again[0].Source=="mutated"{t.Fatal("directional resources were not defensively copied")};after,err:=project.CanonicalJSONResources();if err!=nil{t.Fatal(err)};afterCatalog,err:=project.OpenAPIOperationIndex();if err!=nil{t.Fatal(err)};afterBundle,err:=project.Bundle();if err!=nil{t.Fatal(err)};if !reflect.DeepEqual(canonical,after)||!reflect.DeepEqual(catalog,afterCatalog)||string(bundle)!=string(afterBundle){t.Fatal("directional validation mutated the canonical resources, operation catalog, or bundle")}
+    exact:="9007199254740993.1";requestCases:=[]struct{name,raw string;valid bool}{{"missing readOnly",openAPIDirectionBody(exact,"","0.2","null",openAPIDirectionNestedValue("","2")),true},{"present readOnly",openAPIDirectionBody(exact,"0.3","0.2","null",openAPIDirectionNestedValue("1","2")),true},{"invalid supplied readOnly",openAPIDirectionBody(exact,"0.35","0.2","null",openAPIDirectionNestedValue("1","2")),false},{"missing writeOnly",openAPIDirectionBody(exact,"","","null",openAPIDirectionNestedValue("","2")),false},{"missing nullable",openAPIDirectionBody(exact,"","0.2","",openAPIDirectionNestedValue("","2")),false},{"inexact local reference",openAPIDirectionBody("9007199254740993.15","","0.2","null",openAPIDirectionNestedValue("","2")),false},{"nested missing writeOnly",openAPIDirectionBody(exact,"","0.2","null",openAPIDirectionNestedValue("","")),false}};for _,tc:=range requestCases{_,report,checkErr:=project.DecodeAndValidateOpenAPIRequest("directional",native.OpenAPIRequestJSON{Body:&native.OpenAPIMediaJSON{MediaType:"application/json",Value:[]byte(tc.raw)}},native.OpenAPILimits{},validation.Limits{});if tc.valid{if checkErr!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("Go request %s failed: %v %+v",tc.name,checkErr,report)}}else if checkErr==nil{t.Fatalf("Go request %s accepted",tc.name)}}
+    responseCases:=[]struct{name,raw string;valid bool}{{"missing writeOnly",openAPIDirectionBody(exact,"0.3","","null",openAPIDirectionNestedValue("1","")),true},{"present writeOnly",openAPIDirectionBody(exact,"0.3","0.2","null",openAPIDirectionNestedValue("1","2")),true},{"invalid supplied writeOnly",openAPIDirectionBody(exact,"0.3","0.25","null",openAPIDirectionNestedValue("1","2")),false},{"missing readOnly",openAPIDirectionBody(exact,"","","null",openAPIDirectionNestedValue("1","")),false},{"nested missing readOnly",openAPIDirectionBody(exact,"0.3","","null",openAPIDirectionNestedValue("","")),false}};for _,tc:=range responseCases{_,report,checkErr:=project.DecodeAndValidateOpenAPIResponse("directional",native.OpenAPIResponseJSON{Status:"200",Body:&native.OpenAPIMediaJSON{MediaType:"application/json",Value:[]byte(tc.raw)}},nil,native.OpenAPILimits{},validation.Limits{});if tc.valid{if checkErr!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("Go response %s failed: %v %+v",tc.name,checkErr,report)}}else if checkErr==nil{t.Fatalf("Go response %s accepted",tc.name)}}
+    compiler,vm:=javaTools(t);classpath:=networkntClasspath(t);files,err:=GenerateProjectOpenAPIContext(project,"Contract","DirectionalOperations");if err!=nil{t.Fatal(err)};foundRequest,foundResponse:=false,false;for _,file:=range files{foundRequest=foundRequest||strings.HasSuffix(file.Path,"/DirectionalOperationsNativeParts.java");foundResponse=foundResponse||strings.HasSuffix(file.Path,"/DirectionalOperationsNativeResponseParts.java")};if !foundRequest||!foundResponse{t.Fatalf("directional sidecars missing: request=%v response=%v",foundRequest,foundResponse)}
+    dir:=t.TempDir();sources:=[]string{};for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)};harness:=filepath.Join(dir,"OpenAPIDirectionHarness.java");if err:=os.WriteFile(harness,[]byte(openAPIDirectionHarness),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness);classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-cp",classpath,"-d",classes},sources...);if output,err:=exec.Command(compiler,args...).CombinedOutput();err!=nil{t.Fatalf("directional OpenAPI javac: %v\n%s",err,output)};if output,err:=exec.Command(vm,"-Xss256k","-Xmx64m","-cp",classes+string(os.PathListSeparator)+classpath,"OpenAPIDirectionHarness").CombinedOutput();err!=nil{t.Fatalf("directional OpenAPI runtime: %v\n%s",err,output)}
+}
+
+const openAPIDirectionHarness=`
+import example.direction.*;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+public final class OpenAPIDirectionHarness {
+ static byte[] json(String value){return value.getBytes(StandardCharsets.UTF_8);}
+ static DirectionalOperations.RequestJSON request(String value){return new DirectionalOperations.RequestJSON(List.of(),List.of(),new DirectionalOperations.MediaJSON("application/json",json(value)));}
+ static DirectionalOperations.ResponseJSON response(String value){return new DirectionalOperations.ResponseJSON("200",List.of(),new DirectionalOperations.MediaJSON("application/json",json(value)));}
+ static void require(boolean value){if(!value)throw new AssertionError();}
+ static void nativeInvalid(Runnable action){try{action.run();throw new AssertionError("native-invalid value accepted");}catch(DirectionalOperationsNativeParts.NativeValidationException expected){require(expected.code()==DirectionalOperationsNativeParts.Code.INVALID);}}
+ static void responseNativeInvalid(Runnable action){try{action.run();throw new AssertionError("native-invalid response accepted");}catch(DirectionalOperationsNativeParts.NativeValidationException expected){require(expected.code()==DirectionalOperationsNativeParts.Code.INVALID);require(expected.getCause() instanceof DirectionalOperationsNativeResponseParts.NativeValidationException);}}
+ static String body(String stable,String server,String client,String nullable,String nested){var fields=new java.util.ArrayList<String>();fields.add("\"stable\":"+stable);if(server!=null)fields.add("\"server\":"+server);if(client!=null)fields.add("\"client\":"+client);if(nullable!=null)fields.add("\"nullable\":"+nullable);fields.add("\"nested\":"+nested);return "{"+String.join(",",fields)+"}";}
+ static String nested(String server,String client){var fields=new java.util.ArrayList<String>();if(server!=null)fields.add("\"serverNested\":"+server);if(client!=null)fields.add("\"clientNested\":"+client);return "{"+String.join(",",fields)+"}";}
+ public static void main(String[] args){
+  var operations=new DirectionalOperations();String exact="9007199254740993.1";
+  var requestMissingRead=body(exact,null,"0.2","null",nested(null,"2"));var token=operations.validateRequest("directional",request(requestMissingRead));var decoded=new RequestValue.Factory().fromData(token.data());require(decoded.body().server() instanceof ModelMaybe.Nothing<?>);require(decoded.body().note() instanceof ModelMaybe.Nothing<?>);require(decoded.body().nullable() instanceof ModelNullable.Null<?>);require(decoded.body().nested().serverNested() instanceof ModelMaybe.Nothing<?>);
+  var requestPresentRead=body(exact,"0.3","0.2","null",nested("1","2"));var retained=new RequestValue.Factory().fromData(operations.validateRequest("directional",request(requestPresentRead)).data());require(retained.body().server() instanceof ModelMaybe.Just<?>);require(retained.body().nested().serverNested() instanceof ModelMaybe.Just<?>);
+  nativeInvalid(()->operations.validateRequest("directional",request(body(exact,"0.35","0.2","null",nested("1","2")))));nativeInvalid(()->operations.validateRequest("directional",request(body(exact,null,null,"null",nested(null,"2")))));nativeInvalid(()->operations.validateRequest("directional",request(body(exact,null,"0.2",null,nested(null,"2")))));nativeInvalid(()->operations.validateRequest("directional",request(body("9007199254740993.15",null,"0.2","null",nested(null,"2")))));nativeInvalid(()->operations.validateRequest("directional",request(body(exact,null,"0.2","null",nested(null,null)))));
+  require(operations.validateResponse("directional",response(body(exact,"0.3",null,"null",nested("1",null))),null).state()==Validation.State.VALID);require(operations.validateResponse("directional",response(body(exact,"0.3","0.2","null",nested("1","2"))),null).state()==Validation.State.VALID);
+  responseNativeInvalid(()->operations.validateResponse("directional",response(body(exact,"0.3","0.25","null",nested("1","2"))),null));responseNativeInvalid(()->operations.validateResponse("directional",response(body(exact,null,null,"null",nested("1",null))),null));responseNativeInvalid(()->operations.validateResponse("directional",response(body(exact,"0.3",null,"null",nested(null,null))),null));
+ }
+}
+`

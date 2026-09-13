@@ -52,9 +52,10 @@ type OpenAPIOperationCatalog struct {
 }
 
 type openAPIOperationIndex struct {
-	catalog    OpenAPIOperationCatalog
-	operations map[string]*indexedOpenAPIOperation
-	schemas    map[string]*jsonoracle.Schema
+	catalog         OpenAPIOperationCatalog
+	operations      map[string]*indexedOpenAPIOperation
+	requestSchemas  map[string]*jsonoracle.Schema
+	responseSchemas map[string]*jsonoracle.Schema
 }
 type indexedOpenAPIOperation struct {
 	descriptor   OpenAPIOperation
@@ -466,6 +467,11 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 		if err != nil {
 			return nil, operationMetadata(refined.OperationID, fmt.Sprintf("%s parameter %s: %v", parameter.location, parameter.name, err))
 		}
+		if strings.HasPrefix(p.Version(), "3.0.") {
+			if err := checkOpenAPIDirectionalType(p.program, typ, parameter.schema, docs, OpenAPIRequest); err != nil {
+				return nil, err
+			}
+		}
 		target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "request", parameter.location, parameter.name, ""), Resource: parameter.schema.resource, Pointer: parameter.schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: append([]string{top}, path...), Required: parameter.required, In: parameter.location, Name: parameter.name}
 		result.requestParts = append(result.requestParts, indexedOpenAPIPart{descriptor: target, typ: typ, top: top})
 		result.descriptor.RequestParts = append(result.descriptor.RequestParts, copyOpenAPITarget(target))
@@ -491,6 +497,11 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 		typ, err := checkedFieldPath(p.program, refined.RequestType, []string{"body"})
 		if err != nil {
 			return nil, operationMetadata(refined.OperationID, "request body: "+err.Error())
+		}
+		if strings.HasPrefix(p.Version(), "3.0.") {
+			if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIRequest); err != nil {
+				return nil, err
+			}
 		}
 		target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "request", "body", "", media), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: []string{"body"}, Required: required, MediaType: media, In: "body"}
 		result.requestParts = append(result.requestParts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "body"})
@@ -577,6 +588,11 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 				if err != nil {
 					return nil, operationMetadata(refined.OperationID, "response header "+name+": "+err.Error())
 				}
+				if strings.HasPrefix(p.Version(), "3.0.") {
+					if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIResponse); err != nil {
+						return nil, err
+					}
+				}
 				target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "response", responseBinding.Status, "header", name), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: append([]string{"headers"}, path...), Required: false, In: "header", Name: name, Status: responseBinding.Status}
 				indexed.parts = append(indexed.parts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "headers"})
 				indexed.descriptor.Parts = append(indexed.descriptor.Parts, copyOpenAPITarget(target))
@@ -595,6 +611,11 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 			typ, err := checkedFieldPath(p.program, responseBinding.ResponseType, []string{"body"})
 			if err != nil {
 				return nil, operationMetadata(refined.OperationID, "response body: "+err.Error())
+			}
+			if strings.HasPrefix(p.Version(), "3.0.") {
+				if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIResponse); err != nil {
+					return nil, err
+				}
 			}
 			target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "response", responseBinding.Status, "body", media), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: []string{"body"}, Required: false, MediaType: media, In: "body", Status: responseBinding.Status}
 			indexed.parts = append(indexed.parts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "body"})
@@ -715,9 +736,13 @@ func checkedFieldPath(program *language.Program, root string, path []string) (*l
 	if err != nil {
 		return nil, err
 	}
+	declarations := map[string]language.TypeDecl{}
+	for _, decl := range program.Syntax().Types {
+		declarations[decl.Name] = decl
+	}
 	current := target.CheckedSyntax().Type
 	for _, name := range path {
-		fields, err := checkedRecordFields(program, current, map[string]bool{}, 0)
+		fields, err := checkedRecordFieldsIn(current, declarations, map[string]bool{}, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -730,13 +755,20 @@ func checkedFieldPath(program *language.Program, root string, path []string) (*l
 	return current, nil
 }
 func checkedRecordFields(program *language.Program, typ *language.Type, seen map[string]bool, depth int) (map[string]*language.Type, error) {
+	declarations := map[string]language.TypeDecl{}
+	for _, decl := range program.Syntax().Types {
+		declarations[decl.Name] = decl
+	}
+	return checkedRecordFieldsIn(typ, declarations, seen, depth)
+}
+func checkedRecordFieldsIn(typ *language.Type, declarations map[string]language.TypeDecl, seen map[string]bool, depth int) (map[string]*language.Type, error) {
 	if typ == nil || depth > 128 {
 		return nil, fmt.Errorf("field path type resolution limit exceeded")
 	}
 	switch __gp_m0 := any(typ.Form).(type) {
 	case language.RefinedType:
 		base := __gp_m0.Base
-		return checkedRecordFields(program, base, seen, depth+1)
+		return checkedRecordFieldsIn(base, declarations, seen, depth+1)
 	case language.RecordType:
 		fields := __gp_m0.Fields
 		out := map[string]*language.Type{}
@@ -746,15 +778,40 @@ func checkedRecordFields(program *language.Program, typ *language.Type, seen map
 		return out, nil
 	case language.NamedType:
 		name := __gp_m0.Name
-		if seen[name] {
+		key := name
+		if seen[key] {
 			return nil, fmt.Errorf("cyclic record alias")
 		}
-		seen[name] = true
-		for _, decl := range program.Syntax().Types {
-			if decl.Name == name && len(decl.Parameters) == 0 && decl.Body != nil {
-				return checkedRecordFields(program, decl.Body, seen, depth+1)
-			}
+		seen[key] = true
+		if decl, ok := declarations[name]; ok && len(decl.Parameters) == 0 && decl.Body != nil {
+			return checkedRecordFieldsIn(decl.Body, declarations, seen, depth+1)
 		}
+	case language.AppliedType:
+		name, args, ok := jsonApplied(typ)
+		if !ok {
+			return nil, fmt.Errorf("field path traverses a non-record type")
+		}
+		if (name == "Maybe" || name == "Nullable") && len(args) == 1 {
+			return checkedRecordFieldsIn(args[0], declarations, seen, depth+1)
+		}
+		key := name + "\x00" + language.FormatType(typ)
+		if seen[key] {
+			return nil, fmt.Errorf("cyclic record alias")
+		}
+		decl, found := declarations[name]
+		if !found || decl.Body == nil || len(decl.Parameters) != len(args) {
+			return nil, fmt.Errorf("field path traverses a non-record type")
+		}
+		seen[key] = true
+		bindings := map[string]*language.Type{}
+		for i, param := range decl.Parameters {
+			bindings[param] = args[i]
+		}
+		closed, err := language.SubstituteType(decl.Body, bindings)
+		if err != nil {
+			return nil, fmt.Errorf("field path generic specialization failed: %w", err)
+		}
+		return checkedRecordFieldsIn(closed, declarations, seen, depth+1)
 	default:
 	}
 	return nil, fmt.Errorf("field path traverses a non-record type")

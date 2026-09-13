@@ -14,6 +14,7 @@ import (
 
 	"goforge.dev/refine/native"
 	"goforge.dev/refine/project"
+	"goforge.dev/refine/release"
 )
 
 func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
@@ -119,6 +120,24 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	first, err := os.ReadFile(jar)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Inspect the artifact from the existing build; do not launch another
+	// Maven lifecycle merely to exercise the offline inventory boundary.
+	inventory, err := release.InspectJavaArtifact(first, release.DefaultJavaArtifactLimits())
+	if err != nil {
+		t.Fatal("inspect actual Maven JAR", err)
+	}
+	if inventory.ArtifactSHA256() != release.Digest(first) {
+		t.Fatal("actual Maven artifact digest mismatch")
+	}
+	foundGreeting := false
+	for _, class := range inventory.Classes() {
+		if class.Path == "example/test/greeting/snapshot/Greeting.class" {
+			foundGreeting = true
+		}
+	}
+	if !foundGreeting {
+		t.Fatal("actual Maven JAR inventory omitted generated Greeting class")
 	}
 	run()
 	second, err := os.ReadFile(jar)

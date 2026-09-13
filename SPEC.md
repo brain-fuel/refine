@@ -25,8 +25,9 @@ Required outputs and capabilities:
   emitted as companion documentation.
 - Schema structure validation and refinement type checking.
 - Satisfiability and compatibility analysis, including an explicit unknown result.
-- Generated Java domain types, payload validators, serde, and adapters for
-  existing Java types.
+- Generated Java domain types, payload validators, and ecosystem serde adapters.
+  Adapting application-owned Java types beyond the serde boundary is deferred,
+  as explicitly clarified during the requirements interview.
 - Generated Java tests, examples, and Maven build/publication support.
 
 An ordinary exported schema plus its explanations must provide enough information

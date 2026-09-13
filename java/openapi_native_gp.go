@@ -69,28 +69,37 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		return name
 	}
 	sidecarName := uniqueName(className + "NativeParts")
+	responseSidecarName := sidecarName
 
 	targets := map[string]native.OpenAPISchemaTarget{}
+	requestTargets := map[string]native.OpenAPISchemaTarget{}
+	responseTargets := map[string]native.OpenAPISchemaTarget{}
 	types := map[string]bool{}
 	totalParts, totalResponses := 0, 0
+	addTarget := func(direction map[string]native.OpenAPISchemaTarget, target native.OpenAPISchemaTarget) error {
+		if old, ok := targets[target.ID]; ok && (old.Resource != target.Resource || old.Pointer != target.Pointer) {
+			return &GenerationError{Message: "native OpenAPI part ID collision"}
+		}
+		targets[target.ID] = target
+		direction[target.ID] = target
+		return nil
+	}
 	for _, operation := range catalog.Operations {
 		types[operation.RequestType] = true
 		for _, target := range operation.RequestParts {
 			totalParts++
-			if old, ok := targets[target.ID]; ok && (old.Resource != target.Resource || old.Pointer != target.Pointer) {
-				return nil, &GenerationError{Message: "native OpenAPI part ID collision"}
+			if err := addTarget(requestTargets, target); err != nil {
+				return nil, err
 			}
-			targets[target.ID] = target
 		}
 		for _, response := range operation.Responses {
 			totalResponses++
 			types[response.TypeExpression] = true
 			for _, target := range response.Parts {
 				totalParts++
-				if old, ok := targets[target.ID]; ok && (old.Resource != target.Resource || old.Pointer != target.Pointer) {
-					return nil, &GenerationError{Message: "native OpenAPI part ID collision"}
+				if err := addTarget(responseTargets, target); err != nil {
+					return nil, err
 				}
-				targets[target.ID] = target
 			}
 		}
 	}
@@ -103,32 +112,43 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		}
 	}
 
-	properties := map[string]any{}
-	ids := make([]string, 0, len(targets))
-	for id, target := range targets {
-		ids = append(ids, id)
-		location := target.Resource
-		if target.Pointer != "" {
-			location += "#" + target.Pointer
-		}
-		properties[id] = map[string]any{"$ref": location}
-	}
-	sort.Strings(ids)
-	wrapper := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": properties, "additionalProperties": false}
-	wrapperBytes, err := json.Marshal(wrapper)
+	requestResources, err := project.OpenAPIValidationResources(native.OpenAPIRequest)
 	if err != nil {
 		return nil, err
 	}
-	wrapperHash := sha256.Sum256(wrapperBytes)
-	uri := "urn:refine:openapi-parts:" + hex.EncodeToString(wrapperHash[:16])
-	for _, resource := range catalog.Resources {
-		if resource.URI == uri {
-			return nil, &GenerationError{Message: "generated native OpenAPI wrapper URI collides with a project resource"}
-		}
-	}
-	nativeFiles, err := generateProjectNativeJSONValidatorWithResources(project, sidecarName, native.ResourceSelector{Resource: uri}, []native.Resource{{URI: uri, Source: string(wrapperBytes)}})
+	responseResources, err := project.OpenAPIValidationResources(native.OpenAPIResponse)
 	if err != nil {
 		return nil, err
+	}
+	sharedNative := nativeResourceSlicesEqual(requestResources, responseResources)
+	var nativeFiles, responseNativeFiles []File
+	if sharedNative {
+		selector, wrapper, wrapErr := nativeOpenAPIWrapper("", targets, catalog.Resources)
+		if wrapErr != nil {
+			return nil, wrapErr
+		}
+		nativeFiles, err = generateProjectNativeJSONValidatorWithBaseResources(project, sidecarName, selector, requestResources, wrapper)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		responseSidecarName = uniqueName(className + "NativeResponseParts")
+		requestSelector, requestWrapper, wrapErr := nativeOpenAPIWrapper("request", requestTargets, catalog.Resources)
+		if wrapErr != nil {
+			return nil, wrapErr
+		}
+		responseSelector, responseWrapper, wrapErr := nativeOpenAPIWrapper("response", responseTargets, catalog.Resources)
+		if wrapErr != nil {
+			return nil, wrapErr
+		}
+		nativeFiles, err = generateProjectNativeJSONValidatorWithBaseResources(project, sidecarName, requestSelector, requestResources, requestWrapper)
+		if err != nil {
+			return nil, err
+		}
+		responseNativeFiles, err = generateProjectNativeJSONValidatorWithBaseResources(project, responseSidecarName, responseSelector, responseResources, responseWrapper)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	typeNames := make([]string, 0, len(types))
@@ -153,6 +173,9 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		return nil
 	}
 	if err := merge(nativeFiles); err != nil {
+		return nil, err
+	}
+	if err := merge(responseNativeFiles); err != nil {
 		return nil, err
 	}
 	for _, name := range typeNames {
@@ -196,13 +219,27 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		codecFields = append(codecFields, "    private final "+codec+" "+field+"=new "+codec+"();")
 		decodeCases = append(decodeCases, "case "+javaQuote(name)+"->"+field+".readDataWithoutRefinements(input,budget)")
 	}
+	nativeFields := "private final " + sidecarName + " nativeValidator;"
+	nativeValidation := "nativeValidator.validate(input);"
+	responseLimits := ""
 	regexLocations, err := project.JSONSchemaKeywordLocations("pattern", "patternProperties")
 	if err != nil {
 		return nil, err
 	}
 	constructors := "    public " + className + "(){this(Limits.defaults()," + sidecarName + ".Limits.defaults());}\n    public " + className + "(Limits limits," + sidecarName + ".Limits nativeLimits){this.limits=java.util.Objects.requireNonNull(limits);this.nativeLimits=java.util.Objects.requireNonNull(nativeLimits);this.nativeValidator=new " + sidecarName + "(this.nativeLimits);}"
+	if !sharedNative {
+		nativeFields = "private final " + sidecarName + " requestNativeValidator;private final " + responseSidecarName + " responseNativeValidator;"
+		nativeValidation = "if(request){requestNativeValidator.validate(input);return;}try{responseNativeValidator.validate(input);}catch(" + responseSidecarName + ".NativeValidationException failure){throw responseFailure(failure);}"
+		responseLimits = "    private static " + responseSidecarName + ".Limits responseLimits(" + sidecarName + ".Limits value){return new " + responseSidecarName + ".Limits(value.maxBytes(),value.maxDepth(),value.maxNodes(),value.maxNumberLength(),value.maxStringLength(),value.maxNameLength(),value.maxNumericExpansion());}\n    private static " + sidecarName + ".NativeValidationException responseFailure(" + responseSidecarName + ".NativeValidationException value){var failure=new " + sidecarName + ".NativeValidationException(" + sidecarName + ".Code.valueOf(value.code().name()),value.getMessage());failure.initCause(value);return failure;}\n"
+		constructors = "    public " + className + "(){this(Limits.defaults()," + sidecarName + ".Limits.defaults());}\n    public " + className + "(Limits limits," + sidecarName + ".Limits nativeLimits){this.limits=java.util.Objects.requireNonNull(limits);this.nativeLimits=java.util.Objects.requireNonNull(nativeLimits);this.requestNativeValidator=new " + sidecarName + "(this.nativeLimits);this.responseNativeValidator=new " + responseSidecarName + "(responseLimits(this.nativeLimits));}"
+	}
 	if len(regexLocations) > 0 {
-		constructors = "    public " + className + "(){this(Limits.defaults()," + sidecarName + ".Limits.defaults()," + sidecarName + ".RegexLimits.defaults());}\n    public " + className + "(Limits limits," + sidecarName + ".Limits nativeLimits," + sidecarName + ".RegexLimits regexLimits){this.limits=java.util.Objects.requireNonNull(limits);this.nativeLimits=java.util.Objects.requireNonNull(nativeLimits);this.nativeValidator=new " + sidecarName + "(this.nativeLimits,java.util.Objects.requireNonNull(regexLimits));}"
+		if sharedNative {
+			constructors = "    public " + className + "(){this(Limits.defaults()," + sidecarName + ".Limits.defaults()," + sidecarName + ".RegexLimits.defaults());}\n    public " + className + "(Limits limits," + sidecarName + ".Limits nativeLimits," + sidecarName + ".RegexLimits regexLimits){this.limits=java.util.Objects.requireNonNull(limits);this.nativeLimits=java.util.Objects.requireNonNull(nativeLimits);this.nativeValidator=new " + sidecarName + "(this.nativeLimits,java.util.Objects.requireNonNull(regexLimits));}"
+		} else {
+			responseLimits += "    private static " + responseSidecarName + ".RegexLimits responseRegexLimits(" + sidecarName + ".RegexLimits value){return new " + responseSidecarName + ".RegexLimits(value.maxPatternUnits(),value.maxInputUnits(),value.maxEvaluations(),value.maxWorkUnits(),value.maxMillis());}\n"
+			constructors = "    public " + className + "(){this(Limits.defaults()," + sidecarName + ".Limits.defaults()," + sidecarName + ".RegexLimits.defaults());}\n    public " + className + "(Limits limits," + sidecarName + ".Limits nativeLimits," + sidecarName + ".RegexLimits regexLimits){this.limits=java.util.Objects.requireNonNull(limits);this.nativeLimits=java.util.Objects.requireNonNull(nativeLimits);var checkedRegex=java.util.Objects.requireNonNull(regexLimits);this.requestNativeValidator=new " + sidecarName + "(this.nativeLimits,checkedRegex);this.responseNativeValidator=new " + responseSidecarName + "(responseLimits(this.nativeLimits),responseRegexLimits(checkedRegex));}"
+		}
 	}
 	identity, err := json.Marshal(struct {
 		Source   string                         `json:"source"`
@@ -213,7 +250,7 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		return nil, err
 	}
 	projectHash := sha256.Sum256(identity)
-	replacements := map[string]string{"@@CLASS@@": className, "@@CONTRACT@@": contractName, "@@SIDECAR@@": sidecarName, "@@ENTRIES@@": strings.Join(entries, ","), "@@DESCRIPTORS@@": strings.Join(descriptors, ","), "@@CODEC_FIELDS@@": strings.Join(codecFields, "\n"), "@@DECODE_CASES@@": strings.Join(decodeCases, ";"), "@@CONSTRUCTORS@@": constructors, "@@PROJECT_ID@@": hex.EncodeToString(projectHash[:])}
+	replacements := map[string]string{"@@CLASS@@": className, "@@CONTRACT@@": contractName, "@@SIDECAR@@": sidecarName, "@@RESPONSE_SIDECAR@@": responseSidecarName, "@@ENTRIES@@": strings.Join(entries, ","), "@@DESCRIPTORS@@": strings.Join(descriptors, ","), "@@CODEC_FIELDS@@": strings.Join(codecFields, "\n"), "@@DECODE_CASES@@": strings.Join(decodeCases, ";"), "@@NATIVE_FIELDS@@": nativeFields, "@@VALIDATE_NATIVE@@": nativeValidation, "@@CONSTRUCTORS@@": responseLimits + constructors, "@@PROJECT_ID@@": hex.EncodeToString(projectHash[:])}
 	source := nativeOpenAPIJava
 	keys := make([]string, 0, len(replacements))
 	for key := range replacements {
@@ -232,6 +269,51 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		return nil, err
 	}
 	return all, nil
+}
+
+func nativeResourceSlicesEqual(left, right []native.Resource) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i, item := range left {
+		if item != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func nativeOpenAPIWrapper(direction string, targets map[string]native.OpenAPISchemaTarget, resources []native.Resource) (native.ResourceSelector, []native.Resource, error) {
+	properties := map[string]any{}
+	ids := make([]string, 0, len(targets))
+	for id, target := range targets {
+		ids = append(ids, id)
+		location := target.Resource
+		if target.Pointer != "" {
+			location += "#" + target.Pointer
+		}
+		properties[id] = map[string]any{"$ref": location}
+	}
+	sort.Strings(ids)
+	wrapper := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": properties, "additionalProperties": false}
+	wrapperBytes, err := json.Marshal(wrapper)
+	if err != nil {
+		return native.ResourceSelector{}, nil, err
+	}
+	hashInput := wrapperBytes
+	prefix := "urn:refine:openapi-parts:"
+	if direction != "" {
+		hashInput = append([]byte(direction+"\x00"), wrapperBytes...)
+		prefix += direction + ":"
+	}
+	wrapperHash := sha256.Sum256(hashInput)
+	uri := prefix + hex.EncodeToString(wrapperHash[:16])
+	for _, resource := range resources {
+		if resource.URI == uri {
+			return native.ResourceSelector{}, nil, &GenerationError{Message: "generated native OpenAPI wrapper URI collides with a project resource"}
+		}
+	}
+	return native.ResourceSelector{Resource: uri}, []native.Resource{{URI: uri, Source: string(wrapperBytes)}}, nil
 }
 
 func nativeOpenAPIParts(parts []native.OpenAPISchemaTarget) []string {
@@ -268,7 +350,7 @@ public final class @@CLASS@@ {
     private final Object owner=new Object();
     private static final java.util.Map<String,Binding> BINDINGS=java.util.Map.ofEntries(@@ENTRIES@@);
     private static final java.util.List<Operation> OPERATIONS=java.util.List.of(@@DESCRIPTORS@@);
-    private final Limits limits;private final @@SIDECAR@@.Limits nativeLimits;private final @@SIDECAR@@ nativeValidator;
+    private final Limits limits;private final @@SIDECAR@@.Limits nativeLimits;@@NATIVE_FIELDS@@
 @@CODEC_FIELDS@@
 @@CONSTRUCTORS@@
     public static java.util.List<Operation> operations(){return OPERATIONS;}
@@ -282,9 +364,9 @@ public final class @@CLASS@@ {
     private java.util.Map<String,Supplied> requestParts(RequestJSON input){var out=new java.util.LinkedHashMap<String,Supplied>();for(var item:input.parameters()){String in=item.in().toLowerCase(java.util.Locale.ROOT);if(!in.equals("path")&&!in.equals("query")&&!in.equals("cookie"))throw new IllegalArgumentException("parameters require path, query, or cookie location");supplied(out,key(in,item.name()),item.raw(),"","duplicate semantic parameter");}for(var item:input.headers())supplied(out,key("header",item.name()),item.raw(),"","duplicate semantic header");if(input.body()!=null)supplied(out,"body",input.body().raw(),input.body().mediaType(),"duplicate semantic body");return out;}
     private java.util.Map<String,Supplied> responseParts(ResponseJSON input){var out=new java.util.LinkedHashMap<String,Supplied>();for(var item:input.headers())supplied(out,key("header",item.name()),item.raw(),"","duplicate semantic response header");if(input.body()!=null)supplied(out,"body",input.body().raw(),input.body().mediaType(),"duplicate semantic response body");return out;}
     private java.util.List<java.util.Map.Entry<Part,Supplied>> select(java.util.List<Part> expected,java.util.Map<String,Supplied> provided){var selected=new java.util.ArrayList<java.util.Map.Entry<Part,Supplied>>();var used=new java.util.HashSet<String>();for(var part:expected){String lookup=part.in().equals("body")?"body":key(part.in(),part.name());var supplied=provided.get(lookup);if(supplied==null){if(part.required())throw new IllegalArgumentException("required semantic part is absent: "+part.id());continue;}used.add(lookup);if(part.in().equals("body")&&!supplied.media().equalsIgnoreCase(part.mediaType()))throw new IllegalArgumentException("body media type does not match the checked binding");selected.add(java.util.Map.entry(part,supplied));}for(var key:provided.keySet())if(!used.contains(key))throw new IllegalArgumentException("semantic part is not declared by the checked operation");return selected;}
-    private void validateNative(java.util.List<java.util.Map.Entry<Part,Supplied>> selected){var root=new ObjectJSON();for(var item:selected)root.members.put(item.getKey().id(),new RawJSON(item.getValue().raw()));nativeValidator.validate(encode(root,limits.maxBytes()));}
+    private void validateNative(java.util.List<java.util.Map.Entry<Part,Supplied>> selected,boolean request){var root=new ObjectJSON();for(var item:selected)root.members.put(item.getKey().id(),new RawJSON(item.getValue().raw()));byte[] input=encode(root,limits.maxBytes());@@VALIDATE_NATIVE@@}
     private Data decode(String type,byte[] input,Budget.Limits budget){return switch(type){@@DECODE_CASES@@;default->throw new AssertionError("missing checked OpenAPI codec");};}
-    private Data decodeParts(String type,java.util.List<java.util.Map.Entry<Part,Supplied>> selected,boolean request,Budget.Limits budget){validateNative(selected);var root=new ObjectJSON();if(request){root.members.put("parameters",new ObjectJSON());root.members.put("headers",new ObjectJSON());}else root.members.put("headers",new ObjectJSON());for(var item:selected)put(root,item.getKey().fieldPath(),new RawJSON(item.getValue().raw()));return decode(type,encode(root,limits.maxBytes()),budget);}
+    private Data decodeParts(String type,java.util.List<java.util.Map.Entry<Part,Supplied>> selected,boolean request,Budget.Limits budget){validateNative(selected,request);var root=new ObjectJSON();if(request){root.members.put("parameters",new ObjectJSON());root.members.put("headers",new ObjectJSON());}else root.members.put("headers",new ObjectJSON());for(var item:selected)put(root,item.getKey().fieldPath(),new RawJSON(item.getValue().raw()));return decode(type,encode(root,limits.maxBytes()),budget);}
     public ValidatedRequest validateRequest(String operationId,RequestJSON input){return validateRequest(operationId,input,Budget.Limits.defaults());}
     public ValidatedRequest validateRequest(String operationId,RequestJSON input,Budget.Limits budget){java.util.Objects.requireNonNull(input);java.util.Objects.requireNonNull(budget);var binding=operation(operationId);Data data=decodeParts(binding.requestType(),select(binding.requestParts(),requestParts(input)),true,budget);@@CONTRACT@@.validate(binding.requestType(),data,budget).orThrow();return new ValidatedRequest(owner,operationId,data);}
     public Validation.Outcome validateResponse(String operationId,ResponseJSON input,ValidatedRequest original){return validateResponse(operationId,input,original,Budget.Limits.defaults());}

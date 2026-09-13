@@ -1,0 +1,43 @@
+package native
+
+import (
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/validation"
+)
+
+const directionalOperationAPI=`{
+  "openapi":"3.0.4","info":{"title":"Directional","version":"1"},
+  "paths":{"/items":{"post":{"operationId":"putItem",
+    "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Directional"}}}},
+    "responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Directional"}}}}}
+  }}},
+  "components":{"schemas":{
+    "Root":{"type":"object"},
+    "Directional":{"type":"object","additionalProperties":false,
+      "required":["readCount","writeCount","plain","nullable","nested"],
+      "properties":{
+        "readCount":{"$ref":"#/components/schemas/ReadCount"},
+        "writeCount":{"type":"integer","multipleOf":3,"writeOnly":true},
+        "plain":{"type":"string"},
+        "nullable":{"type":"string","nullable":true},
+        "nested":{"type":"object","required":["server"],"properties":{"server":{"type":"integer","minimum":5,"readOnly":true}}}
+      }
+    },
+    "ReadCount":{"type":"integer","minimum":2,"readOnly":true}
+  }}
+}`
+
+func directionalProject(t *testing.T)*Project{t.Helper();base,err:=IngestProject(OpenAPI,[]byte(directionalOperationAPI),ProjectOptions{ResourceID:"https://example.test/directional.json",Root:ResourceSelector{Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};project,err:=base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{});if err!=nil{t.Fatal(err)};return project}
+
+func TestOpenAPI30DirectionalRequirednessUsesFixedNativeViews(t *testing.T){project:=directionalProject(t);source:=project.EditableSource();if !strings.Contains(source,"readCount :: Maybe (")||!strings.Contains(source,"writeCount :: Maybe (Int)")||!strings.Contains(source,"server :: Maybe (Int)"){t.Fatalf("derived directional fields are not optional:\n%s",source)};if !strings.Contains(source,"nullable :: Nullable (String)"){t.Fatalf("required nullable field became optional:\n%s",source)}
+    original:=project.Resources();requestView,err:=project.OpenAPIValidationResources(OpenAPIRequest);if err!=nil{t.Fatal(err)};responseView,err:=project.OpenAPIValidationResources(OpenAPIResponse);if err!=nil{t.Fatal(err)};if len(requestView)!=len(original)||len(responseView)!=len(original)||requestView[0].URI!=original[0].URI||responseView[0].URI!=original[0].URI{t.Fatal("directional resource identity changed")};if requestView[0].Source==responseView[0].Source{t.Fatal("request and response requiredness views did not differ")};requestView[0].Source="mutated";if project.Resources()[0].Source!=original[0].Source{t.Fatal("directional resource view mutated the project")}
+    request:=OpenAPIRequestJSON{Body:&OpenAPIMediaJSON{MediaType:"application/json",Value:[]byte(`{"writeCount":3,"plain":"ok","nullable":null,"nested":{}}`)}};token,report,err:=project.DecodeAndValidateOpenAPIRequest("putItem",request,OpenAPILimits{},validation.Limits{});if err!=nil||token==nil||validation.StateName(report.State())!="valid"{t.Fatalf("request did not remove read-only requiredness: %v %+v",err,report)};request.Body.Value=[]byte(`{"readCount":2,"writeCount":3,"plain":"ok","nullable":"x","nested":{"server":5}}`);if _,report,err=project.DecodeAndValidateOpenAPIRequest("putItem",request,OpenAPILimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("supplied read-only values were forbidden: %v %+v",err,report)};request.Body.Value=[]byte(`{"readCount":1,"writeCount":3,"plain":"ok","nullable":"x","nested":{}}`);if _,_,err=project.DecodeAndValidateOpenAPIRequest("putItem",request,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("supplied read-only constraint was not validated: %v",err)};request.Body.Value=[]byte(`{"plain":"ok","nullable":"x","nested":{}}`);if _,_,err=project.DecodeAndValidateOpenAPIRequest("putItem",request,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("request lost write-only requiredness: %v",err)}
+    response:=OpenAPIResponseJSON{Status:"200",Body:&OpenAPIMediaJSON{MediaType:"application/json",Value:[]byte(`{"readCount":2,"plain":"ok","nullable":null,"nested":{"server":5}}`)}};_,report,err=project.DecodeAndValidateOpenAPIResponse("putItem",response,nil,OpenAPILimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("response did not remove write-only requiredness: %v %+v",err,report)};response.Body.Value=[]byte(`{"readCount":2,"writeCount":6,"plain":"ok","nullable":"x","nested":{"server":5}}`);if _,report,err=project.DecodeAndValidateOpenAPIResponse("putItem",response,nil,OpenAPILimits{},validation.Limits{});err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("supplied write-only value was forbidden: %v %+v",err,report)};response.Body.Value=[]byte(`{"readCount":2,"writeCount":4,"plain":"ok","nullable":"x","nested":{"server":5}}`);if _,_,err=project.DecodeAndValidateOpenAPIResponse("putItem",response,nil,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("supplied write-only constraint was not validated: %v",err)};response.Body.Value=[]byte(`{"plain":"ok","nullable":"x","nested":{"server":5}}`);if _,_,err=project.DecodeAndValidateOpenAPIResponse("putItem",response,nil,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("response lost read-only requiredness: %v",err)}}
+
+func TestOpenAPI30DirectionalTypedMapAuditRequiresOptionalNestedFields(t *testing.T){source:=`{"openapi":"3.0.4","info":{"title":"Map","version":"1"},"paths":{"/map":{"post":{"operationId":"putMap","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":{"type":"object","required":["server"],"properties":{"server":{"type":"integer","readOnly":true}}}}}}},"responses":{"200":{"description":"ok"}}}}},"components":{"schemas":{"Root":{"type":"object"}}}}`;base,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{ResourceID:"https://example.test/map.json",Root:ResourceSelector{Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};project,err:=base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{});if err!=nil{t.Fatal(err)};editable:=project.EditableSource();if !strings.Contains(editable,"server :: Maybe (Int)"){t.Fatalf("map value record was not directionally projected:\n%s",editable)};edited:=strings.Replace(editable,"server :: Maybe (Int)","server :: Int",1);if edited==editable{t.Fatal("directional map fixture did not change")};changed,err:=project.WithEditedSource(edited);if changed!=nil||problemCode(err)!="native.enforcement"||!strings.Contains(err.Error(),"must be Maybe"){t.Fatalf("mandatory nested map field bypassed directional audit: %v",err)}}
+
+func TestOpenAPI30DirectionalApplicatorAmbiguityFailsClosed(t *testing.T){source:=`{"openapi":"3.0.4","info":{"title":"Ambiguous","version":"1"},"paths":{"/x":{"post":{"operationId":"ambiguous","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["id"],"allOf":[{"properties":{"id":{"type":"integer","readOnly":true}}}]}}}},"responses":{"200":{"description":"ok"}}}}},"components":{"schemas":{"Root":{"type":"object"}}}}`;base,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{ResourceID:"https://example.test/ambiguous.json",Root:ResourceSelector{Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};if project,err:=base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{});project!=nil||problemCode(err)!="native.projection"{t.Fatalf("composed directional requiredness was accepted: %v",err)}}
+
+func TestOpenAPI31DirectionalViewsRemainCanonical(t *testing.T){source:=strings.Replace(directionalOperationAPI,`"3.0.4"`,`"3.1.2"`,1);base,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{ResourceID:"https://example.test/directional31.json",Root:ResourceSelector{Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};project,err:=base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{});if err!=nil{t.Fatal(err)};canonical,err:=project.CanonicalJSONResources();if err!=nil{t.Fatal(err)};for _,direction:=range []OpenAPIDirection{OpenAPIRequest,OpenAPIResponse}{view,err:=project.OpenAPIValidationResources(direction);if err!=nil{t.Fatal(err)};if len(view)!=len(canonical){t.Fatal("canonical resource count changed")};for i:=range view{if view[i]!=canonical[i]{t.Fatalf("OpenAPI 3.1 directional view changed canonical resource: %+v",view[i])}}}}

@@ -364,48 +364,98 @@ func canonicalRecordFields(program *language.Program, name string, names []strin
 	} else {
 		return nil, fmt.Errorf("must be a direct named closed type")
 	}
-	decl, ok := declaration(program, name)
-	if !ok {
+	declarations := map[string]language.TypeDecl{}
+	for _, decl := range program.Syntax().Types {
+		declarations[decl.Name] = decl
+	}
+	decl, ok := declarations[name]
+	if !ok || len(decl.Parameters) != 0 {
 		return nil, fmt.Errorf("must name a declared closed type")
 	}
-	body := decl.Body
-	seen := map[string]bool{name: true}
-	for body != nil {
-		switch __gp_m1 := any(body.Form).(type) {
-		case language.RefinedType:
-			base := __gp_m1.Base
-			body = base
-		case language.NamedType:
-			alias := __gp_m1.Name
-			if seen[alias] {
-				return nil, fmt.Errorf("cyclic alias")
-			}
-			seen[alias] = true
-			next, found := declaration(program, alias)
-			if !found {
-				return nil, fmt.Errorf("unknown alias %s", alias)
-			}
-			body = next.Body
-		case language.RecordType:
-			fields := __gp_m1.Fields
-			out := map[string]*language.Type{}
-			for _, field := range fields {
-				out[field.Name] = field.Type
-			}
-			if len(out) != len(names) {
-				return nil, fmt.Errorf("must have exactly fields %s", strings.Join(names, ", "))
-			}
-			for _, field := range names {
-				if out[field] == nil {
-					return nil, fmt.Errorf("must have exactly fields %s", strings.Join(names, ", "))
-				}
-			}
-			return out, nil
-		default:
-			return nil, fmt.Errorf("must resolve to a record")
+	fields, err := canonicalRecordBody(decl.Body, declarations, map[string]bool{name: true}, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(fields) != len(names) {
+		return nil, fmt.Errorf("must have exactly fields %s", strings.Join(names, ", "))
+	}
+	for _, field := range names {
+		if fields[field] == nil {
+			return nil, fmt.Errorf("must have exactly fields %s", strings.Join(names, ", "))
 		}
 	}
-	return nil, fmt.Errorf("must resolve to a record")
+	return fields, nil
+}
+func canonicalRecordBody(body *language.Type, declarations map[string]language.TypeDecl, seen map[string]bool, depth int) (map[string]*language.Type, error) {
+	if body == nil || depth > 128 {
+		return nil, fmt.Errorf("record type resolution limit exceeded")
+	}
+	switch __gp_m1 := any(body.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m1.Base
+		return canonicalRecordBody(base, declarations, seen, depth+1)
+	case language.NamedType:
+		alias := __gp_m1.Name
+		if seen[alias] {
+			return nil, fmt.Errorf("cyclic alias")
+		}
+		seen[alias] = true
+		next, found := declarations[alias]
+		if !found || len(next.Parameters) != 0 {
+			return nil, fmt.Errorf("unknown alias %s", alias)
+		}
+		return canonicalRecordBody(next.Body, declarations, seen, depth+1)
+	case language.AppliedType:
+		name, args, ok := openAPIAppliedType(body)
+		if !ok {
+			return nil, fmt.Errorf("must resolve to a record")
+		}
+		key := name + "\x00" + language.FormatType(body)
+		if seen[key] {
+			return nil, fmt.Errorf("cyclic alias")
+		}
+		next, found := declarations[name]
+		if !found || next.Body == nil || len(next.Parameters) != len(args) {
+			return nil, fmt.Errorf("must resolve to a record")
+		}
+		seen[key] = true
+		bindings := map[string]*language.Type{}
+		for i, param := range next.Parameters {
+			bindings[param] = args[i]
+		}
+		closed, err := language.SubstituteType(next.Body, bindings)
+		if err != nil {
+			return nil, fmt.Errorf("generic record specialization failed: %w", err)
+		}
+		return canonicalRecordBody(closed, declarations, seen, depth+1)
+	case language.RecordType:
+		fields := __gp_m1.Fields
+		out := map[string]*language.Type{}
+		for _, field := range fields {
+			out[field.Name] = field.Type
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("must resolve to a record")
+	}
+}
+func openAPIAppliedType(typ *language.Type) (string, []*language.Type, bool) {
+	root := typ
+	args := []*language.Type{}
+	for {
+		switch __gp_m2 := any(root.Form).(type) {
+		case language.AppliedType:
+			fn := __gp_m2.Constructor
+			arg := __gp_m2.Argument
+			args = append([]*language.Type{arg}, args...)
+			root = fn
+		case language.NamedType:
+			name := __gp_m2.Name
+			return name, args, true
+		default:
+			return "", nil, false
+		}
+	}
 }
 
 func requestData(request Request) value.Data {

@@ -68,8 +68,9 @@ bin/refine project maven
 reporting unknown satisfiability. Unknown permits compilation, not a claim of
 proof; native schema validity and wire enforcement remain separate checks.
 The [worked examples](examples/README.md), [native schema guide](docs/NATIVE.md),
-[Jackson serde guide](docs/SERDE-JSON.md), and [Maven workflow](docs/PROJECT.md)
-describe executable workflows and their current limits.
+[Jackson serde guide](docs/SERDE-JSON.md), [Maven workflow](docs/PROJECT.md), and
+[release planning guide](docs/RELEASE.md) describe executable workflows and
+their current limits.
 
 The module is `goforge.dev/refine`, hosted at
 [brain-fuel/refine](https://github.com/brain-fuel/refine). MIT licensed.

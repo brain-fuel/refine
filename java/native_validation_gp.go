@@ -35,6 +35,20 @@ func generateProjectNativeJSONValidatorAt(project *native.Project, className str
 // obtained from a checked native index. Runtime callers still never choose a
 // resource or pointer.
 func generateProjectNativeJSONValidatorWithResources(project *native.Project, className string, selector native.ResourceSelector, additional []native.Resource) (files []File, failure error) {
+	if project == nil {
+		return nil, &GenerationError{Message: "a checked native project is required"}
+	}
+	resources, err := project.CanonicalJSONResources()
+	if err != nil {
+		return nil, &GenerationError{Message: err.Error()}
+	}
+	return generateProjectNativeJSONValidatorWithBaseResources(project, className, selector, resources, additional)
+}
+
+// Direction-aware OpenAPI composition supplies a checked, generator-owned
+// resource closure. Runtime callers never select or mutate these resources.
+// The same hard resource and trusted-wrapper limits as the public helper apply.
+func generateProjectNativeJSONValidatorWithBaseResources(project *native.Project, className string, selector native.ResourceSelector, base, additional []native.Resource) (files []File, failure error) {
 	defer func() {
 		if caught := recover(); caught != nil {
 			if err, ok := caught.(*GenerationError); ok {
@@ -51,10 +65,7 @@ func generateProjectNativeJSONValidatorWithResources(project *native.Project, cl
 	if err := javaClassName(className); err != nil {
 		return nil, &GenerationError{Message: err.Error()}
 	}
-	resources, err := project.CanonicalJSONResources()
-	if err != nil {
-		return nil, &GenerationError{Message: err.Error()}
-	}
+	resources := append([]native.Resource(nil), base...)
 	if len(resources) > 128 {
 		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources"}
 	}
@@ -63,6 +74,9 @@ func generateProjectNativeJSONValidatorWithResources(project *native.Project, cl
 	}
 	seenResources := map[string]bool{}
 	for _, resource := range resources {
+		if resource.URI == "" || seenResources[resource.URI] {
+			return nil, &GenerationError{Message: "generated native JSON validation has a duplicate or empty resource URI"}
+		}
 		seenResources[resource.URI] = true
 	}
 	for _, resource := range additional {

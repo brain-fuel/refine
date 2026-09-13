@@ -11,6 +11,7 @@ import (
 
     "goforge.dev/refine/project"
     "goforge.dev/refine/native"
+    "goforge.dev/refine/release"
 )
 
 func TestMavenRegenerationAndReproducibleArtifact(t *testing.T){
@@ -36,6 +37,12 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T){
     run:=func(){t.Helper();command:=exec.Command(maven,"--batch-mode","--no-transfer-progress","package");command.Dir=root;command.Env=os.Environ();if javaHome:=os.Getenv("REFINE_JAVA_HOME");javaHome!=""{command.Env=append(command.Env,"JAVA_HOME="+javaHome)};if output,err:=command.CombinedOutput();err!=nil{t.Fatalf("unsigned Maven build: %v\n%s",err,output)}}
     run()
     jar:=filepath.Join(root,"target","refine-fixture-0.0.1.jar");first,err:=os.ReadFile(jar);if err!=nil{t.Fatal(err)}
+    // Inspect the artifact from the existing build; do not launch another
+    // Maven lifecycle merely to exercise the offline inventory boundary.
+    inventory,err:=release.InspectJavaArtifact(first,release.DefaultJavaArtifactLimits());if err!=nil{t.Fatal("inspect actual Maven JAR",err)}
+    if inventory.ArtifactSHA256()!=release.Digest(first){t.Fatal("actual Maven artifact digest mismatch")}
+    foundGreeting:=false;for _,class:=range inventory.Classes(){if class.Path=="example/test/greeting/snapshot/Greeting.class"{foundGreeting=true}}
+    if !foundGreeting{t.Fatal("actual Maven JAR inventory omitted generated Greeting class")}
     run();second,err:=os.ReadFile(jar);if err!=nil{t.Fatal(err)}
     if sha256.Sum256(first)!=sha256.Sum256(second){t.Fatal("unchanged unsigned artifact is not reproducible")}
     generated:=filepath.Join(root,"target","generated-sources","refine","example","test","greeting","snapshot","Greeting.java")

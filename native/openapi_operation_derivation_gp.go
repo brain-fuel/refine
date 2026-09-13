@@ -194,7 +194,11 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		}
 		assigned[key] = true
 		nameParts := []string{document.operationID, "request", parameter.location, parameter.name}
-		expr, decls, projectErr := deriveOpenAPISchemaType(parameter.schema, docs, nameParts, used)
+		direction := OpenAPIDirection("")
+		if openAPI30 {
+			direction = OpenAPIRequest
+		}
+		expr, decls, projectErr := deriveOpenAPISchemaType(parameter.schema, docs, nameParts, used, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -224,12 +228,11 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		if mediaErr != nil {
 			return derivedOpenAPIOperation{}, derivationError(document.operationID, body, "request body: "+mediaErr.Error())
 		}
+		direction := OpenAPIDirection("")
 		if openAPI30 {
-			if guardErr := rejectOpenAPI30DirectionalRequired(document.operationID, schema, docs, "request", "readOnly"); guardErr != nil {
-				return derivedOpenAPIOperation{}, guardErr
-			}
+			direction = OpenAPIRequest
 		}
-		expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "request", "body", media}, used)
+		expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "request", "body", media}, used, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -296,7 +299,11 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if schemaErr != nil {
 				return derivedOpenAPIOperation{}, derivationError(document.operationID, header, "response header "+item.name+": "+schemaErr.Error())
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "header", item.name}, used)
+			direction := OpenAPIDirection("")
+			if openAPI30 {
+				direction = OpenAPIResponse
+			}
+			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "header", item.name}, used, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -311,12 +318,11 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if mediaErr != nil {
 				return derivedOpenAPIOperation{}, derivationError(document.operationID, response, "response body "+status+": "+mediaErr.Error())
 			}
+			direction := OpenAPIDirection("")
 			if openAPI30 {
-				if guardErr := rejectOpenAPI30DirectionalRequired(document.operationID, schema, docs, "response", "writeOnly"); guardErr != nil {
-					return derivedOpenAPIOperation{}, guardErr
-				}
+				direction = OpenAPIResponse
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "body", media}, used)
+			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "body", media}, used, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -333,12 +339,12 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 	return derivedOpenAPIOperation{declarations: declarations, refined: refined, native: native}, nil
 }
 
-func deriveOpenAPISchemaType(schema openAPINode, docs map[string]schemajson.Document, nameParts []string, used map[string]bool) (string, []string, error) {
+func deriveOpenAPISchemaType(schema openAPINode, docs map[string]schemajson.Document, nameParts []string, used map[string]bool, direction OpenAPIDirection) (string, []string, error) {
 	doc, ok := docs[schema.resource]
 	if !ok {
 		return "", nil, &Error{Code: "native.resource", Format: OpenAPI, Pointer: schema.resource, Message: "operation Schema Object resource is absent"}
 	}
-	projector := &sourceProjector{format: OpenAPI, root: doc, names: map[string]string{}, definitionNodes: map[string]schemajson.Node{}, definitionPaths: map[string]string{}, emitted: map[string]bool{}, openAPI: true, strictStructure: true}
+	projector := &sourceProjector{format: OpenAPI, root: doc, names: map[string]string{}, definitionNodes: map[string]schemajson.Node{}, definitionPaths: map[string]string{}, emitted: map[string]bool{}, openAPI: true, strictStructure: true, openAPIDirection: direction}
 	addDefinitions := func(pointer, reference string) {
 		definitions, err := doc.At(pointer)
 		if err != nil || schemajson.KindName(definitions.Kind()) != "object" {
@@ -449,72 +455,4 @@ func derivedDeclarationName(declaration string) string {
 }
 func derivationError(operation string, node openAPINode, message string) error {
 	return &Error{Code: "native.projection", Format: OpenAPI, Pointer: operation + " " + node.resource + "#" + node.pointer, Message: message}
-}
-
-// OAS 3.0 makes required readOnly properties response-only and required
-// writeOnly properties request-only. The generic JSON Schema oracle cannot
-// reproduce that directional rule, so automatic body derivation rejects the
-// affected opposite direction instead of producing a validator that rejects a
-// conforming payload. Later OAS versions deliberately keep their annotation
-// validation policy outside this 3.0-only guard.
-func rejectOpenAPI30DirectionalRequired(operation string, schema openAPINode, docs map[string]schemajson.Document, direction, annotation string) error {
-	pending := []openAPINode{schema}
-	seen := map[string]bool{}
-	work := 0
-	for len(pending) > 0 {
-		work++
-		if work > 65536 {
-			return &Error{Code: "native.limit", Format: OpenAPI, Pointer: operation, Message: "OpenAPI 3.0 directional body schema inspection limit exceeded"}
-		}
-		current := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		resolved, err := resolveOpenAPIObject(current, docs, 64)
-		if err != nil {
-			return err
-		}
-		key := resolved.resource + "#" + resolved.pointer
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		required := map[string]bool{}
-		if requiredNode, ok := resolved.node.Lookup("required"); ok && schemajson.KindName(requiredNode.Kind()) == "array" {
-			for _, item := range requiredNode.Elements() {
-				if name, ok := nodeString(item); ok {
-					required[name] = true
-				}
-			}
-		}
-		if properties, ok := resolved.node.Lookup("properties"); ok && schemajson.KindName(properties.Kind()) == "object" {
-			for _, member := range properties.Members() {
-				name, _ := member.Key.UTF8()
-				child := openAPINode{resource: resolved.resource, pointer: resolved.pointer + "/properties/" + escapePointer(name), node: member.Value}
-				checked, checkErr := resolveOpenAPIObject(child, docs, 64)
-				if checkErr != nil {
-					return checkErr
-				}
-				if required[name] {
-					if flag, ok := checked.node.Lookup(annotation); ok && flag.Raw() == "true" {
-						return &Error{Code: "native.projection", Format: OpenAPI, Pointer: operation + " " + checked.resource + "#" + checked.pointer + "/" + annotation, Message: "automatic OpenAPI 3.0 " + direction + " body derivation cannot model direction-dependent required " + annotation + " property " + name + "; direction-aware native body validation is not yet supported"}
-					}
-				}
-				pending = append(pending, child)
-			}
-		}
-		for _, keyword := range []string{"items", "additionalProperties", "not"} {
-			if child, ok := resolved.node.Lookup(keyword); ok && schemajson.KindName(child.Kind()) == "object" {
-				pending = append(pending, openAPINode{resource: resolved.resource, pointer: resolved.pointer + "/" + keyword, node: child})
-			}
-		}
-		for _, keyword := range []string{"allOf", "anyOf", "oneOf"} {
-			if children, ok := resolved.node.Lookup(keyword); ok && schemajson.KindName(children.Kind()) == "array" {
-				for i, child := range children.Elements() {
-					if schemajson.KindName(child.Kind()) == "object" {
-						pending = append(pending, openAPINode{resource: resolved.resource, pointer: fmt.Sprintf("%s/%s/%d", resolved.pointer, keyword, i), node: child})
-					}
-				}
-			}
-		}
-	}
-	return nil
 }

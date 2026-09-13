@@ -15,17 +15,18 @@ import (
 )
 
 type sourceProjector struct {
-	format          Format
-	root            schemajson.Document
-	names           map[string]string
-	definitionNodes map[string]schemajson.Node
-	definitionPaths map[string]string
-	declarations    []string
-	avroNames       map[string]string
-	emitted         map[string]bool
-	nextUnion       int
-	openAPI         bool
-	strictStructure bool
+	format           Format
+	root             schemajson.Document
+	names            map[string]string
+	definitionNodes  map[string]schemajson.Node
+	definitionPaths  map[string]string
+	declarations     []string
+	avroNames        map[string]string
+	emitted          map[string]bool
+	nextUnion        int
+	openAPI          bool
+	strictStructure  bool
+	openAPIDirection OpenAPIDirection
 }
 type jsonMapCandidate struct {
 	node schemajson.Node
@@ -241,11 +242,15 @@ func (p *sourceProjector) jsonType(node schemajson.Node, path string, openAPI bo
 			if !memberPattern.MatchString(name) {
 				return "", &Error{Code: "native.projection", Format: p.format, Pointer: path + "/properties/" + escapePointer(name), Message: "property name is not a language field identifier"}
 			}
+			directionalOptional, err := p.jsonDirectionalOptional(member.Value, path+"/properties/"+escapePointer(name))
+			if err != nil {
+				return "", err
+			}
 			fieldType, err := p.jsonType(member.Value, path+"/properties/"+escapePointer(name), openAPI)
 			if err != nil {
 				return "", err
 			}
-			if !required[name] {
+			if !required[name] || directionalOptional {
 				fieldType = "Maybe (" + fieldType + ")"
 			}
 			fields = append(fields, name+" :: "+fieldType)

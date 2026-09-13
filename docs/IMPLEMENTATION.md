@@ -1667,3 +1667,92 @@ current implementation still performs no Maven deployment or product release.
   was rerun; it passed in 1.292s. Together these checks cover the frozen batch
   without repeating Java, Maven, or the full suite. This is checkpoint
   evidence, not completion of the entire specification or a Maven deployment.
+- Checkpoint `bebb866b4ae67af88b4d5b0f5a607a0cff17c6ae` was pushed to `main`.
+  Its dry-run fuzz plan selected 20 affected targets out of 24 for 88 changed
+  paths (`full: false`); the dry run executed no tests. CI run `34730820365`
+  is the corresponding cross-platform integration run.
+- A separate temporary consumer fetched the public module through
+  `goforge.dev/refine` as `v0.0.0-20260913013312-bebb866b4ae6` and ran with
+  `GOTOOLCHAIN=local`, no workspace replacement or GoPlus generation step.
+  It passed native mixed-kind JSON acceptance/rejection, ordinary lowering
+  with the wire explanation, and semantic Java model generation. This is
+  public pseudoversion-consumer evidence, not a tagged release or Maven deploy.
+- In CI run `34730820365`, macOS passed native (99.002s), project/Maven
+  (147.748s), and the other packages, but the Java package reached the default
+  600s package timeout during `TestWorkedExamplesGenerateExecutableJava`, which
+  had itself run only four seconds. No preceding assertion failure was logged.
+  This is a failed CI checkpoint, not a success inferred from local evidence.
+  The next workflow revision gives the same selection an explicit twenty-minute
+  ceiling. No unchanged CI job or local full suite was rerun for this timeout.
+- Linux completed CI run `34730820365` successfully, including the 20 selected
+  fuzz campaigns. The overall run remains failed because of macOS's Java
+  package timeout. Test-guide name auditing also corrected obsolete map and
+  generated-property test names without launching any tests.
+
+## Offline artifact evidence and directional native validation — in progress
+
+- Added an independent immutable JAR inventory/ledger verification boundary.
+  It checks actual explicitly supplied bytes, not filenames or publication
+  claims alone, and does not fetch, extract, publish or infer Java ABI changes.
+  EOCD/central-directory count and range checks run before ZIP metadata
+  allocation; ZIP64 and multi-disk archives are explicitly unsupported.
+  Streamed CRC checks, aggregate/per-entry expanded limits, unsafe paths,
+  portable-name collisions and encryption/mode rejection are covered by
+  parameterized cases, 64 deterministic property cases and bounded fuzz seeds.
+- Initial five-anchor artifact selection passed in 0.255s. After the directory
+  allocation/dot-path/encryption review fixes, only four changed-inspector
+  anchors were rerun (0.237s); the unchanged digest-verification test was reused.
+  Root's exact five-anchor race/seed selection then passed once in 1.272s.
+  That source is frozen; no Maven, full suite or local fuzz campaign was run
+  for the independent artifact API.
+- OpenAPI 3.0 operation validators now use immutable, direction-specific native
+  resource views. Required read-only fields become optional in requests;
+  required write-only fields become optional in responses. Supplied values
+  still undergo native validation. Derived records use `Maybe`, authored
+  mandatory fields fail closed, and nested map/list/nullable/generic records
+  are audited. Ambiguous applicator composition remains explicitly unsupported.
+  OpenAPI 3.1/3.2 retain their canonical views. The seven-anchor native selection
+  in TESTING.md passed in 0.251s with scoped generation consistency.
+- The Java facade uses separate native helpers only when the two resource
+  views differ. It preserves constructor/limit APIs and translates response
+  failures into the existing native exception class, preserving code and cause.
+  The new grouped direction harness passed in 1.735s; the affected existing
+  native/serde/regex selection passed in 5.898s. These checks used Java 25 and
+  the pinned NetworkNT/Graal/Jackson dependencies; no unrelated Java harnesses
+  were rerun locally.
+- After the native/Java source freeze, the exact seven-anchor project race
+  selection passed in 28.438s, including the existing real Maven lifecycle.
+  Its first artifact is now inspected for exact digest and the generated
+  `Greeting.class` inventory, without adding another build. The two-anchor CLI
+  caller race selection passed in 1.576s. Whole-tree GoPlus generation
+  consistency, affected `native/java/release/project/cli` vet, and diff checks
+  passed. The command selections and evidence-reuse boundaries are versioned
+  in TESTING.md; this is not a second local full-suite run.
+- Specification audit clarified that general historical Java classfile ABI
+  comparison is optional future work. The agreed Maven version rule remains
+  the explicit schema-family-major removal policy in SPEC.md, not a generic
+  Java binary-compatibility rule. RELEASE.md no longer incorrectly lists a
+  classfile comparator as a release prerequisite.
+- The scope audit also corrected SPEC.md's overbroad "adapters for existing
+  Java types" bullet to reflect the user's later explicit clarification:
+  ecosystem connections are required at the serde boundary, while unrelated
+  application-owned type adaptation is deferred. This does not defer generated
+  semantic models or validated Jackson/Avro integration.
+- Final read-only review found a false rejection of closed generic operation
+  envelopes at both native field-path resolution and OpenAPI metadata checking.
+  Bounded simultaneous specialization now handles these aliases while retaining
+  the direct named closed metadata-type rule. Public tests exercise nested
+  query mappings, present/absent optional response headers, and directional
+  records under nullable/list/generic wrappers. The coordinated affected race
+  selection passed for `openapi` (1.245s) and `native` (2.246s).
+- The same review added a preflight before constructing additional OAS 3.0
+  mutable resource trees: 64 MiB and 65,536 aggregate JSON values. The coordinated
+  selection covers one-resource and split-resource overages, the exact boundary
+  and one-over. Canonical parsing retains its existing bounds; these are not
+  payload limits. No separate overlapping artifact or native test run followed.
+- Closed generic envelopes are newly accepted inputs, so the existing grouped
+  Java direction fixture was upgraded to use them and only
+  `TestGeneratedOpenAPI30DirectionAwareNativeValidation` was rerun (2.624s,
+  required Java 25 plus pinned Jackson/NetworkNT/Graal). It retained all native
+  exactness/direction/immutability assertions. Other Java and Maven evidence was
+  reused: those generator inputs and nongeneric fixtures did not change.

@@ -140,6 +140,19 @@ the facade's tighten-only `Limits` controls aggregate semantic parts/bytes, and
 structural decoding, and predicates are not bypassed or converted into one
 another's outcomes.
 
+For OpenAPI 3.0, request validation removes `readOnly` property names from
+native `required` lists, while response validation removes `writeOnly` names.
+When those transformations differ, the composed Java facade embeds separate,
+generator-owned request and response resource views. The property schemas
+themselves remain in both views: a supplied opposite-direction property is
+accepted only when its complete native schema validates. OpenAPI 3.1 and 3.2,
+and 3.0 projects whose two views are byte-identical, retain the single existing
+`NativeParts` sidecar. Runtime callers cannot select a direction, resource,
+URI, or pointer; the checked operation index fixes those choices during
+generation. Existing facade constructors continue to take request-side
+`NativeParts` limits and apply equivalent tighten-only limits to any generated
+response-side validator.
+
 Operation-aware native exports include the complete checked module explanation
 alongside a deterministic rendering of every operation ID, method, path,
 status, request type, response type, and context type. This deliberately

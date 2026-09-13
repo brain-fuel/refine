@@ -333,3 +333,27 @@ the schema/generated-source inventory and reason, but omits artifact version,
 artifact digest, and classes. Unknown/duplicate JSON fields, unsafe paths,
 noncanonical versions, stale schema/source bytes, case-fold collisions, and a
 mismatched inventory digest reject the entire gate.
+
+## Offline published-JAR evidence
+
+`InspectJavaArtifact` builds an immutable inventory from explicitly supplied JAR
+bytes without extracting files or using the filesystem or network. It hashes the
+exact JAR and every `.class` entry while streaming all entries through ZIP CRC
+validation. Input bytes, entry count, total expanded bytes, per-entry bytes, and
+entry-name bytes have caller-tightenable hard limits. The EOCD and central
+directory are scanned and count/range-checked before `archive/zip` may allocate
+per-entry metadata. Multi-disk and ZIP64 JARs fail closed in this bounded API.
+Unsafe, duplicate or
+case-fold-colliding paths, encryption, symbolic links, nonregular entries,
+malformed ZIP structures, truncated data, and checksum failures are rejected.
+
+`VerifyPublishedArtifact` checks the version-1 ledger's published artifact and
+class claims against such an inventory. Missing ledger or artifact evidence is
+`Unknown`; an unpublished record requires no invented JAR. This API is separate
+from `PlanPublication`, so existing checked-in attestation policy is not silently
+changed. Supplying local bytes does not prove that they were published or
+authentic: callers must obtain the exact historical artifact through an explicit
+trusted workflow. A changed class digest is an evidence mismatch, not proof of
+Java ABI compatibility or incompatibility. General classfile ABI comparison is
+optional future work, not a replacement for the agreed schema-family-major
+removal policy or a prerequisite imposed by this verifier.

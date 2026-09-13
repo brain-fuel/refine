@@ -73,6 +73,11 @@ func TestGeneratedNativeOpenAPIContextComposesAllBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, file := range files {
+		if filepath.Base(file.Path) == "OperationsNativeResponseParts.java" {
+			t.Fatal("unchanged OpenAPI 3.1 resource views emitted a redundant response sidecar")
+		}
+	}
 	dir := t.TempDir()
 	sources := []string{}
 	for _, file := range files {

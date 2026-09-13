@@ -213,7 +213,7 @@ func (p *Project) DecodeAndValidateOpenAPIRequest(operationID string, input Open
 		if err := budget.chargeNumbers(p, doc, part.descriptor.ID); err != nil {
 			return nil, validation.Report{}, err
 		}
-		if err := p.validateOpenAPISchemaNode(part.descriptor, doc); err != nil {
+		if err := p.validateOpenAPISchemaNode(part.descriptor, doc, OpenAPIRequest); err != nil {
 			return nil, validation.Report{}, err
 		}
 		if err := setOpenAPIJSONPath(assembled, part.descriptor.FieldPath, json.RawMessage(doc.Raw())); err != nil {
@@ -299,7 +299,7 @@ func (p *Project) DecodeAndValidateOpenAPIResponse(operationID string, input Ope
 		if err := budget.chargeNumbers(p, doc, part.descriptor.ID); err != nil {
 			return value.Data{}, validation.Report{}, err
 		}
-		if err := p.validateOpenAPISchemaNode(part.descriptor, doc); err != nil {
+		if err := p.validateOpenAPISchemaNode(part.descriptor, doc, OpenAPIResponse); err != nil {
 			return value.Data{}, validation.Report{}, err
 		}
 		if err := setOpenAPIJSONPath(assembled, part.descriptor.FieldPath, json.RawMessage(doc.Raw())); err != nil {
@@ -427,7 +427,7 @@ func (p *Project) decodeOpenAPIType(target *language.PayloadType, input []byte) 
 	}
 	return decoder.decode(checked.Type, doc.Root(), nil, "", 0, "")
 }
-func (p *Project) validateOpenAPISchemaNode(target OpenAPISchemaTarget, instance schemajson.Document) (failure error) {
+func (p *Project) validateOpenAPISchemaNode(target OpenAPISchemaTarget, instance schemajson.Document, direction OpenAPIDirection) (failure error) {
 	defer recoverRegexEvaluation(OpenAPI, &failure)
 	nativeValue, err := jsonoracle.UnmarshalJSON(strings.NewReader(instance.Raw()))
 	if err != nil {
@@ -436,9 +436,13 @@ func (p *Project) validateOpenAPISchemaNode(target OpenAPISchemaTarget, instance
 	if p == nil || p.openAPIOperations == nil {
 		return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation schema index is absent"}
 	}
-	schema := p.openAPIOperations.schemas[target.ID]
+	schemas := p.openAPIOperations.requestSchemas
+	if direction == OpenAPIResponse {
+		schemas = p.openAPIOperations.responseSchemas
+	}
+	schema := schemas[target.ID]
 	if schema == nil {
-		return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation schema target is absent"}
+		return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation schema target is absent for its fixed direction"}
 	}
 	if err := schema.Validate(nativeValue); err != nil {
 		return wrap(OpenAPI, "native.payload", target.ID, err)
@@ -449,6 +453,30 @@ func (p *Project) compileOpenAPISchemaTargets() error {
 	if p == nil || p.openAPIOperations == nil {
 		return nil
 	}
+	requestResources, err := p.OpenAPIValidationResources(OpenAPIRequest)
+	if err != nil {
+		return err
+	}
+	responseResources, err := p.OpenAPIValidationResources(OpenAPIResponse)
+	if err != nil {
+		return err
+	}
+	requests := []OpenAPISchemaTarget{}
+	responses := []OpenAPISchemaTarget{}
+	for _, operation := range p.openAPIOperations.catalog.Operations {
+		requests = append(requests, operation.RequestParts...)
+		for _, response := range operation.Responses {
+			responses = append(responses, response.Parts...)
+		}
+	}
+	p.openAPIOperations.requestSchemas, err = compileOpenAPIDirectionalSchemas(requestResources, requests)
+	if err != nil {
+		return err
+	}
+	p.openAPIOperations.responseSchemas, err = compileOpenAPIDirectionalSchemas(responseResources, responses)
+	return err
+}
+func compileOpenAPIDirectionalSchemas(resources []Resource, targets []OpenAPISchemaTarget) (map[string]*jsonoracle.Schema, error) {
 	compiler := jsonoracle.NewCompiler()
 	compiler.DefaultDraft(jsonoracle.Draft2020)
 	compiler.UseRegexpEngine(jsonRegexp)
@@ -459,39 +487,33 @@ func (p *Project) compileOpenAPISchemaTargets() error {
 	if err := compiler.AddResource(openAPIBaseDialect, dialect); err != nil {
 		panic(err)
 	}
-	for _, resource := range p.openAPIOperations.catalog.Resources {
+	for _, resource := range resources {
 		schemaValue, err := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
 		if err != nil {
-			return wrap(OpenAPI, "native.structure", resource.URI, err)
+			return nil, wrap(OpenAPI, "native.structure", resource.URI, err)
 		}
 		if err := compiler.AddResource(resource.URI, schemaValue); err != nil {
-			return wrap(OpenAPI, "native.structure", resource.URI, err)
+			return nil, wrap(OpenAPI, "native.structure", resource.URI, err)
 		}
 	}
-	p.openAPIOperations.schemas = map[string]*jsonoracle.Schema{}
+	schemas := map[string]*jsonoracle.Schema{}
 	locations := map[string]string{}
-	for _, operation := range p.openAPIOperations.catalog.Operations {
-		targets := append([]OpenAPISchemaTarget(nil), operation.RequestParts...)
-		for _, response := range operation.Responses {
-			targets = append(targets, response.Parts...)
+	for _, target := range targets {
+		location := target.Resource
+		if target.Pointer != "" {
+			location += "#" + target.Pointer
 		}
-		for _, target := range targets {
-			location := target.Resource
-			if target.Pointer != "" {
-				location += "#" + target.Pointer
-			}
-			if prior, exists := locations[target.ID]; exists && prior != location {
-				return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "stable operation part ID collision"}
-			}
-			schema, err := compiler.Compile(location)
-			if err != nil {
-				return wrap(OpenAPI, "native.enforcement", target.ID, err)
-			}
-			locations[target.ID] = location
-			p.openAPIOperations.schemas[target.ID] = schema
+		if prior, exists := locations[target.ID]; exists && prior != location {
+			return nil, &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "stable operation part ID collision"}
 		}
+		schema, err := compiler.Compile(location)
+		if err != nil {
+			return nil, wrap(OpenAPI, "native.enforcement", target.ID, err)
+		}
+		locations[target.ID] = location
+		schemas[target.ID] = schema
 	}
-	return nil
+	return schemas, nil
 }
 
 func selectIndexedOpenAPIResponse(operation *indexedOpenAPIOperation, status string) (*indexedOpenAPIResponse, error) {

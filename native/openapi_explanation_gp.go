@@ -32,7 +32,11 @@ func OpenAPIContractExplanation(program *language.Program, metadata WireMetadata
 	if err != nil {
 		return "", err
 	}
-	mapping := "# OpenAPI operation refinement bindings\n\nThese explicitly authored bindings connect HTTP operation descriptors to checked Refine request, response, and context types. The ordinary native schema does not structurally enforce this mapping. A response binding with a context type requires the original request. Validation treats missing required original-request context as indeterminate; a separately proven response violation remains invalid and is marked incomplete. Invalid and indeterminate outcomes both prevent normal use.\n\n## Checked operation mapping\n\n" + openAPIMarkdownFence("json", string(encoded)) + "## Complete checked Refine contract\n\n" + document.Markdown()
+	nativeDirection := ""
+	if metadata.OpenAPI.Native != nil {
+		nativeDirection = " For OpenAPI 3.0 native bindings, required read-only properties are required only in responses and required write-only properties only in requests. A wrong-direction property that is nevertheless supplied remains permitted by the schema and its value is validated; OpenAPI advises that it SHOULD NOT be sent."
+	}
+	mapping := "# OpenAPI operation refinement bindings\n\nThese explicitly authored bindings connect HTTP operation descriptors to checked Refine request, response, and context types. The ordinary native schema does not structurally enforce this mapping." + nativeDirection + " A response binding with a context type requires the original request. Validation treats missing required original-request context as indeterminate; a separately proven response violation remains invalid and is marked incomplete. Invalid and indeterminate outcomes both prevent normal use.\n\n## Checked operation mapping\n\n" + openAPIMarkdownFence("json", string(encoded)) + "## Complete checked Refine contract\n\n" + document.Markdown()
 	return mapping, nil
 }
 

@@ -401,12 +401,19 @@ existing semantic boundary can represent them; rootless OpenAPI projects need a
 later project-model change.
 
 For OpenAPI 3.0, a required `readOnly` property is response-only and a required
-`writeOnly` property is request-only. The current generic native Schema Object
-oracle cannot apply `required` directionally, so automatic derivation rejects
-request bodies containing the former and response bodies containing the latter.
-Direction-aware native body validation is not yet supported; authored operation
-metadata does not bypass this enforcement gap. OpenAPI 3.1/3.2 annotation-based
-direction policies are not claimed by this 3.0-specific guard.
+`writeOnly` property is request-only. Checked operation compilation creates
+separate immutable request and response resource views, removing only the
+inapplicable name from each affected `required` list. The original resources,
+property schemas, and supplied values remain unchanged: a wrong-direction
+property is still validated when present because OpenAPI says it SHOULD NOT be
+sent rather than forbidding it. Derived record fields use `Maybe`; authored
+mandatory fields are rejected when they would restore the removed requirement.
+Direction annotations distributed ambiguously across schema applicators fail
+closed. Constructing the additional OpenAPI 3.0 mutable resource view is
+preflighted at 64 MiB and 65,536 aggregate JSON values before the second tree is
+allocated; these are schema-view construction limits, not payload limits.
+OpenAPI 3.1/3.2 resources remain canonical and unchanged; no comparable
+annotation-based direction policy is claimed for those versions.
 
 `DecodeAndValidateOpenAPIRequest` and `DecodeAndValidateOpenAPIResponse` accept
 semantic JSON values, enforce each native Schema Object first, assemble and

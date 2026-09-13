@@ -249,30 +249,14 @@ func TestWithDerivedOpenAPIOperationsVersionMatrix(t *testing.T) {
 	}
 }
 
-func TestWithDerivedOpenAPIOperationsRejectsOpenAPI30DirectionalRequiredBodies(t *testing.T) {
-	cases := []struct {
-		name, operation string
-		reject          bool
-	}{
-		{"request readOnly", `"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["id"],"properties":{"id":{"type":"integer","readOnly":true}}}}}},"responses":{"200":{"description":"ok"}}`, true},
-		{"response writeOnly", `"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"type":"object","required":["secret"],"properties":{"secret":{"type":"string","writeOnly":true}}}}}}}`, true},
-		{"example lookalike", `"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"id":{"type":"integer"}},"example":{"required":["hidden"],"properties":{"hidden":{"readOnly":true}}}}}}},"responses":{"200":{"description":"ok"}}`, false},
+func TestWithDerivedOpenAPIOperationsDoesNotScanDirectionalExampleLookalikes(t *testing.T) {
+	operation := `"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"id":{"type":"integer"}},"example":{"required":["hidden"],"properties":{"hidden":{"readOnly":true}}}}}}},"responses":{"200":{"description":"ok"}}`
+	source := `{"openapi":"3.0.4","info":{"title":"Directional","version":"1"},"paths":{"/value":{"post":{"operationId":"directional",` + operation + `}}},"components":{"schemas":{"Root":{"type":"object"}}}}`
+	base, err := IngestProject(OpenAPI, []byte(source), ProjectOptions{ResourceID: "https://example.test/directional.json", Root: ResourceSelector{Pointer: "/components/schemas/Root", TypeName: "Root"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			source := `{"openapi":"3.0.4","info":{"title":"Directional","version":"1"},"paths":{"/value":{"post":{"operationId":"directional",` + tc.operation + `}}},"components":{"schemas":{"Root":{"type":"object"}}}}`
-			base, err := IngestProject(OpenAPI, []byte(source), ProjectOptions{ResourceID: "https://example.test/directional.json", Root: ResourceSelector{Pointer: "/components/schemas/Root", TypeName: "Root"}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			derived, err := base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{})
-			if tc.reject {
-				if derived != nil || problemCode(err) != "native.projection" || !strings.Contains(err.Error(), "direction-dependent required") {
-					t.Fatalf("directional required body was not rejected precisely: %v", err)
-				}
-			} else if err != nil || derived == nil {
-				t.Fatalf("example lookalike was scanned as a Schema Object: %v", err)
-			}
-		})
+	if _, err := base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{}); err != nil {
+		t.Fatalf("example lookalike was scanned as a Schema Object: %v", err)
 	}
 }
