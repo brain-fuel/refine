@@ -17,7 +17,7 @@ const OpenAPIOperationsProject ProjectKind = "openapi-operations"
 type ProjectTarget struct {
 	Kind     ProjectKind      `json:"kind"`
 	Resource string           `json:"resource,omitempty"`
-	Root     ResourceSelector `json:"root,omitempty"`
+	Root     ResourceSelector `json:"root,omitzero"`
 }
 
 func payloadProjectTarget(root ResourceSelector) ProjectTarget {

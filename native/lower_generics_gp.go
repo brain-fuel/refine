@@ -107,6 +107,9 @@ func (l *lowerer) generic(t *language.Type) (any, error) {
 		definition, buildErr := l.typ(body, false)
 		l.owner = oldOwner
 		delete(l.building, wireName)
+		if buildErr == nil {
+			definition, buildErr = l.applyExtraFieldPolicy(name, body, definition)
+		}
 		if buildErr != nil {
 			delete(l.definitions, wireName)
 			return nil, buildErr

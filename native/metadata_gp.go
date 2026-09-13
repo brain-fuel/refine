@@ -6,7 +6,6 @@ package native
 import (
 	"fmt"
 	"regexp"
-	"strings"
 
 	"goforge.dev/refine/language"
 	refineopenapi "goforge.dev/refine/openapi"
@@ -17,6 +16,7 @@ type ExtraFieldMode string
 const (
 	DiscardExtraFields  ExtraFieldMode = "discard"
 	PreserveExtraFields ExtraFieldMode = "preserve"
+	RejectExtraFields   ExtraFieldMode = "reject"
 )
 
 type EncodingKind string
@@ -145,16 +145,8 @@ func validateMetadata(program *language.Program, metadata WireMetadata) error {
 	for _, decl := range module.Types {
 		types[decl.Name] = decl
 	}
-	for name, mode := range metadata.ExtraFields {
-		if _, ok := types[name]; !ok {
-			return fmt.Errorf("extra-field policy names unknown type %s", name)
-		}
-		if mode != DiscardExtraFields && mode != PreserveExtraFields {
-			return fmt.Errorf("invalid extra-field mode for %s", name)
-		}
-		if kind := metadataTypeKind(name, types, map[string]bool{}); kind != "record" {
-			return fmt.Errorf("extra-field policy requires record type %s", name)
-		}
+	if err := validateExtraFieldPolicies(types, metadata.ExtraFields); err != nil {
+		return err
 	}
 	for name, encoding := range metadata.Scalars {
 		if _, ok := types[name]; !ok {
@@ -278,7 +270,7 @@ func metadataSyntaxKind(t *language.Type, types map[string]language.TypeDecl, vi
 		if name == "Timestamp" {
 			return "timestamp"
 		}
-		if name == "Int" || strings.HasPrefix(name, "Int") || strings.HasPrefix(name, "UInt") {
+		if jsonLanguageInteger(name) {
 			return "integer"
 		}
 		return metadataTypeKind(name, types, visiting)

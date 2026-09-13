@@ -3,7 +3,6 @@ package native
 import (
     "fmt"
     "regexp"
-    "strings"
 
     "goforge.dev/refine/language"
     refineopenapi "goforge.dev/refine/openapi"
@@ -13,6 +12,7 @@ type ExtraFieldMode string
 const (
     DiscardExtraFields ExtraFieldMode = "discard"
     PreserveExtraFields ExtraFieldMode = "preserve"
+    RejectExtraFields ExtraFieldMode = "reject"
 )
 type EncodingKind string
 const (
@@ -62,7 +62,7 @@ func validateMetadata(program *language.Program,metadata WireMetadata)error{
     if metadata.NumericExpansion<0||metadata.NumericExpansion>MaxNumericExpansion{return fmt.Errorf("numeric expansion must be zero or between 1 and %d",MaxNumericExpansion)}
     if metadata.PublicationNamespace!=""&&!namespacePattern.MatchString(metadata.PublicationNamespace){return fmt.Errorf("publication namespace must contain dot-separated identifiers")}
     module:=program.Syntax();types:=make(map[string]language.TypeDecl);for _,decl:=range module.Types{types[decl.Name]=decl}
-    for name,mode:=range metadata.ExtraFields{if _,ok:=types[name];!ok{return fmt.Errorf("extra-field policy names unknown type %s",name)};if mode!=DiscardExtraFields&&mode!=PreserveExtraFields{return fmt.Errorf("invalid extra-field mode for %s",name)};if kind:=metadataTypeKind(name,types,map[string]bool{});kind!="record"{return fmt.Errorf("extra-field policy requires record type %s",name)}}
+    if err:=validateExtraFieldPolicies(types,metadata.ExtraFields);err!=nil{return err}
     for name,encoding:=range metadata.Scalars{if _,ok:=types[name];!ok{return fmt.Errorf("scalar encoding names unknown type %s",name)};kind:=metadataTypeKind(name,types,map[string]bool{});switch encoding.Kind{case JSONNumber:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="integer"{return fmt.Errorf("json-number encoding requires an integer-backed type %s",name)};case DecimalString:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="integer"{return fmt.Errorf("decimal-string encoding requires an integer-backed type %s",name)};case RationalRecord:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="real"{return fmt.Errorf("rational-record encoding requires a Real-backed type %s",name)};case TimestampString:if encoding.Precision!=0||encoding.Scale!=0{return fmt.Errorf("precision/scale apply only to avro-bytes-decimal for %s",name)};if kind!="timestamp"{return fmt.Errorf("timestamp-string encoding requires a Timestamp-backed type %s",name)};case AvroBytesDecimal:if kind!="real"||encoding.Precision<=0||encoding.Scale<0||encoding.Scale>encoding.Precision{return fmt.Errorf("invalid Avro decimal type/precision/scale for %s",name)};default:return fmt.Errorf("invalid scalar encoding for %s",name)}}
     for name,wire:=range metadata.Discriminators{decl,ok:=types[name];if !ok||decl.Body!=nil{return fmt.Errorf("discriminator requires tagged union type %s",name)};if !memberPattern.MatchString(wire.Field){return fmt.Errorf("invalid discriminator field for %s",name)};expected:=make(map[string]int);for _,variant:=range decl.Variants{expected[variant.Name]=len(variant.Arguments)};if len(wire.Values)!=len(expected)||len(wire.Arguments)!=len(expected){return fmt.Errorf("discriminator metadata must cover every constructor of %s",name)};seenValues:=make(map[string]bool)
         for constructor,arity:=range expected{tag,ok:=wire.Values[constructor];if !ok||tag==""{return fmt.Errorf("missing discriminator value for %s.%s",name,constructor)};if seenValues[tag]{return fmt.Errorf("duplicate discriminator wire value %q for %s",tag,name)};seenValues[tag]=true;args,ok:=wire.Arguments[constructor];if !ok||len(args)!=arity{return fmt.Errorf("constructor argument names for %s.%s must have arity %d",name,constructor,arity)};seenArgs:=map[string]bool{wire.Field:true};for _,arg:=range args{if !memberPattern.MatchString(arg)||seenArgs[arg]{return fmt.Errorf("invalid or duplicate member %q for %s.%s",arg,name,constructor)};seenArgs[arg]=true}}
@@ -74,6 +74,6 @@ func metadataTypeKind(name string,types map[string]language.TypeDecl,visiting ma
 func metadataSyntaxKind(t *language.Type,types map[string]language.TypeDecl,visiting map[string]bool)string{match t.Form{
 case language.RefinedType(base,_):return metadataSyntaxKind(base,types,visiting)
 case language.RecordType(_):return "record"
-case language.NamedType(name):if name=="Real"{return "real"};if name=="Timestamp"{return "timestamp"};if name=="Int"||strings.HasPrefix(name,"Int")||strings.HasPrefix(name,"UInt"){return "integer"};return metadataTypeKind(name,types,visiting)
+case language.NamedType(name):if name=="Real"{return "real"};if name=="Timestamp"{return "timestamp"};if jsonLanguageInteger(name){return "integer"};return metadataTypeKind(name,types,visiting)
 case _:return ""
 }}

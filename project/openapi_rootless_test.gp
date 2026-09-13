@@ -1,17 +1,39 @@
 package project
 
 import (
+    "bytes"
+    "encoding/json"
     "strings"
     "testing"
 
+    "goforge.dev/refine/java"
     "goforge.dev/refine/native"
 )
 
-func TestGenerateOperationsOnlyOpenAPIRejectsMissingPropertyAssembly(t *testing.T){
-    source:=[]byte(`{"openapi":"3.1.2","info":{"title":"Rootless","version":"1"},"paths":{"/ping":{"post":{"operationId":"ping","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"integer"}}}},"responses":{"204":{"description":"accepted"}}}}}}`)
-    imported,err:=native.IngestOpenAPIOperations(source,native.OpenAPIOperationIngestOptions{});if err!=nil{t.Fatal(err)}
-    for _,disabled:=range []bool{false,true}{
-        output,err:=Generate(GenerateInput{Contracts:[]Contract{{Family:"ping",NativeProject:imported,Formats:[]native.Format{native.OpenAPI},NoCodegen:disabled}}})
-        if err==nil||!strings.Contains(err.Error(),"operation-aware generated property tests")||len(output.Files)!=0{t.Fatalf("rootless project assembly silently skipped its missing boundary: no-codegen=%v err=%v files=%d",disabled,err,len(output.Files))}
-    }
+func rootlessOpenAPIProject(t *testing.T)*native.Project{
+    t.Helper();source:=[]byte(`{"openapi":"3.1.2","info":{"title":"Rootless","version":"1"},"paths":{"/ping":{"post":{"operationId":"ping","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"integer"}}}},"responses":{"200":{"description":"accepted","content":{"application/json":{"schema":{"type":"string"}}}}}}}}}`);imported,err:=native.IngestOpenAPIOperations(source,native.OpenAPIOperationIngestOptions{});if err!=nil{t.Fatal(err)};return imported
+}
+
+func TestGenerateOperationsOnlyOpenAPIContextPropertiesAndResources(t *testing.T){
+    imported:=rootlessOpenAPIProject(t);exactBundle,err:=imported.Bundle();if err!=nil{t.Fatal(err)};input:=GenerateInput{Contracts:[]Contract{{Family:"ping",NativeProject:imported,Formats:[]native.Format{native.OpenAPI}}}};output,err:=Generate(input);if err!=nil{t.Fatal(err)}
+    found:=map[string]bool{};for _,file:=range output.Files{name:=file.Path;source:=string(file.Content);switch{
+    case strings.HasSuffix(name,"/Contract.java"):found["contract"]=true
+    case strings.HasSuffix(name,"/RefineOpenAPIOperations.java"):found["facade"]=strings.Contains(source,"ping")
+    case strings.HasSuffix(name,"/ContractGeneratedProperties.java"):found["properties"]=strings.Contains(source,"ping")
+    case strings.HasSuffix(name,"/RefineGeneratedTests.java"):found["launcher"]=strings.Contains(source,"ping.snapshot.ContractGeneratedProperties.main(args)")
+    case strings.HasSuffix(name,"/contract.refined.json"):found["bundle"]=bytes.Equal(file.Content,exactBundle)
+    case strings.HasSuffix(name,"/contract.refine"):found["source"]=true
+    case strings.HasSuffix(name,"/schema-analysis.json"):found["analysis"]=true
+    case strings.HasSuffix(name,"/explanation.md"):found["english"]=strings.Contains(source,"POST")&&strings.Contains(source,"/ping")
+    case strings.HasSuffix(name,"/ordinary-openapi.json"):found["ordinary"]=true
+    case strings.HasSuffix(name,"/refined-openapi.json"):found["refined"]=true
+    case strings.HasSuffix(name,"/ordinary-openapi-resources.json"):
+        var manifest struct{Target native.ProjectTarget `json:"target"`;EntryResource string `json:"entryResource"`;Root *native.ResourceSelector `json:"root"`};if err:=json.Unmarshal(file.Content,&manifest);err!=nil{t.Fatal(err)};var fields,targetFields map[string]json.RawMessage;if err:=json.Unmarshal(file.Content,&fields);err!=nil{t.Fatal(err)};if err:=json.Unmarshal(fields["target"],&targetFields);err!=nil{t.Fatal(err)};_,hasRoot:=fields["root"];_,targetHasRoot:=targetFields["root"];found["manifest"]=manifest.Target.Kind==native.OpenAPIOperationsProject&&manifest.Target.Resource==imported.EntryResource()&&manifest.EntryResource==imported.EntryResource()&&manifest.Root==nil&&!hasRoot&&!targetHasRoot
+    }};for _,name:=range []string{"contract","facade","properties","launcher","bundle","source","analysis","english","ordinary","refined","manifest"}{if !found[name]{t.Fatalf("rootless project output missing %s: %+v",name,found)}}
+    input.Contracts[0].NoCodegen=true;resources,err:=Generate(input);if err!=nil{t.Fatal(err)};sawBundle:=false;for _,file:=range resources.Files{if strings.HasSuffix(file.Path,".java"){t.Fatalf("no-codegen rootless project emitted Java: %s",file.Path)};sawBundle=sawBundle||strings.HasSuffix(file.Path,"/contract.refined.json")};if !sawBundle{t.Fatal("no-codegen rootless project omitted versioned resources")}
+    payload,err:=native.IngestProject(native.JSONSchema,[]byte(`{"type":"integer"}`),native.ProjectOptions{ResourceID:"https://example.test/count.json",Root:native.ResourceSelector{TypeName:"Count"}});if err!=nil{t.Fatal(err)};payloadOutput,err:=Generate(GenerateInput{Contracts:[]Contract{{Family:"count",NativeProject:payload,Formats:[]native.Format{native.JSONSchema},NoCodegen:true}}});if err!=nil{t.Fatal(err)};payloadManifest:=false;for _,file:=range payloadOutput.Files{if !strings.HasSuffix(file.Path,"/ordinary-json-schema-resources.json"){continue};var manifest struct{Target native.ProjectTarget `json:"target"`};if err:=json.Unmarshal(file.Content,&manifest);err!=nil{t.Fatal(err)};var fields map[string]json.RawMessage;if err:=json.Unmarshal(file.Content,&fields);err!=nil{t.Fatal(err)};var targetFields map[string]json.RawMessage;if err:=json.Unmarshal(fields["target"],&targetFields);err!=nil{t.Fatal(err)};_,hasRoot:=targetFields["root"];payloadManifest=hasRoot&&manifest.Target.Root.Resource=="https://example.test/count.json"&&manifest.Target.Root.TypeName=="Count"};if !payloadManifest{t.Fatal("payload manifest omitted its nonzero target root")}
+}
+
+func TestGenerateOperationsOnlyOpenAPIRejectsRootAndTargetNarrowingAtomically(t *testing.T){
+    imported:=rootlessOpenAPIProject(t);cases:=[]Contract{{Family:"ping",NativeProject:imported,RootType:"Fake",Formats:[]native.Format{native.OpenAPI}},{Family:"ping",NativeProject:imported,Formats:[]native.Format{native.JSONSchema}},{Family:"ping",NativeProject:imported,Formats:[]native.Format{native.OpenAPI},PropertyTests:java.PropertyTestOptions{Targets:[]java.PropertyTarget{{Name:"OnlyOne"}}}}};for _,contract:=range cases{output,err:=Generate(GenerateInput{Contracts:[]Contract{contract}});if err==nil||len(output.Files)!=0{t.Fatalf("invalid rootless configuration emitted output: %+v %v",contract,err)}}
 }

@@ -103,6 +103,7 @@ type lowerer struct {
 	explanationUsed     map[int]bool
 	encodings           map[string]ScalarEncoding
 	extraFields         map[string]ExtraFieldMode
+	extraFieldWork      extraFieldWork
 	discriminators      map[string]Discriminator
 	owner               string
 	specializationNames map[string]string
@@ -163,6 +164,7 @@ func lowerPayload(format Format, payload *language.PayloadType, metadata WireMet
 		return nil, &Error{Code: "native.unrepresentable", Format: Avro, Message: "JSON extra-field and discriminator policies cannot be represented by Avro lowering"}
 	}
 	l := &lowerer{format: format, mode: mode, allowLoss: options.AllowDocumentedLoss, module: checked.Module.Syntax, rootSource: payload.Source(), declarations: make(map[string]language.TypeDecl), definitions: make(map[string]any), building: make(map[string]bool), avroDefined: make(map[string]bool), explanation: explained, companion: explained.Markdown(), explanationUsed: make(map[int]bool), encodings: copiedMetadata.Scalars, extraFields: copiedMetadata.ExtraFields, discriminators: copiedMetadata.Discriminators, owner: "$payload", specializationNames: make(map[string]string), nativeNames: make(map[string]string), maxSpecializations: maxSpecializations}
+	l.extraFieldWork.remaining = language.DefaultSubstitutionNodes
 	l.nativeNames["Anonymous"] = "reserved anonymous Avro record"
 	for _, decl := range l.module.Types {
 		l.declarations[decl.Name] = decl
@@ -332,11 +334,7 @@ func (l *lowerer) typ(t *language.Type, field bool) (any, error) {
 				required = append(required, f.Name)
 			}
 		}
-		additional := true
-		if mode, ok := l.extraFields[l.owner]; ok {
-			additional = mode == PreserveExtraFields
-		}
-		result := map[string]any{"type": "object", "properties": properties, "additionalProperties": additional}
+		result := map[string]any{"type": "object", "properties": properties, "additionalProperties": true}
 		if len(required) > 0 {
 			result["required"] = required
 		}
@@ -450,7 +448,7 @@ func (l *lowerer) named(name string) (any, error) {
 		}
 		return map[string]any{"type": "integer", "minimum": json.Number("-9223372036854775808"), "maximum": json.Number("9223372036854775807")}, nil
 	}
-	if strings.HasPrefix(name, "Int") || strings.HasPrefix(name, "UInt") {
+	if jsonLanguageInteger(name) {
 		return l.fixedInteger(name)
 	}
 	decl, ok := l.declarations[name]
@@ -503,6 +501,10 @@ func (l *lowerer) named(name string) (any, error) {
 		definition, err := l.typ(decl.Body, false)
 		l.owner = oldOwner
 		delete(l.building, name)
+		if err != nil {
+			return nil, err
+		}
+		definition, err = l.applyExtraFieldPolicy(name, decl.Body, definition)
 		if err != nil {
 			return nil, err
 		}

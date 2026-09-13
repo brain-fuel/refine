@@ -1830,3 +1830,63 @@ current implementation still performs no Maven deployment or product release.
   and CLI 6.147s. This includes the existing Maven regeneration/reproducibility
   lifecycle and all checked-in fuzz seeds, not extra local fuzz campaigns.
   No package or Maven rerun followed the successful integration result.
+- Pushed checkpoint `011f4f00f7accbbb4cd3be1ad3179fd032d8c157` to `main`.
+  [CI run 34734501665](https://github.com/brain-fuel/refine/actions/runs/34734501665)
+  completed successfully on both Linux and macOS, including the counted selected
+  fuzz campaigns. The earlier deadline-race failure was not retried or relabeled.
+
+## Operation project assembly and explicit extra-field rejection — validated locally
+
+- Added distinct `discard`/`preserve`/`reject` JSON wire policies. Discard now
+  retains permissive native acceptance instead of incorrectly lowering to a
+  closed record. Alias policies follow only their occurrence; shared generic,
+  recursive and anonymous nested records do not inherit an enclosing policy.
+  Conflicting explicit modes fail closed. Go decoding rejects extras before
+  omission; Java also rejects normal and bypass writes before emitting bytes.
+- The initial ten-anchor native selection passed existing regressions but
+  exposed a pre-existing backend name-classification bug: `IntBox` was treated
+  as a numeric primitive. Native classification now requires the same canonical
+  positive 32-bit width spelling as the language checker. New JSON/OpenAPI and
+  Avro cases retain the descriptive `IntBox` name instead of avoiding the bug.
+  The seven-anchor follow-up passed all but a new Avro test's incorrectly typed
+  literal comparison; changing that fixture to explicit `fromInt64` conversion
+  required only its single anchor to rerun (0.343s). The other six results
+  remain valid (package selection 0.260s); no broad native rerun followed.
+- The Java extra-field grouped harness passed in 1.743s; the existing generic
+  record and metadata-conversion selection passed in 1.489s. Replacing the
+  temporary enum spelling with the identical public constant did not change
+  emitted Java, so those JVM results were reused after generation consistency.
+- Native operation property generation and rootless project/CLI assembly are
+  being integrated. Review requires clause-targeted invalid request, response,
+  and context cases as well as valid cases; a valid-only suite is insufficient.
+  Rootless release comparison remains explicitly unsupported until genuine
+  multi-entrypoint compatibility is implemented; no empty-root comparison or
+  override route pretends otherwise.
+- Independent review found alias-local closure overlays could multiply a large
+  record's property inventory without charging emitted entries. The lowerer now
+  charges those entries before allocating each overlay and reports `native.limit`
+  for resource exhaustion. Exact/one-over/aggregate cases and required-property
+  preservation passed in the three-anchor native review selection (0.350s).
+- Operation property review corrections passed in the grouped Java harness
+  (3.029s): clause-targeted invalid requests, responses and additional context
+  rules; native-invalid filtering; hard negative-generation exhaustion; and
+  fixed response examples paired with a compatible valid request token. The
+  generator rejects unsupported example outcomes and replay pairs explicitly.
+- Final rootless project anchors passed in 0.300s. Manifests now omit both
+  top-level and nested target roots for operations while retaining payload roots;
+  this required `omitzero` on the value-typed selector, not ineffective struct
+  `omitempty`. The same Maven fixture now includes an additional rootless API family
+  in its original single artifact and four lifecycle builds.
+- Whole-tree generation consistency passed. Scoped vet found one unreachable
+  Go return in the new Java policy resolver; removing it and regenerating only
+  Java fixed vet without changing emitted Java. Existing JVM evidence was
+  reused; no runtime test was rerun for dead-code removal.
+- The augmented Maven test's first build succeeded but its new inventory
+  assertion expected `example.test.health` without setting that fixture's
+  publication namespace. The fixture now explicitly matches the other native
+  families' `example.test` namespace. Only the Maven anchor is rerun; the first
+  failed test had stopped before the remaining three lifecycle invocations.
+- The corrected Maven anchor passed with race detection in 24.661s, completing
+  all four lifecycle builds with Java 25 and the pinned dependency directories.
+  Earlier successful native, Java, CLI and project selections were reused;
+  neither a full local suite nor another Maven invocation followed this result.

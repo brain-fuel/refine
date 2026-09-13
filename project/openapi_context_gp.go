@@ -17,11 +17,24 @@ func projectWireConfigured(metadata native.WireMetadata) bool {
 }
 
 func contractJavaSources(contract Contract, namespace, class string, formats []native.Format) ([]java.File, error) {
+	if contract.NativeProject != nil && contract.NativeProject.Kind() == native.OpenAPIOperationsProject {
+		configured, err := nativeProjectWithNamespace(contract.NativeProject, namespace)
+		if err != nil {
+			return nil, err
+		}
+		return java.GenerateProjectOpenAPIContext(configured, class, openAPIOperationsClass)
+	}
 	files, err := contractSerde(contract, namespace, class, formats)
 	if err != nil {
 		return nil, err
 	}
 	return mergeOpenAPIContext(contract, namespace, class, files)
+}
+
+func nativeProjectWithNamespace(project *native.Project, namespace string) (*native.Project, error) {
+	metadata := project.Metadata()
+	metadata.PublicationNamespace = namespace
+	return project.WithMetadata(metadata)
 }
 
 // mergeOpenAPIContext deliberately regenerates the shared checked validator
@@ -37,9 +50,7 @@ func mergeOpenAPIContext(contract Contract, namespace, class string, files []jav
 		if contract.NativeProject == nil || !contract.NativeProject.HasOpenAPINativeBindings() {
 			return nil, fmt.Errorf("native.enforcement: checked native OpenAPI operation bindings are required")
 		}
-		metadata := contract.NativeProject.Metadata()
-		metadata.PublicationNamespace = namespace
-		configured, configureErr := contract.NativeProject.WithMetadata(metadata)
+		configured, configureErr := nativeProjectWithNamespace(contract.NativeProject, namespace)
 		if configureErr != nil {
 			return nil, configureErr
 		}

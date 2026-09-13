@@ -87,6 +87,24 @@ generatable use rejection sampling against the real generated validator.
 
 ## Exhaustion and invalid targeting
 
+### OpenAPI operation projects
+
+`java.GenerateProjectOpenAPIPropertyTests` generates a single JetCheck launcher
+for the authoritative operation catalog, including projects without a payload
+root. Request, response and context checks use the generated native-first
+facade and real validated-request tokens. Every request/response binding gets
+valid properties; discovered clauses get targeted-invalid properties. Candidate
+exhaustion and indeterminate validation fail the suite rather than skip cases.
+Valid embedded examples execute explicitly, with response examples paired with
+a compatible valid request. Rootless Maven assembly includes this launcher in
+the same artifact as the project's other schema families.
+
+The current operation generator rejects invalid/indeterminate examples, replay
+pairs, caller target narrowing, standalone adapter overrides and catalogs with
+no semantic native parts. These are explicit limitations, not omitted checks.
+
+### Shared generator behavior
+
 The requested case count is mandatory. For each case, the generated `requiring`
 generator evaluates at most `AttemptBudget` candidates. If it cannot find a
 valid or clause-targeted invalid payload, it throws an `AssertionError` naming

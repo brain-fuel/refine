@@ -11,7 +11,7 @@ const OpenAPIOperationsProject ProjectKind = "openapi-operations"
 // ProjectTarget is a value snapshot of the immutable native selection.
 // Payload projects have a nonzero Root and Resource == Root.Resource.
 // Operation projects have an absolute OpenAPI entry Resource and a zero Root.
-type ProjectTarget struct { Kind ProjectKind `json:"kind"`; Resource string `json:"resource,omitempty"`; Root ResourceSelector `json:"root,omitempty"` }
+type ProjectTarget struct { Kind ProjectKind `json:"kind"`; Resource string `json:"resource,omitempty"`; Root ResourceSelector `json:"root,omitzero"` }
 
 func payloadProjectTarget(root ResourceSelector)ProjectTarget{return ProjectTarget{Kind:PayloadProject,Resource:root.Resource,Root:root}}
 func operationProjectTarget(resource string)ProjectTarget{return ProjectTarget{Kind:OpenAPIOperationsProject,Resource:resource}}

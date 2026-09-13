@@ -41,7 +41,7 @@ func (l *lowerer) generic(t *language.Type)(any,error){
     body,err:=language.SubstituteTypeBounded(decl.Body,bindings,language.DefaultSubstitutionNodes);if err!=nil{return nil,&Error{Code:"native.limit",Format:l.format,Pointer:key,Message:"generic substitution exceeded its structural bound",Cause:err}}
     if l.format==Avro{return l.genericAvro(wireName,name,body)}
     refPrefix:="#/$defs/";if l.format==OpenAPI{refPrefix="#/components/schemas/"}
-    if _,exists:=l.definitions[wireName];!exists{l.definitions[wireName]=map[string]any{};l.building[wireName]=true;oldOwner:=l.owner;l.owner=name;definition,buildErr:=l.typ(body,false);l.owner=oldOwner;delete(l.building,wireName);if buildErr!=nil{delete(l.definitions,wireName);return nil,buildErr};l.definitions[wireName]=definition}
+    if _,exists:=l.definitions[wireName];!exists{l.definitions[wireName]=map[string]any{};l.building[wireName]=true;oldOwner:=l.owner;l.owner=name;definition,buildErr:=l.typ(body,false);l.owner=oldOwner;delete(l.building,wireName);if buildErr==nil{definition,buildErr=l.applyExtraFieldPolicy(name,body,definition)};if buildErr!=nil{delete(l.definitions,wireName);return nil,buildErr};l.definitions[wireName]=definition}
     return map[string]any{"$ref":refPrefix+wireName},nil
 }
 

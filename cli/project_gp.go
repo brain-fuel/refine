@@ -344,7 +344,14 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 				if !emptyWireMetadata(settings.Wire) {
 					return input, fmt.Errorf("family %s native bundle owns wire metadata; family wire overrides are not allowed", name)
 				}
-				if settings.Root != "" && settings.Root != imported.Root().TypeName {
+				if imported.Kind() == native.OpenAPIOperationsProject {
+					if settings.Root != "" {
+						return input, fmt.Errorf("family %s is an OpenAPI operations project and must not configure a payload root", name)
+					}
+					if len(settings.Formats) != 1 || settings.Formats[0] != native.OpenAPI {
+						return input, fmt.Errorf("family %s operations bundle requires the explicit origin format openapi", name)
+					}
+				} else if settings.Root != "" && settings.Root != imported.Root().TypeName {
 					return input, fmt.Errorf("family %s configured root %s does not match native bundle root %s", name, settings.Root, imported.Root().TypeName)
 				}
 				input.Contracts = append(input.Contracts, project.Contract{Family: name, Version: version, NativeProject: imported, RootType: settings.Root, LogicalNamespace: settings.Package, JavaPackage: javaPackage, NoCodegen: noCodegen, Formats: settings.Formats})
@@ -388,7 +395,7 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 		}
 	}
 	if len(input.Contracts) == 0 {
-		return input, fmt.Errorf("no schemata/<family>/{vX.Y.Z,SNAPSHOT}.refine files found")
+		return input, fmt.Errorf("no schemata/<family>/{vX.Y.Z,SNAPSHOT}.{refine,refined.json} contracts found")
 	}
 	return input, nil
 }

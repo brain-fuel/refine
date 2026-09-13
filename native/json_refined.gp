@@ -2,6 +2,7 @@ package native
 
 import (
     "fmt"
+    "strconv"
     "strings"
 
     "goforge.dev/refine/language"
@@ -34,12 +35,12 @@ func (d *jsonValueDecoder) limit(path,message string)error{return &Error{Code:"n
 func (d *jsonValueDecoder) enter(path string,depth int)error{d.nodes++;if depth>d.maxDepth{return d.limit(path,"JSON value nesting exceeds the checked decoder limit")};if d.nodes>d.maxNodes{return d.limit(path,"JSON value node count exceeds the checked decoder limit")};return nil}
 func jsonValuePath(path,name string)string{return path+"/"+strings.ReplaceAll(strings.ReplaceAll(name,"~","~0"),"/","~1")}
 
-func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings map[string]*language.Type,path string,depth int,nominal string)(value.Data,error){
+func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings map[string]*language.Type,path string,depth int,pending ExtraFieldMode)(value.Data,error){
     if t==nil{return value.Data{},d.failure(path,"checked JSON type is absent")};if err:=d.enter(path,depth);err!=nil{return value.Data{},err}
     match t.Form{
-    case language.RefinedType(base,_):return d.decode(base,node,bindings,path,depth+1,nominal)
+    case language.RefinedType(base,_):return d.decode(base,node,bindings,path,depth+1,pending)
     case language.NamedType(name):
-        if bound,ok:=bindings[name];ok{return d.decode(bound,node,bindings,path,depth+1,nominal)}
+        if bound,ok:=bindings[name];ok{return d.decode(bound,node,bindings,path,depth+1,pending)}
         if encoding,ok:=d.metadata.Scalars[name];ok{return d.scalar(name,encoding,node,path)}
         switch name{
         case "JSON":return d.jsonValue(node,path,depth)
@@ -49,17 +50,17 @@ func (d *jsonValueDecoder) decode(t *language.Type,node schemajson.Node,bindings
         case "Real":return d.number(node,path,false)
         }
         if jsonLanguageInteger(name){return d.number(node,path,true)}
-        decl,ok:=d.declarations[name];if !ok{return value.Data{},d.failure(path,"checked type cannot be represented by the JSON decoder")};if len(decl.Parameters)!=0{return value.Data{},d.failure(path,"generic JSON type is missing arguments")};if decl.Body!=nil{return d.decode(decl.Body,node,nil,path,depth+1,name)};return d.union(name,decl.Variants,nil,node,path,depth+1)
+        decl,ok:=d.declarations[name];if !ok{return value.Data{},d.failure(path,"checked type cannot be represented by the JSON decoder")};if len(decl.Parameters)!=0{return value.Data{},d.failure(path,"generic JSON type is missing arguments")};if decl.Body!=nil{mode,err:=mergeExtraFieldPolicy(pending,d.metadata.ExtraFields[name]);if err!=nil{return value.Data{},d.failure(path,err.Error())};return d.decode(decl.Body,node,nil,path,depth+1,mode)};return d.union(name,decl.Variants,nil,node,path,depth+1)
     case language.ListType(element):
         if schemajson.KindName(node.Kind())!="array"{return value.Data{},d.failure(path,"expected a JSON array")};elements:=node.Elements();items:=make([]value.Data,len(elements));for i,item:=range elements{decoded,err:=d.decode(element,item,bindings,jsonValuePath(path,fmt.Sprint(i)),depth+1,"");if err!=nil{return value.Data{},err};items[i]=decoded};return value.List(items),nil
-    case language.RecordType(fields):return d.record(nominal,fields,bindings,node,path,depth+1)
+    case language.RecordType(fields):return d.record(pending,fields,bindings,node,path,depth+1)
     case language.AppliedType(_,_):
         name,args,ok:=jsonApplied(t);if !ok{return value.Data{},d.failure(path,"unsupported applied JSON type")}
         if name=="Maybe"&&len(args)==1{decoded,err:=d.decode(args[0],node,bindings,path,depth+1,"");if err!=nil{return value.Data{},err};return value.Variant("Just",[]value.Data{decoded})}
         if name=="Nullable"&&len(args)==1{if schemajson.KindName(node.Kind())=="null"{return value.Variant("Null",nil)};decoded,err:=d.decode(args[0],node,bindings,path,depth+1,"");if err!=nil{return value.Data{},err};return value.Variant("NonNull",[]value.Data{decoded})}
         if name=="Map"&&len(args)==2{return d.mapping(args[1],node,bindings,path,depth+1)}
         if name=="Result"{return value.Data{},d.failure(path,"Result JSON decoding requires a declared tagged union with explicit discriminator metadata")}
-        decl,found:=d.declarations[name];if !found||len(args)!=len(decl.Parameters){return value.Data{},d.failure(path,"unknown or incorrectly applied generic JSON type")};closed:=map[string]*language.Type{};for key,item:=range bindings{closed[key]=item};for i,param:=range decl.Parameters{argument:=args[i];if bindings!=nil{resolved,subErr:=language.SubstituteType(argument,bindings);if subErr!=nil{return value.Data{},d.failure(path,"generic JSON argument cannot be closed")};argument=resolved};closed[param]=argument};if decl.Body!=nil{return d.decode(decl.Body,node,closed,path,depth+1,name)};return d.union(name,decl.Variants,closed,node,path,depth+1)
+        decl,found:=d.declarations[name];if !found||len(args)!=len(decl.Parameters){return value.Data{},d.failure(path,"unknown or incorrectly applied generic JSON type")};closed:=map[string]*language.Type{};for key,item:=range bindings{closed[key]=item};for i,param:=range decl.Parameters{argument:=args[i];if bindings!=nil{resolved,subErr:=language.SubstituteType(argument,bindings);if subErr!=nil{return value.Data{},d.failure(path,"generic JSON argument cannot be closed")};argument=resolved};closed[param]=argument};if decl.Body!=nil{mode,err:=mergeExtraFieldPolicy(pending,d.metadata.ExtraFields[name]);if err!=nil{return value.Data{},d.failure(path,err.Error())};return d.decode(decl.Body,node,closed,path,depth+1,mode)};return d.union(name,decl.Variants,closed,node,path,depth+1)
     case language.ArrowType(_,_):return value.Data{},d.failure(path,"functions are not JSON payload values")
     }
     return value.Data{},d.failure(path,"unsupported checked JSON type")
@@ -72,7 +73,7 @@ func (d *jsonValueDecoder) mapping(element *language.Type,node schemajson.Node,b
 }
 
 func jsonApplied(t *language.Type)(string,[]*language.Type,bool){root:=t;args:=[]*language.Type{};for{match root.Form{case language.AppliedType(fn,arg):args=append([]*language.Type{arg},args...);root=fn;case language.NamedType(name):return name,args,true;case _:return "",nil,false}}}
-func jsonLanguageInteger(name string)bool{if name=="Int"{return true};if strings.HasPrefix(name,"Int")&&len(name)>3{return true};return strings.HasPrefix(name,"UInt")&&len(name)>4}
+func jsonLanguageInteger(name string)bool{if name=="Int"{return true};prefix:="Int";if strings.HasPrefix(name,"UInt"){prefix="UInt"};digits:=strings.TrimPrefix(name,prefix);if digits==name||digits==""{return false};width,err:=strconv.ParseUint(digits,10,32);return err==nil&&width>0&&strconv.FormatUint(width,10)==digits}
 
 func jsonIntegerToken(raw string,canonical bool)bool{if raw=="0"{return true};if raw=="-0"{return !canonical};start:=0;if len(raw)>0&&raw[0]=='-'{start=1};if start>=len(raw)||raw[start]<'1'||raw[start]>'9'{return false};for i:=start+1;i<len(raw);i++{if raw[i]<'0'||raw[i]>'9'{return false}};return true}
 func (d *jsonValueDecoder) number(node schemajson.Node,path string,integer bool)(value.Data,error){if schemajson.KindName(node.Kind())!="number"{return value.Data{},d.failure(path,"expected a JSON number")};number,err:=value.ParseNumber(node.Raw());if err!=nil||integer&&!number.IsInteger(){return value.Data{},d.failure(path,"expected an exact JSON integer")};return value.OfNumber(number),nil}
@@ -89,10 +90,12 @@ func (d *jsonValueDecoder) scalar(name string,encoding ScalarEncoding,node schem
     return value.Data{},d.failure(path,"unsupported scalar encoding for "+name)
 }
 
-func (d *jsonValueDecoder) record(nominal string,fields []language.Field,bindings map[string]*language.Type,node schemajson.Node,path string,depth int)(value.Data,error){
-    if schemajson.KindName(node.Kind())!="object"{return value.Data{},d.failure(path,"expected a JSON object")};out:=make([]value.DataField,0,len(node.Members()));declared:=map[string]bool{}
+func (d *jsonValueDecoder) record(mode ExtraFieldMode,fields []language.Field,bindings map[string]*language.Type,node schemajson.Node,path string,depth int)(value.Data,error){
+    if schemajson.KindName(node.Kind())!="object"{return value.Data{},d.failure(path,"expected a JSON object")};declared:=map[string]bool{};for _,field:=range fields{declared[field.Name]=true}
+    if mode==RejectExtraFields{if node.MemberCount()>len(fields){return value.Data{},d.failure(path,"undeclared JSON properties are not allowed")};for _,member:=range node.Members(){name,err:=member.Key.UTF8();if err!=nil{return value.Data{},d.failure(path,"JSON property name is not Unicode scalar text")};if !declared[name]{return value.Data{},d.failure(jsonValuePath(path,name),"undeclared JSON property is not allowed")}}}
+    out:=make([]value.DataField,0,node.MemberCount())
     for _,field:=range fields{declared[field.Name]=true;child,found:=node.Lookup(field.Name);if !found{if d.optional(field.Type,bindings,0){nothing,_:=value.Variant("Nothing",nil);out=append(out,value.DataField{Name:field.Name,Value:nothing});continue};return value.Data{},d.failure(jsonValuePath(path,field.Name),"required JSON property is absent")};decoded,err:=d.decode(field.Type,child,bindings,jsonValuePath(path,field.Name),depth+1,"");if err!=nil{return value.Data{},err};out=append(out,value.DataField{Name:field.Name,Value:decoded})}
-    if d.metadata.ExtraFields[nominal]==PreserveExtraFields{for _,member:=range node.Members(){name,err:=member.Key.UTF8();if err!=nil{return value.Data{},d.failure(path,"preserved JSON object key is not Unicode scalar text")};if declared[name]{continue};decoded,err:=d.extra(member.Value,jsonValuePath(path,name),depth+1);if err!=nil{return value.Data{},err};out=append(out,value.DataField{Name:name,Value:decoded})}}
+    if mode==PreserveExtraFields{for _,member:=range node.Members(){name,err:=member.Key.UTF8();if err!=nil{return value.Data{},d.failure(path,"preserved JSON object key is not Unicode scalar text")};if declared[name]{continue};decoded,err:=d.extra(member.Value,jsonValuePath(path,name),depth+1);if err!=nil{return value.Data{},err};out=append(out,value.DataField{Name:name,Value:decoded})}}
     result,err:=value.Record(out);if err!=nil{return value.Data{},d.failure(path,"JSON record fields are not representable")};return result,nil
 }
 

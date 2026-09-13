@@ -5,6 +5,7 @@ package native
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"goforge.dev/refine/language"
@@ -78,7 +79,7 @@ func jsonValuePath(path, name string) string {
 	return path + "/" + strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
 }
 
-func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindings map[string]*language.Type, path string, depth int, nominal string) (value.Data, error) {
+func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindings map[string]*language.Type, path string, depth int, pending ExtraFieldMode) (value.Data, error) {
 	if t == nil {
 		return value.Data{}, d.failure(path, "checked JSON type is absent")
 	}
@@ -88,12 +89,12 @@ func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindin
 	switch __gp_m0 := any(t.Form).(type) {
 	case language.RefinedType:
 		base := __gp_m0.Base
-		return d.decode(base, node, bindings, path, depth+1, nominal)
+		return d.decode(base, node, bindings, path, depth+1, pending)
 	case language.NamedType:
 		name := __gp_m0.Name
 
 		if bound, ok := bindings[name]; ok {
-			return d.decode(bound, node, bindings, path, depth+1, nominal)
+			return d.decode(bound, node, bindings, path, depth+1, pending)
 		}
 		if encoding, ok := d.metadata.Scalars[name]; ok {
 			return d.scalar(name, encoding, node, path)
@@ -132,7 +133,11 @@ func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindin
 			return value.Data{}, d.failure(path, "generic JSON type is missing arguments")
 		}
 		if decl.Body != nil {
-			return d.decode(decl.Body, node, nil, path, depth+1, name)
+			mode, err := mergeExtraFieldPolicy(pending, d.metadata.ExtraFields[name])
+			if err != nil {
+				return value.Data{}, d.failure(path, err.Error())
+			}
+			return d.decode(decl.Body, node, nil, path, depth+1, mode)
 		}
 		return d.union(name, decl.Variants, nil, node, path, depth+1)
 	case language.ListType:
@@ -153,7 +158,7 @@ func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindin
 		return value.List(items), nil
 	case language.RecordType:
 		fields := __gp_m0.Fields
-		return d.record(nominal, fields, bindings, node, path, depth+1)
+		return d.record(pending, fields, bindings, node, path, depth+1)
 	case language.AppliedType:
 
 		name, args, ok := jsonApplied(t)
@@ -203,7 +208,11 @@ func (d *jsonValueDecoder) decode(t *language.Type, node schemajson.Node, bindin
 			closed[param] = argument
 		}
 		if decl.Body != nil {
-			return d.decode(decl.Body, node, closed, path, depth+1, name)
+			mode, err := mergeExtraFieldPolicy(pending, d.metadata.ExtraFields[name])
+			if err != nil {
+				return value.Data{}, d.failure(path, err.Error())
+			}
+			return d.decode(decl.Body, node, closed, path, depth+1, mode)
 		}
 		return d.union(name, decl.Variants, closed, node, path, depth+1)
 	case language.ArrowType:
@@ -269,10 +278,16 @@ func jsonLanguageInteger(name string) bool {
 	if name == "Int" {
 		return true
 	}
-	if strings.HasPrefix(name, "Int") && len(name) > 3 {
-		return true
+	prefix := "Int"
+	if strings.HasPrefix(name, "UInt") {
+		prefix = "UInt"
 	}
-	return strings.HasPrefix(name, "UInt") && len(name) > 4
+	digits := strings.TrimPrefix(name, prefix)
+	if digits == name || digits == "" {
+		return false
+	}
+	width, err := strconv.ParseUint(digits, 10, 32)
+	return err == nil && width > 0 && strconv.FormatUint(width, 10) == digits
 }
 
 func jsonIntegerToken(raw string, canonical bool) bool {
@@ -370,12 +385,29 @@ func (d *jsonValueDecoder) scalar(name string, encoding ScalarEncoding, node sch
 	return value.Data{}, d.failure(path, "unsupported scalar encoding for "+name)
 }
 
-func (d *jsonValueDecoder) record(nominal string, fields []language.Field, bindings map[string]*language.Type, node schemajson.Node, path string, depth int) (value.Data, error) {
+func (d *jsonValueDecoder) record(mode ExtraFieldMode, fields []language.Field, bindings map[string]*language.Type, node schemajson.Node, path string, depth int) (value.Data, error) {
 	if schemajson.KindName(node.Kind()) != "object" {
 		return value.Data{}, d.failure(path, "expected a JSON object")
 	}
-	out := make([]value.DataField, 0, len(node.Members()))
 	declared := map[string]bool{}
+	for _, field := range fields {
+		declared[field.Name] = true
+	}
+	if mode == RejectExtraFields {
+		if node.MemberCount() > len(fields) {
+			return value.Data{}, d.failure(path, "undeclared JSON properties are not allowed")
+		}
+		for _, member := range node.Members() {
+			name, err := member.Key.UTF8()
+			if err != nil {
+				return value.Data{}, d.failure(path, "JSON property name is not Unicode scalar text")
+			}
+			if !declared[name] {
+				return value.Data{}, d.failure(jsonValuePath(path, name), "undeclared JSON property is not allowed")
+			}
+		}
+	}
+	out := make([]value.DataField, 0, node.MemberCount())
 	for _, field := range fields {
 		declared[field.Name] = true
 		child, found := node.Lookup(field.Name)
@@ -393,7 +425,7 @@ func (d *jsonValueDecoder) record(nominal string, fields []language.Field, bindi
 		}
 		out = append(out, value.DataField{Name: field.Name, Value: decoded})
 	}
-	if d.metadata.ExtraFields[nominal] == PreserveExtraFields {
+	if mode == PreserveExtraFields {
 		for _, member := range node.Members() {
 			name, err := member.Key.UTF8()
 			if err != nil {

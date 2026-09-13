@@ -23,20 +23,20 @@ type PropertyExample struct { Target string; Value value.Data; Expected Property
 type PropertyReplay struct { Target string; Kind ReplayKind; DiagnosticCode string; SerializedData string }
 type PropertyTestOptions struct { Targets []PropertyTarget; CaseCount int; AttemptBudget int; Seed int64; Examples []PropertyExample; Replays []PropertyReplay; JSONModule string; AvroSerde string; NativeJSONValidator string }
 
-type propertyRule struct { target string; code string }
+type propertyRule struct { target string; code string; offset int }
 type propertyEmitter struct { declarations map[string]language.TypeDecl; visiting map[string]bool; next int }
 func (e *propertyEmitter) fresh(prefix string)string{e.next++;return fmt.Sprintf("%s%d",prefix,e.next)}
 
 func addNumericLiteral(text string,values map[string]bool){if strings.ContainsAny(text,"./eE"){return};n,ok:=new(big.Int).SetString(text,10);if !ok{return};values[n.String()]=true;values[new(big.Int).Sub(n,big.NewInt(1)).String()]=true;values[new(big.Int).Add(n,big.NewInt(1)).String()]=true}
 func numericLiterals(expr *language.Expr,values map[string]bool){if expr==nil{return};match expr.Form{case language.NumberLiteral(text):addNumericLiteral(text,values);case language.Binary(_,left,right):numericLiterals(left,values);numericLiterals(right,values);case language.Unary(operator,operand):handled:=false;if operator=="-"{match operand.Form{case language.NumberLiteral(text):addNumericLiteral("-"+text,values);handled=true;case _:}};if !handled{numericLiterals(operand,values)};case language.Apply(fn,arg):numericLiterals(fn,values);numericLiterals(arg,values);case language.Project(record,_):numericLiterals(record,values);case language.Conditional(c,y,n):numericLiterals(c,values);numericLiterals(y,values);numericLiterals(n,values);case language.Let(_,_,v,b):numericLiterals(v,values);numericLiterals(b,values);case language.MapLiteral(entries):for _,entry:=range entries{numericLiterals(entry.Value,values)};case _:}}
-func (e *propertyEmitter) integerLike(t *language.Type)bool{match t.Form{case language.RefinedType(base,_):return e.integerLike(base);case language.NamedType(name):if name=="Int"||strings.HasPrefix(name,"Int")||strings.HasPrefix(name,"UInt"){return true};if decl,ok:=e.declarations[name];ok&&decl.Body!=nil{return e.integerLike(decl.Body)};case _:};return false}
+func (e *propertyEmitter) integerLike(t *language.Type)bool{match t.Form{case language.RefinedType(base,_):return e.integerLike(base);case language.NamedType(name):if integerType(name){return true};if decl,ok:=e.declarations[name];ok&&decl.Body!=nil{return e.integerLike(decl.Body)};case _:};return false}
 
 func generatedRuleCode(path string,rule language.Where)string{if rule.Code!=""{return rule.Code};sum:=sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s",path,rule.At.Start.Offset,language.FormatExpression(rule.Predicate))));return fmt.Sprintf("refine.%x",sum[:8])}
 func (e *propertyEmitter) rules(target,path string,t *language.Type)([]propertyRule,error){
     result:=[]propertyRule{}
     match t.Form{
     case language.RefinedType(base,rules):
-        nested,err:=e.rules(target,path,base);if err!=nil{return nil,err};result=append(result,nested...);for _,rule:=range rules{result=append(result,propertyRule{target:target,code:generatedRuleCode(path,rule)})}
+        nested,err:=e.rules(target,path,base);if err!=nil{return nil,err};result=append(result,nested...);for _,rule:=range rules{result=append(result,propertyRule{target:target,code:generatedRuleCode(path,rule),offset:rule.At.Start.Offset})}
     case language.RecordType(fields):for _,field:=range fields{nested,err:=e.rules(target,path+"/"+strings.ReplaceAll(strings.ReplaceAll(field.Name,"~","~0"),"/","~1"),field.Type);if err!=nil{return nil,err};result=append(result,nested...)}
     case language.ListType(element):nested,err:=e.rules(target,path+"/0",element);if err!=nil{return nil,err};result=append(result,nested...)
     case language.NamedType(name):if decl,ok:=e.declarations[name];ok{if e.visiting[name]{return result,nil};e.visiting[name]=true;if decl.Body!=nil{nested,err:=e.rules(target,path,decl.Body);if err!=nil{return nil,err};result=append(result,nested...)}else{for _,variant:=range decl.Variants{for index,argument:=range variant.Arguments{nested,err:=e.rules(target,fmt.Sprintf("%s/%d",path,index),argument);if err!=nil{return nil,err};result=append(result,nested...)}}};delete(e.visiting,name)}

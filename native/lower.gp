@@ -56,6 +56,7 @@ type lowerer struct {
     explanationUsed map[int]bool
     encodings map[string]ScalarEncoding
     extraFields map[string]ExtraFieldMode
+    extraFieldWork extraFieldWork
     discriminators map[string]Discriminator
     owner string
     specializationNames map[string]string
@@ -85,6 +86,7 @@ func lowerPayload(format Format,payload *language.PayloadType,metadata WireMetad
     explained,err:=explain.GeneratePayload(payload);if err!=nil{return nil,wrap(format,"native.lower","",err)}
     copiedMetadata:=copyMetadata(metadata);if format==Avro&&(len(copiedMetadata.ExtraFields)>0||len(copiedMetadata.Discriminators)>0){return nil,&Error{Code:"native.unrepresentable",Format:Avro,Message:"JSON extra-field and discriminator policies cannot be represented by Avro lowering"}}
     l:=&lowerer{format:format,mode:mode,allowLoss:options.AllowDocumentedLoss,module:checked.Module.Syntax,rootSource:payload.Source(),declarations:make(map[string]language.TypeDecl),definitions:make(map[string]any),building:make(map[string]bool),avroDefined:make(map[string]bool),explanation:explained,companion:explained.Markdown(),explanationUsed:make(map[int]bool),encodings:copiedMetadata.Scalars,extraFields:copiedMetadata.ExtraFields,discriminators:copiedMetadata.Discriminators,owner:"$payload",specializationNames:make(map[string]string),nativeNames:make(map[string]string),maxSpecializations:maxSpecializations}
+    l.extraFieldWork.remaining=language.DefaultSubstitutionNodes
     l.nativeNames["Anonymous"]="reserved anonymous Avro record";for _,decl:=range l.module.Types{l.declarations[decl.Name]=decl;l.nativeNames[decl.Name]="declaration "+decl.Name};for name,encoding:=range l.encodings{if encoding.Kind==RationalRecord{l.nativeNames[name+"Wire"]="scalar wire "+name}}
     l.nativeJSONNumbers=options.nativeJSONNumbers&&(format==JSONSchema||format==OpenAPI)
     schema,err:=l.typ(checked.Type,false);if err!=nil{return nil,err}
@@ -129,7 +131,7 @@ func (l *lowerer) typ(t *language.Type,field bool)(any,error){
         if l.format==Avro{return l.avroRecord("Anonymous",fields)}
         properties:=make(map[string]any);required:=[]string{}
         for _,f:=range fields{optional,inner:=unwrap(f.Type,"Maybe");value,err:=l.typ(inner,true);if err!=nil{return nil,atLower(err,"field "+f.Name)};properties[f.Name]=value;if !optional{required=append(required,f.Name)}}
-        additional:=true;if mode,ok:=l.extraFields[l.owner];ok{additional=mode==PreserveExtraFields};result:=map[string]any{"type":"object","properties":properties,"additionalProperties":additional};if len(required)>0{result["required"]=required};return result,nil
+        result:=map[string]any{"type":"object","properties":properties,"additionalProperties":true};if len(required)>0{result["required"]=required};return result,nil
     case language.AppliedType(_, _):
         if ok,inner:=unwrap(t,"Nullable");ok{value,err:=l.typ(inner,field);if err!=nil{return nil,err};if l.format==Avro{return []any{"null",value},nil};return map[string]any{"anyOf":[]any{map[string]any{"type":"null"},value}},nil}
         if ok,_:=unwrap(t,"Maybe");ok{return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"Maybe represents field absence and is supported only directly on record fields"}}
@@ -155,14 +157,14 @@ func (l *lowerer) named(name string)(any,error){
     case "Int32":if l.format==Avro{return "int",nil};return map[string]any{"type":"integer","minimum":json.Number("-2147483648"),"maximum":json.Number("2147483647")},nil
     case "Int64":if l.format==Avro{return "long",nil};return map[string]any{"type":"integer","minimum":json.Number("-9223372036854775808"),"maximum":json.Number("9223372036854775807")},nil
     }
-    if strings.HasPrefix(name,"Int")||strings.HasPrefix(name,"UInt"){return l.fixedInteger(name)}
+    if jsonLanguageInteger(name){return l.fixedInteger(name)}
     decl,ok:=l.declarations[name];if !ok{return nil,l.unrepresentable(name,"unknown native payload primitive")};if len(decl.Parameters)>0{return nil,l.unrepresentable(name,"generic declarations require concrete substitution")};if decl.Body==nil{wire,ok:=l.discriminators[name];if !ok{return nil,l.unrepresentable(name,"tagged alternatives require explicit wire discriminator metadata")};if l.format==Avro{return nil,l.unrepresentable(name,"tagged discriminator objects cannot be represented as Avro unions")};return l.tagged(name,decl,wire)};if encoding,ok:=l.encodings[name];ok{return l.scalarEncoding(name,encoding)}
     if l.format==Avro{
         if !genericRecordBody(decl.Body){return l.avroNamed(name,decl.Body)}
         if l.avroDefined[name]{return name,nil};l.avroDefined[name]=true
         result,err:=l.avroNamed(name,decl.Body);if err!=nil{delete(l.avroDefined,name);return nil,err};return result,nil
     }
-    refPrefix:="#/$defs/";if l.format==OpenAPI{refPrefix="#/components/schemas/"};if _,exists:=l.definitions[name];!exists{if l.building[name]{return map[string]any{"$ref":refPrefix+name},nil};l.building[name]=true;l.definitions[name]=map[string]any{};oldOwner:=l.owner;l.owner=name;definition,err:=l.typ(decl.Body,false);l.owner=oldOwner;delete(l.building,name);if err!=nil{return nil,err};l.definitions[name]=definition}
+    refPrefix:="#/$defs/";if l.format==OpenAPI{refPrefix="#/components/schemas/"};if _,exists:=l.definitions[name];!exists{if l.building[name]{return map[string]any{"$ref":refPrefix+name},nil};l.building[name]=true;l.definitions[name]=map[string]any{};oldOwner:=l.owner;l.owner=name;definition,err:=l.typ(decl.Body,false);l.owner=oldOwner;delete(l.building,name);if err!=nil{return nil,err};definition,err=l.applyExtraFieldPolicy(name,decl.Body,definition);if err!=nil{return nil,err};l.definitions[name]=definition}
     return map[string]any{"$ref":refPrefix+name},nil
 }
 

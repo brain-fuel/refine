@@ -535,7 +535,7 @@ opaque native sidecar.
 `WireMetadata` is checked against the editable module and deep-copied at every
 boundary:
 
-- `ExtraFields` maps record type names to `discard` or `preserve`;
+- `ExtraFields` maps record type names to `discard`, `preserve`, or `reject`;
 - `Scalars` maps named scalar types to an explicit `json-number`,
   `decimal-string`, `rational-record`, `avro-bytes-decimal`, or
   `timestamp-string` representation. JSON numbers require integer backing,
@@ -557,6 +557,26 @@ The APIs never derive discriminator fields, constructor argument names, numeric
 rounding, timestamp conversion, or unknown-field preservation from naming
 conventions. Missing policy remains an explicit generation error for consumers
 that require it.
+
+Record wire policies are per nominal occurrence. The default and explicit
+`discard` accept undeclared JSON members and omit them from the decoded record;
+`preserve` retains them; `reject` refuses them before omission. Only `reject`
+closes an ordinary JSON Schema/OpenAPI record with `additionalProperties:false`.
+The native sidecar still runs first: a permissive wire policy cannot weaken an
+imported schema that already forbids extra members.
+
+Policies compose along one transparent alias/application chain until its first
+record. Equal explicit modes coalesce; conflicting modes reject instead of
+silently choosing one. With `type IntBox = Box Int`, a policy on `IntBox` does
+not change separate `Box Int` or `Box String` occurrences. Nested fields,
+anonymous records, and recursive occurrences independently select their own
+policy. Bounded lexical argument resolution supports closed generic aliases
+without rewriting the metadata map. An alias-local reject schema keeps the
+original reference and adds a local closed-record overlay rather than mutating
+the shared generic definition. Java decoding and normal or explicit-bypass
+serialization enforce the same policy before emitting bytes. Language-only
+in-memory record validation remains permissive; these are checked wire policies.
+Avro does not accept JSON extra-field metadata.
 
 `LowerPayloadWithMetadata` applies these checked scalar encodings. JSON rational
 records use arbitrary-size integer numerator and positive denominator fields.

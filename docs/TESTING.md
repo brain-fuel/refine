@@ -135,7 +135,8 @@ go test ./explain -run '^TestExplanationIncludesEffectiveSchemaLimits$'
 go test ./native -run '^(TestRootlessOpenAPIOperationsIngestAndBoundary|TestRootlessOpenAPIOperationsBundleRestoresEditedAuthority|TestRootlessOpenAPIOperationsExportDoesNotInventSchemaRoot|TestRootlessOpenAPIOperationsRejectBadInputsAndKeepRootedV1|TestWithDerivedOpenAPIOperationsBuildsAuthoritativeCheckedBoundary|TestOpenAPIOperationIndexAndSemanticBoundary|TestOpenAPI30DirectionalRequirednessUsesFixedNativeViews|TestNativeBundleRetainsSchemaValidationLimits)$'
 REFINE_REQUIRE_JAVA=1 go test ./java -run '^(TestGeneratedContractValidation|TestInlineRefinementModels)$'
 REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedSchemaLimitsApplyToValidationAndRead$'
-go test ./project -run '^TestGenerateOperationsOnlyOpenAPIRejectsMissingPropertyAssembly$'
+go test ./project -run '^(TestGenerateOperationsOnlyOpenAPIContextPropertiesAndResources|TestGenerateOperationsOnlyOpenAPIRejectsRootAndTargetNarrowingAtomically)$'
+go test ./cli -run '^(TestProjectCLIGeneratesRootlessOpenAPIOperationBundle|TestProjectCLIRootlessTargetConfigurationAndReleaseComparisonFailClosed)$'
 ```
 
 The planner change also used exactly one local campaign: the previously failing
@@ -144,6 +145,47 @@ The planner change also used exactly one local campaign: the previously failing
 campaign or full suite was repeated to investigate the upstream deadline race.
 The shared AST/runtime changes require one frozen integration gate, including
 the existing Maven lifecycle: earlier Maven evidence predates these inputs.
+
+The following native selection covers the subsequent extra-field policy change:
+per-occurrence alias policies, ordinary-schema acceptance, metadata/bundle
+authority, and affected JSON/OpenAPI decoder callers. It does not rerun Java or
+Maven; their owners have separate exact generated-code selections.
+
+```sh
+go test ./native -run '^(TestExtraFieldPoliciesArePerNominalOccurrence|TestExtraFieldMetadataResolvesAliasesBoundedlyAndRejectsConflicts|TestExtraFieldLoweringKeepsDiscardOpenAndRejectAliasesLocal|TestJSONWireMetadataLowersRecordsAndTaggedUnions|TestLowerOpenAPIAndRecursiveReferences|TestWireMetadataCheckedAndImmutable|TestDecodeAndValidateJSONComposesNativeExactAndRefined|TestDecodeAndValidateJSONUsesExplicitScalarAndUnionWireMetadata|TestDecodeAndValidateJSONClosesNestedGenericArgumentsSimultaneously|TestOpenAPIOperationIndexAndSemanticBoundary)$'
+```
+
+That selection exposed the incorrect integer-prefix classification of `IntBox`.
+The implementation fix selected the three new failed anchors plus
+`TestNativeIntegerPrimitiveNamesDoNotCaptureRecordAliases`,
+`TestFixedIntegerGenerationLimit`,
+`TestDecodeAndValidateAvroComposesNativeAndRefinements`, and
+`TestDecodeAndValidateAvroExactScalarMetadata` in one anchored alternation in
+`./native`. The subsequent test-only numeric-conversion correction reran only
+`^TestNativeIntegerPrimitiveNamesDoNotCaptureRecordAliases$`.
+
+The generated-code owners use these separate required-Java selections (with the
+pinned Jackson, JetCheck, NetworkNT and Graal directories as applicable):
+
+```sh
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedJSONExtraFieldPoliciesArePerOccurrence$'
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^(TestJacksonNestedRecursiveAndGenericRecords|TestJSONSerdeOptionsFromMetadataIsCopiedAndFailClosed)$'
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding$'
+```
+
+Neither owner runs Maven. After all review fixes have an explicit green/frozen
+handoff, the coordinator runs the affected project/Maven integration selection
+once. Unchanged native and Java focused evidence is reused; CI provides the
+full Linux/macOS gate. A changed generated-property template invalidates its
+rootless caller checks, but not unrelated rooted resource/loader checks.
+
+For the operations/extra-field batch the final local runtime selection is exactly
+`go test -race -timeout=20m ./project -run '^TestMavenRegenerationAndReproducibleArtifact$'`,
+with both Java and Maven required and the pinned dependency directories. Its
+fixture now includes a rootless OpenAPI family beside the existing family in
+one artifact, while retaining the same four lifecycle invocations. The focused
+native, Java, rootless caller and rooted regression results above are reused;
+this is not another local full Java or repository run.
 
 | Change | Selected checks | Why |
 | --- | --- | --- |

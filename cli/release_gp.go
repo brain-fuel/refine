@@ -316,15 +316,24 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 		if !emptyWireMetadata(settings.Wire) {
 			return fmt.Errorf("family %s native bundle owns wire metadata; family wire overrides are not allowed", entry.family)
 		}
-		if settings.Root != "" && settings.Root != imported.Root().TypeName {
+		if imported.Kind() == native.OpenAPIOperationsProject {
+			if settings.Root != "" {
+				return fmt.Errorf("family %s is an OpenAPI operations project and must not configure a payload root", entry.family)
+			}
+			if len(settings.Formats) != 1 || settings.Formats[0] != native.OpenAPI {
+				return fmt.Errorf("family %s operations bundle requires the explicit origin format openapi", entry.family)
+			}
+		} else if settings.Root != "" && settings.Root != imported.Root().TypeName {
 			return fmt.Errorf("family %s configured root %s does not match native bundle root %s", entry.family, settings.Root, imported.Root().TypeName)
 		}
 		program, err := language.Compile(imported.EditableSource())
 		if err != nil {
 			return err
 		}
-		if _, err = program.PayloadType(imported.Root().TypeName); err != nil {
-			return err
+		if imported.HasPayloadRoot() {
+			if _, err = program.PayloadType(imported.Root().TypeName); err != nil {
+				return err
+			}
 		}
 		policy := release.Digest([]byte("refine.release-policy.v1\x00" + entryPolicy(entry, config)))
 		rawIdentity := release.Digest(append([]byte("refine.native-bundle.v1\x00"), entry.raw...))
@@ -351,6 +360,9 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 
 func releaseEntryRoot(entry *releaseSchemaEntry, family string, settings familyConfig) (string, error) {
 	if entry.nativeProject != nil {
+		if !entry.nativeProject.HasPayloadRoot() {
+			return "", fmt.Errorf("family %s is an OpenAPI operations project: multi-entrypoint release compatibility is unknown and no single payload-root comparison is valid", family)
+		}
 		return entry.nativeProject.Root().TypeName, nil
 	}
 	return configuredRoot(entry.program, family, settings)

@@ -22,14 +22,24 @@ func normalizeContract(c Contract) (Contract, error) {
 	if projectWireConfigured(c.Wire) {
 		return c, fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")
 	}
-	if !c.NativeProject.HasPayloadRoot() {
-		return c, fmt.Errorf("project.native: operations-only OpenAPI project assembly is not yet supported; normal code generation must include operation-aware generated property tests")
+	operations := c.NativeProject.Kind() == native.OpenAPIOperationsProject
+	if operations {
+		if c.RootType != "" {
+			return c, fmt.Errorf("project.native: an OpenAPI operations project has no payload root; configured root must be empty")
+		}
+		if c.NativeProject.Format() != native.OpenAPI {
+			return c, fmt.Errorf("project.native: an operations project must retain its OpenAPI origin")
+		}
+	} else {
+		if !c.NativeProject.HasPayloadRoot() {
+			return c, fmt.Errorf("project.native: native project target is incomplete")
+		}
+		root := c.NativeProject.Root().TypeName
+		if c.RootType != "" && c.RootType != root {
+			return c, fmt.Errorf("project.native: configured root disagrees with bundled root")
+		}
+		c.RootType = root
 	}
-	root := c.NativeProject.Root().TypeName
-	if c.RootType != "" && c.RootType != root {
-		return c, fmt.Errorf("project.native: configured root disagrees with bundled root")
-	}
-	c.RootType = root
 	program, err := language.Compile(c.NativeProject.EditableSource())
 	if err != nil {
 		return c, err
@@ -75,7 +85,7 @@ func addNativeResources(files map[string][]byte, base string, p *native.Project,
 			prefix := string(mode) + "-" + string(format)
 			for i, resource := range exported.Resources() {
 				name := path.Join(prefix+"-resources", fmt.Sprintf("%04d.json", i))
-				if resource.URI == exported.Root().Resource {
+				if resource.URI == exported.EntryResource() {
 					name = prefix + ".json"
 				}
 				if err = addFile(files, path.Join(base, name), []byte(resource.Source)); err != nil {
@@ -83,14 +93,22 @@ func addNativeResources(files map[string][]byte, base string, p *native.Project,
 				}
 				mappings = append(mappings, mappedResource{URI: resource.URI, Path: name})
 			}
+			target := exported.Target()
+			var root *native.ResourceSelector
+			if target.Kind == native.PayloadProject {
+				selected := exported.Root()
+				root = &selected
+			}
 			manifest := struct {
-				Format                  native.Format           `json:"format"`
-				Version                 string                  `json:"version"`
-				Root                    native.ResourceSelector `json:"root"`
-				Metadata                native.WireMetadata     `json:"metadata"`
-				Resources               []mappedResource        `json:"resources"`
-				NativeConstraintSources []native.Resource       `json:"nativeConstraintSources"`
-			}{format, exported.Version(), exported.Root(), exported.Metadata(), mappings, exported.NativeConstraintSources()}
+				Format                  native.Format            `json:"format"`
+				Version                 string                   `json:"version"`
+				Target                  native.ProjectTarget     `json:"target"`
+				EntryResource           string                   `json:"entryResource"`
+				Root                    *native.ResourceSelector `json:"root,omitempty"`
+				Metadata                native.WireMetadata      `json:"metadata"`
+				Resources               []mappedResource         `json:"resources"`
+				NativeConstraintSources []native.Resource        `json:"nativeConstraintSources"`
+			}{format, exported.Version(), target, exported.EntryResource(), root, exported.Metadata(), mappings, exported.NativeConstraintSources()}
 			data, err := json.MarshalIndent(manifest, "", "  ")
 			if err != nil {
 				return err

@@ -6,6 +6,7 @@ package java
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"goforge.dev/refine/language"
@@ -39,6 +40,20 @@ type JSONDiscriminator struct {
 	Values    map[string]string
 	Arguments map[string][]string
 }
+type jsonExtraFieldMode uint8
+
+const (
+	jsonExtraDiscard jsonExtraFieldMode = iota
+	jsonExtraPreserve
+	jsonExtraReject
+)
+
+type jsonExtraSelection struct {
+	Mode     jsonExtraFieldMode
+	Explicit bool
+	Origin   string
+	Key      string
+}
 
 // JSONCodecLimits are generation-time maxima. Emitted Java constructors may
 // tighten them, but cannot relax them. Zero fields select bounded defaults.
@@ -54,6 +69,8 @@ type JSONSerdeOptions struct {
 	Root                   string
 	PreserveExtraFields    bool
 	PreserveExtraFieldsFor map[string]bool
+	RejectExtraFields      bool
+	RejectExtraFieldsFor   map[string]bool
 	Discriminators         map[string]JSONDiscriminator
 	Scalars                map[string]native.ScalarEncoding
 	NumericExpansion       int
@@ -63,6 +80,7 @@ type JSONSerdeOptions struct {
 	CodecLimits            JSONCodecLimits
 	nativeValidator        string
 	nativeRegex            bool
+	nativeExtraFields      map[string]native.ExtraFieldMode
 }
 
 func normalizeJSONCodecLimits(input JSONCodecLimits) (JSONCodecLimits, error) {
@@ -91,11 +109,16 @@ func JSONSerdeOptionsFromMetadata(root string, metadata native.WireMetadata) (JS
 	if root == "" {
 		return JSONSerdeOptions{}, &GenerationError{Message: "JSON serde root is required"}
 	}
-	options := JSONSerdeOptions{Root: root, PreserveExtraFieldsFor: map[string]bool{}, Discriminators: map[string]JSONDiscriminator{}, Scalars: map[string]native.ScalarEncoding{}, NumericExpansion: metadata.NumericExpansion}
+	options := JSONSerdeOptions{Root: root, PreserveExtraFieldsFor: map[string]bool{}, RejectExtraFieldsFor: map[string]bool{}, Discriminators: map[string]JSONDiscriminator{}, Scalars: map[string]native.ScalarEncoding{}, NumericExpansion: metadata.NumericExpansion, nativeExtraFields: map[string]native.ExtraFieldMode{}}
 	for name, mode := range metadata.ExtraFields {
-		if mode == native.PreserveExtraFields {
+		options.nativeExtraFields[name] = mode
+		switch mode {
+		case native.PreserveExtraFields:
 			options.PreserveExtraFieldsFor[name] = true
-		} else if mode != native.DiscardExtraFields {
+		case native.RejectExtraFields:
+			options.RejectExtraFieldsFor[name] = true
+		case native.DiscardExtraFields:
+		default:
 			return JSONSerdeOptions{}, &GenerationError{Message: "unsupported native extra-field policy for " + name}
 		}
 	}
@@ -112,6 +135,9 @@ func JSONSerdeOptionsFromMetadata(root string, metadata native.WireMetadata) (JS
 	}
 	if metadata.ExtraFields[root] == native.PreserveExtraFields {
 		options.PreserveExtraFields = true
+	}
+	if metadata.ExtraFields[root] == native.RejectExtraFields {
+		options.RejectExtraFields = true
 	}
 	for name, scalar := range metadata.Scalars {
 		switch scalar.Kind {
@@ -248,20 +274,12 @@ func GenerateJSONSerde(program *language.Program, namespace, contractName, modul
 	if len(root.Parameters) > 0 {
 		unsupported(root.At, "JSON serde roots must be closed; register an instantiated nominal declaration")
 	}
-	emitter := &jsonShapeEmitter{decls: decls, options: options, definitions: map[string]string{}, building: map[string]bool{}}
-	shape := ""
-	if root.Body == nil {
-		shape = emitter.unionDecl(root.Name, root.Name, root.Variants, nil, 0)
-	} else {
-		body := jsonResolve(root.Body, decls, map[string]bool{})
-		switch __gp_m0 := any(body.Form).(type) {
-		case language.RecordType:
-			fields := __gp_m0.Fields
-			shape = emitter.record(options.Root, options.Root, fields, 0)
-		default:
-			shape = emitter.shape(&language.Type{Form: language.NamedType{Name: root.Name}, At: root.At}, 0)
-		}
+	extraModes, extraErr := normalizeJSONExtraFields(options, decls)
+	if extraErr != nil {
+		unsupported(root.At, extraErr.Error())
 	}
+	emitter := &jsonShapeEmitter{decls: decls, options: options, extraModes: extraModes, definitions: map[string]string{}, building: map[string]bool{}}
+	shape := emitter.shape(&language.Type{Form: language.NamedType{Name: root.Name}, At: root.At}, 0)
 	definitionParts := []string{}
 	for _, key := range emitter.order {
 		definitionParts = append(definitionParts, "java.util.Map.entry("+javaQuote(key)+","+emitter.definitions[key]+")")
@@ -368,16 +386,16 @@ func jsonGenericRoot(root language.TypeDecl, decls map[string]language.TypeDecl)
 			return false
 		}
 		base := unrefined(decl.Body)
-		switch __gp_m1 := any(base.Form).(type) {
+		switch __gp_m0 := any(base.Form).(type) {
 		case language.NamedType:
-			parent := __gp_m1.Name
+			parent := __gp_m0.Name
 			if _, ok := decls[parent]; ok {
 				name = parent
 				continue
 			}
 		case language.AppliedType:
-			fn := __gp_m1.Constructor
-			arg := __gp_m1.Argument
+			fn := __gp_m0.Constructor
+			arg := __gp_m0.Argument
 			if fn != nil && arg != nil {
 				parent, args := applied(base)
 				if len(args) >= 0 {
@@ -394,9 +412,9 @@ func jsonGenericRoot(root language.TypeDecl, decls map[string]language.TypeDecl)
 }
 func jsonResolve(t *language.Type, decls map[string]language.TypeDecl, seen map[string]bool) (result *language.Type) {
 	t = unrefined(t)
-	switch __gp_m2 := any(t.Form).(type) {
+	switch __gp_m1 := any(t.Form).(type) {
 	case language.NamedType:
-		name := __gp_m2.Name
+		name := __gp_m1.Name
 		decl, ok := decls[name]
 		if !ok || decl.Body == nil {
 			return t
@@ -414,8 +432,8 @@ func jsonResolve(t *language.Type, decls map[string]language.TypeDecl, seen map[
 		next[name] = true
 		return jsonResolve(decl.Body, decls, next)
 	case language.AppliedType:
-		fn := __gp_m2.Constructor
-		arg := __gp_m2.Argument
+		fn := __gp_m1.Constructor
+		arg := __gp_m1.Argument
 		if fn == nil || arg == nil {
 			return t
 		}
@@ -431,7 +449,7 @@ func jsonResolve(t *language.Type, decls map[string]language.TypeDecl, seen map[
 		for i, param := range decl.Parameters {
 			bindings[param] = args[i]
 		}
-		closed, err := language.SubstituteType(decl.Body, bindings)
+		closed, err := language.SubstituteTypeBounded(decl.Body, bindings, language.DefaultSubstitutionNodes)
 		if err != nil {
 			unsupported(t.At, err.Error())
 		}
@@ -449,10 +467,178 @@ func jsonResolve(t *language.Type, decls map[string]language.TypeDecl, seen map[
 	}
 	return result
 }
+func mergeJSONExtraSelection(selection jsonExtraSelection, name string, modes map[string]jsonExtraFieldMode) (jsonExtraSelection, error) {
+	mode, ok := modes[name]
+	if !ok {
+		return selection, nil
+	}
+	if selection.Explicit && selection.Mode != mode {
+		return selection, &GenerationError{Message: "conflicting JSON extra-field policies for " + selection.Origin + " and " + name}
+	}
+	if !selection.Explicit {
+		selection.Mode = mode
+		selection.Explicit = true
+		selection.Origin = name
+	}
+	return selection, nil
+}
+func putJSONExtraMode(modes map[string]jsonExtraFieldMode, name string, mode jsonExtraFieldMode) error {
+	if name == "" {
+		return &GenerationError{Message: "JSON extra-field policy names an empty type"}
+	}
+	if existing, ok := modes[name]; ok && existing != mode {
+		return &GenerationError{Message: "conflicting JSON extra-field policies for " + name}
+	}
+	modes[name] = mode
+	return nil
+}
+func nativeJSONExtraMode(mode native.ExtraFieldMode) (jsonExtraFieldMode, bool) {
+	switch mode {
+	case native.DiscardExtraFields:
+		return jsonExtraDiscard, true
+	case native.PreserveExtraFields:
+		return jsonExtraPreserve, true
+	case native.RejectExtraFields:
+		return jsonExtraReject, true
+	}
+	return jsonExtraDiscard, false
+}
+func normalizeJSONExtraFields(options JSONSerdeOptions, decls map[string]language.TypeDecl) (map[string]jsonExtraFieldMode, error) {
+	modes := map[string]jsonExtraFieldMode{}
+	for name, mode := range options.nativeExtraFields {
+		converted, ok := nativeJSONExtraMode(mode)
+		if !ok {
+			return nil, &GenerationError{Message: "unsupported native extra-field policy for " + name}
+		}
+		if err := putJSONExtraMode(modes, name, converted); err != nil {
+			return nil, err
+		}
+	}
+	if options.PreserveExtraFields {
+		if err := putJSONExtraMode(modes, options.Root, jsonExtraPreserve); err != nil {
+			return nil, err
+		}
+	}
+	if options.RejectExtraFields {
+		if err := putJSONExtraMode(modes, options.Root, jsonExtraReject); err != nil {
+			return nil, err
+		}
+	}
+	for name, enabled := range options.PreserveExtraFieldsFor {
+		if enabled {
+			if err := putJSONExtraMode(modes, name, jsonExtraPreserve); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for name, enabled := range options.RejectExtraFieldsFor {
+		if enabled {
+			if err := putJSONExtraMode(modes, name, jsonExtraReject); err != nil {
+				return nil, err
+			}
+		}
+	}
+	names := make([]string, 0, len(modes))
+	for name := range modes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		decl, ok := decls[name]
+		if !ok {
+			return nil, &GenerationError{Message: "JSON extra-field policy names unknown type " + name}
+		}
+		if decl.Body == nil {
+			return nil, &GenerationError{Message: "JSON extra-field policy requires record-producing type " + name}
+		}
+		selection := jsonExtraSelection{Mode: modes[name], Explicit: true, Origin: name, Key: name}
+		nodes := 0
+		record, _, err := jsonRecordPolicyShape(decl.Body, decls, modes, selection, map[string]bool{}, 0, &nodes)
+		if err != nil {
+			return nil, err
+		}
+		if !record {
+			return nil, &GenerationError{Message: "JSON extra-field policy requires record-producing type " + name}
+		}
+	}
+	return modes, nil
+}
+func jsonRecordPolicyShape(t *language.Type, decls map[string]language.TypeDecl, modes map[string]jsonExtraFieldMode, selection jsonExtraSelection, seen map[string]bool, depth int, nodes *int) (bool, jsonExtraSelection, error) {
+	if t == nil {
+		return false, selection, &GenerationError{Message: "JSON extra-field policy encountered an absent type"}
+	}
+	*nodes = *nodes + 1
+	if *nodes > language.DefaultSubstitutionNodes || depth > 512 {
+		return false, selection, &GenerationError{Message: "JSON extra-field policy resolution exceeded its structural bound"}
+	}
+	switch __gp_m2 := any(t.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m2.Base
+		return jsonRecordPolicyShape(base, decls, modes, selection, seen, depth+1, nodes)
+	case language.RecordType:
+		return true, selection, nil
+	case language.NamedType:
+		name := __gp_m2.Name
+		decl, ok := decls[name]
+		if !ok || decl.Body == nil || len(decl.Parameters) > 0 {
+			return false, selection, nil
+		}
+		next, err := mergeJSONExtraSelection(selection, name, modes)
+		if err != nil {
+			return false, selection, err
+		}
+		key := "named:" + name
+		if seen[key] {
+			return false, selection, &GenerationError{Message: "recursive JSON alias while resolving extra-field policy for " + selection.Origin}
+		}
+		seen[key] = true
+		record, result, walkErr := jsonRecordPolicyShape(decl.Body, decls, modes, next, seen, depth+1, nodes)
+		delete(seen, key)
+		return record, result, walkErr
+	case language.AppliedType:
+		name, args := applied(t)
+		decl, ok := decls[name]
+		if !ok || decl.Body == nil || len(args) != len(decl.Parameters) {
+			return false, selection, nil
+		}
+		next, err := mergeJSONExtraSelection(selection, name, modes)
+		if err != nil {
+			return false, selection, err
+		}
+		bindings := map[string]*language.Type{}
+		for i, param := range decl.Parameters {
+			bindings[param] = args[i]
+		}
+		closed, subErr := language.SubstituteTypeBounded(decl.Body, bindings, language.DefaultSubstitutionNodes)
+		if subErr != nil {
+			return false, selection, &GenerationError{Message: "JSON extra-field policy substitution exceeded its structural bound"}
+		}
+		key := "applied:" + jsonTypeKey(t, 0)
+		if seen[key] {
+			return false, selection, &GenerationError{Message: "recursive JSON alias while resolving extra-field policy for " + selection.Origin}
+		}
+		seen[key] = true
+		record, result, walkErr := jsonRecordPolicyShape(closed, decls, modes, next, seen, depth+1, nodes)
+		delete(seen, key)
+		return record, result, walkErr
+	default:
+		return false, selection, nil
+	}
+}
+func jsonExtraKey(key string, selection jsonExtraSelection) string {
+	if selection.Mode == jsonExtraPreserve {
+		return key + "@extra:preserve"
+	}
+	if selection.Mode == jsonExtraReject {
+		return key + "@extra:reject"
+	}
+	return key
+}
 
 type jsonShapeEmitter struct {
 	decls       map[string]language.TypeDecl
 	options     JSONSerdeOptions
+	extraModes  map[string]jsonExtraFieldMode
 	definitions map[string]string
 	building    map[string]bool
 	order       []string
@@ -472,13 +658,11 @@ func (e *jsonShapeEmitter) visit(t *language.Type, depth int) {
 		unsupported(t.At, "JSON shape depth limit exceeded")
 	}
 }
-func (e *jsonShapeEmitter) preserve(name string) bool {
-	return (name == e.options.Root && e.options.PreserveExtraFields) || e.options.PreserveExtraFieldsFor[name]
-}
 func (e *jsonShapeEmitter) reference(key string) string {
-	return "new S(\"ref\",null,null," + javaQuote(key) + ",false,null)"
+	return "new S(\"ref\",null,null," + javaQuote(key) + ",0,null)"
 }
-func (e *jsonShapeEmitter) record(key, name string, fields []language.Field, depth int) string {
+func (e *jsonShapeEmitter) record(key string, fields []language.Field, selection jsonExtraSelection, depth int) string {
+	key = jsonExtraKey(key, selection)
 	if _, ok := e.definitions[key]; ok {
 		return e.reference(key)
 	}
@@ -489,7 +673,7 @@ func (e *jsonShapeEmitter) record(key, name string, fields []language.Field, dep
 	for _, field := range fields {
 		parts = append(parts, "new F("+javaQuote(field.Name)+","+e.shape(field.Type, depth+1)+")")
 	}
-	e.definitions[key] = "new S(\"record\",null,java.util.List.of(" + strings.Join(parts, ",") + "),null," + fmt.Sprint(e.preserve(name)) + ",null)"
+	e.definitions[key] = "new S(\"record\",null,java.util.List.of(" + strings.Join(parts, ",") + "),null," + fmt.Sprint(int(selection.Mode)) + ",null)"
 	delete(e.building, key)
 	return e.reference(key)
 }
@@ -549,13 +733,23 @@ func (e *jsonShapeEmitter) union(key, name string, variants []jsonVariantShape, 
 		}
 		parts = append(parts, "new V("+javaQuote(variant.name)+","+javaQuote(tag)+",java.util.List.of("+strings.Join(nameParts, ",")+"),java.util.List.of("+strings.Join(shapeParts, ",")+"))")
 	}
-	e.definitions[key] = "new S(\"union\",null,null,null,false,new U(" + javaQuote(wire.Field) + ",java.util.List.of(" + strings.Join(parts, ",") + ")))"
+	e.definitions[key] = "new S(\"union\",null,null,null,0,new U(" + javaQuote(wire.Field) + ",java.util.List.of(" + strings.Join(parts, ",") + ")))"
 	return e.reference(key)
 }
+func (e *jsonShapeEmitter) terminalExtra(selection jsonExtraSelection, t *language.Type) {
+	if selection.Explicit {
+		unsupported(t.At, "JSON extra-field policy for "+selection.Origin+" does not resolve to a record")
+	}
+}
 func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
+	return e.shapeWithExtra(t, depth, jsonExtraSelection{})
+}
+func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type, depth int, selection jsonExtraSelection) string {
 	e.visit(t, depth)
-	t = unrefined(t)
 	switch __gp_m3 := any(t.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m3.Base
+		return e.shapeWithExtra(base, depth+1, selection)
 	case language.NamedType:
 		name := __gp_m3.Name
 
@@ -563,54 +757,67 @@ func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
 			return shape
 		}
 		if name == "Float32" || name == "Float64" {
-			return "new S(\"float-number\",null,null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"float-number\",null,null,null,0,null)"
 		}
 		if integerType(name) {
-			return "new S(\"integer\",null,null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"integer\",null,null,null,0,null)"
 		}
 		switch name {
 		case "String":
-			return "new S(\"text\",null,null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"text\",null,null,null,0,null)"
 		case "Bool":
-			return "new S(\"bool\",null,null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"bool\",null,null,null,0,null)"
 		case "Real":
+			e.terminalExtra(selection, t)
 			if e.options.Reals == JSONRealUnspecified {
 				unsupported(t.At, "exact Real JSON encoding policy is required")
 			}
-			return "new S(\"real\",null,null,null,false,null)"
+			return "new S(\"real\",null,null,null,0,null)"
 		case "Timestamp":
+			e.terminalExtra(selection, t)
 			if e.options.Timestamps != JSONTimestampRFC3339String {
 				unsupported(t.At, "Timestamp JSON encoding policy is required")
 			}
-			return "new S(\"timestamp\",null,null,null,false,null)"
+			return "new S(\"timestamp\",null,null,null,0,null)"
 		}
 		if name == "JSON" {
-			return "new S(\"json\",null,null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"json\",null,null,null,0,null)"
 		}
 		decl, ok := e.decls[name]
 		if !ok {
 			unsupported(t.At, "unknown JSON field type")
 		}
+		if selection.Key == "" {
+			selection.Key = name
+		}
+		next, err := mergeJSONExtraSelection(selection, name, e.extraModes)
+		if err != nil {
+			unsupported(t.At, err.Error())
+		}
 		if len(decl.Parameters) > 0 {
 			unsupported(t.At, "generic JSON field requires type arguments")
 		}
 		if decl.Body == nil {
+			e.terminalExtra(next, t)
 			return e.unionDecl(name, name, decl.Variants, nil, depth)
 		}
-		base := unrefined(decl.Body)
-		switch __gp_m4 := any(base.Form).(type) {
-		case language.RecordType:
-			fields := __gp_m4.Fields
-			return e.record(name, name, fields, depth)
-		default:
-			return e.shape(base, depth+1)
-		}
+		return e.shapeWithExtra(decl.Body, depth+1, next)
 	case language.RecordType:
 		fields := __gp_m3.Fields
-		return e.record("@anonymous:"+fmt.Sprint(t.At.Start.Offset), "", fields, depth)
+		key := selection.Key
+		if key == "" {
+			key = "@anonymous:" + fmt.Sprint(t.At.Start.Offset)
+		}
+		return e.record(key, fields, selection, depth)
 	case language.ListType:
 		element := __gp_m3.Element
-		return "new S(\"list\"," + e.shape(element, depth+1) + ",null,null,false,null)"
+		e.terminalExtra(selection, t)
+		return "new S(\"list\"," + e.shape(element, depth+1) + ",null,null,0,null)"
 	case language.AppliedType:
 		fn := __gp_m3.Constructor
 		arg := __gp_m3.Argument
@@ -619,21 +826,32 @@ func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
 		}
 		name, args := applied(t)
 		if name == "Maybe" && len(args) == 1 {
-			return "new S(\"maybe\"," + e.shape(args[0], depth+1) + ",null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"maybe\"," + e.shape(args[0], depth+1) + ",null,null,0,null)"
 		}
 		if name == "Nullable" && len(args) == 1 {
-			return "new S(\"nullable\"," + e.shape(args[0], depth+1) + ",null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"nullable\"," + e.shape(args[0], depth+1) + ",null,null,0,null)"
 		}
 		if name == "Map" && len(args) == 2 {
-			return "new S(\"map\"," + e.shape(args[1], depth+1) + ",null,null,false,null)"
+			e.terminalExtra(selection, t)
+			return "new S(\"map\"," + e.shape(args[1], depth+1) + ",null,null,0,null)"
 		}
 		key := jsonTypeKey(t, 0)
+		if selection.Key == "" {
+			selection.Key = key
+		}
 		if name == "Result" && len(args) == 2 {
+			e.terminalExtra(selection, t)
 			return e.union(key, "Result", []jsonVariantShape{{name: "Err", arguments: args[:1]}, {name: "Ok", arguments: args[1:]}}, depth)
 		}
 		decl, ok := e.decls[name]
 		if !ok {
 			unsupported(t.At, "unknown generic JSON field")
+		}
+		next, err := mergeJSONExtraSelection(selection, name, e.extraModes)
+		if err != nil {
+			unsupported(t.At, err.Error())
 		}
 		if len(args) != len(decl.Parameters) {
 			unsupported(t.At, "generic JSON type argument count mismatch")
@@ -643,20 +861,14 @@ func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
 			bindings[param] = args[i]
 		}
 		if decl.Body == nil {
+			e.terminalExtra(next, t)
 			return e.unionDecl(key, name, decl.Variants, bindings, depth)
 		}
-		closed, err := language.SubstituteType(decl.Body, bindings)
-		if err != nil {
-			unsupported(t.At, err.Error())
+		closed, subErr := language.SubstituteTypeBounded(decl.Body, bindings, language.DefaultSubstitutionNodes)
+		if subErr != nil {
+			unsupported(t.At, subErr.Error())
 		}
-		base := unrefined(closed)
-		switch __gp_m5 := any(base.Form).(type) {
-		case language.RecordType:
-			fields := __gp_m5.Fields
-			return e.record(key, name, fields, depth)
-		default:
-			return e.shape(base, depth+1)
-		}
+		return e.shapeWithExtra(closed, depth+1, next)
 	default:
 		unsupported(t.At, "unsupported JSON field shape")
 	}
@@ -667,16 +879,16 @@ func jsonTypeKey(t *language.Type, depth int) (key string) {
 		unsupported(t.At, "JSON type key depth limit exceeded")
 	}
 	t = unrefined(t)
-	switch __gp_m6 := any(t.Form).(type) {
+	switch __gp_m4 := any(t.Form).(type) {
 	case language.NamedType:
-		name := __gp_m6.Name
+		name := __gp_m4.Name
 		return name
 	case language.ListType:
-		element := __gp_m6.Element
+		element := __gp_m4.Element
 		return "[" + jsonTypeKey(element, depth+1) + "]"
 	case language.AppliedType:
-		fn := __gp_m6.Constructor
-		arg := __gp_m6.Argument
+		fn := __gp_m4.Constructor
+		arg := __gp_m4.Argument
 		return jsonTypeKey(fn, depth+1) + "<" + jsonTypeKey(arg, depth+1) + ">"
 	default:
 		key = "@" + fmt.Sprint(t.At.Start.Offset)
@@ -695,7 +907,8 @@ public final class %s extends tools.jackson.databind.module.SimpleModule {
     private record T(String value) implements J {}
     private record B(boolean value) implements J {}
     private record Z() implements J {}
-    private record S(String kind,S argument,java.util.List<F> fields,String reference,boolean preserveExtras,U union) {}
+    private static final int EXTRA_DISCARD=0,EXTRA_PRESERVE=1,EXTRA_REJECT=2;
+    private record S(String kind,S argument,java.util.List<F> fields,String reference,int extraFields,U union) { S(String kind,S argument,java.util.List<F> fields,String reference,boolean preserveExtras,U union){this(kind,argument,fields,reference,preserveExtras?EXTRA_PRESERVE:EXTRA_DISCARD,union);} }
     private record F(String name,S shape) {}
     private record U(String discriminator,java.util.List<V> variants) {}
     private record V(String constructor,String tag,java.util.List<String> names,java.util.List<S> shapes) {}
@@ -738,8 +951,16 @@ public final class %s extends tools.jackson.databind.module.SimpleModule {
         }
     }
     private static S resolveShape(S shape){var current=shape;var seen=new java.util.HashSet<String>();while(current.kind().equals("ref")){if(!seen.add(current.reference()))throw structure("Cyclic JSON shape reference without a record boundary.");current=DEFINITIONS.get(current.reference());if(current==null)throw new AssertionError("missing checked JSON shape");}return current;}
-    private static J recordToWire(S shape,Data raw,int depth,WireGuard guard){var struct=(Data.Struct)raw;var out=new java.util.ArrayList<E>();var declared=new java.util.HashSet<String>();for(F field:shape.fields()){guard.text(field.name(),true);declared.add(field.name());Data value=null;for(var candidate:struct.fields())if(candidate.name().equals(field.name())){value=candidate.value();break;}if(value==null)continue;S fieldShape=resolveShape(field.shape());if(fieldShape.kind().equals("maybe")&&value instanceof Data.Variant v&&v.name().equals("Nothing"))continue;if(fieldShape.kind().equals("maybe"))value=((Data.Variant)value).values().getFirst();out.add(new E(field.name(),toWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,guard)));}if(shape.preserveExtras())for(var field:struct.fields())if(!declared.contains(field.name()))out.add(new E(guard.text(field.name(),true),extraToWire(field.value(),depth+1,guard)));return new O(out);}
-    private static Data wireToRecord(S shape,J wire,int depth,NumericBudget budget,CodecLimits limits){if(!(wire instanceof O object))throw structure("Expected JSON object.");var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolveShape(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,budget,limits);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.preserveExtras())for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1,budget,limits)));return new Data.Struct(out);}
+    private static J recordToWire(S shape,Data raw,int depth,WireGuard guard){
+        var struct=(Data.Struct)raw;var declared=new java.util.HashSet<String>();for(F field:shape.fields()){guard.text(field.name(),true);declared.add(field.name());}
+        if(shape.extraFields()==EXTRA_REJECT)for(var field:struct.fields())if(!declared.contains(field.name()))throw structure("Undeclared JSON object members are rejected by this record policy.");
+        var out=new java.util.ArrayList<E>();for(F field:shape.fields()){Data value=null;for(var candidate:struct.fields())if(candidate.name().equals(field.name())){value=candidate.value();break;}if(value==null)continue;S fieldShape=resolveShape(field.shape());if(fieldShape.kind().equals("maybe")&&value instanceof Data.Variant v&&v.name().equals("Nothing"))continue;if(fieldShape.kind().equals("maybe"))value=((Data.Variant)value).values().getFirst();out.add(new E(field.name(),toWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,guard)));}
+        if(shape.extraFields()==EXTRA_PRESERVE)for(var field:struct.fields())if(!declared.contains(field.name()))out.add(new E(guard.text(field.name(),true),extraToWire(field.value(),depth+1,guard)));return new O(out);
+    }
+    private static Data wireToRecord(S shape,J wire,int depth,NumericBudget budget,CodecLimits limits){
+        if(!(wire instanceof O object))throw structure("Expected JSON object.");var declared=new java.util.HashSet<String>();for(F field:shape.fields())declared.add(field.name());if(shape.extraFields()==EXTRA_REJECT)for(E field:object.fields())if(!declared.contains(field.name()))throw structure("Undeclared JSON object members are rejected by this record policy.");
+        var source=new java.util.LinkedHashMap<String,J>();for(E field:object.fields())source.put(field.name(),field.value());var out=new java.util.ArrayList<Data.Field>();for(F field:shape.fields()){S fieldShape=resolveShape(field.shape());J value=source.remove(field.name());if(value==null){if(fieldShape.kind().equals("maybe"))out.add(new Data.Field(field.name(),new Data.Variant("Nothing",java.util.List.of())));continue;}Data decoded=fromWire(fieldShape.kind().equals("maybe")?fieldShape.argument():fieldShape,value,depth+1,budget,limits);if(fieldShape.kind().equals("maybe"))decoded=new Data.Variant("Just",java.util.List.of(decoded));out.add(new Data.Field(field.name(),decoded));}if(shape.extraFields()==EXTRA_PRESERVE)for(var field:source.entrySet())out.add(new Data.Field(field.getKey(),extraFromWire(field.getValue(),depth+1,budget,limits)));return new Data.Struct(out);
+    }
     private static J mapToWire(S shape,Data raw,int depth,WireGuard guard){var fields=new java.util.ArrayList<E>();for(var entry:((Data.Mapping)raw).entries().entrySet())fields.add(new E(guard.text(entry.getKey(),true),toWire(shape.argument(),entry.getValue(),depth+1,guard)));return new O(fields);}
     private static Data wireToMap(S shape,J wire,int depth,NumericBudget budget,CodecLimits limits){if(!(wire instanceof O object))throw structure("Expected JSON object for Map.");var entries=new java.util.LinkedHashMap<String,Data>();for(var field:object.fields()){if(entries.putIfAbsent(field.name(),fromWire(shape.argument(),field.value(),depth+1,budget,limits))!=null)throw structure("Duplicate decoded map key.");}return new Data.Mapping(entries);}
     private static J jsonToWire(Data raw,int depth,WireGuard guard){guard.enter(depth);if(!(raw instanceof Data.Variant value))throw structure("Expected an explicit JSON constructor.");return switch(value.name()){

@@ -16,7 +16,9 @@ optional Java-specific package override, native formats, and `NoCodegen`
 setting. A contract supplies either a checked `language.Program` and root
 payload type or a self-contained `native.Project` imported from a native bundle.
 The native project remains the authority for its original resources, sidecar
-metadata, native constraint units, root, and publication namespace.
+metadata, native constraint units, target, and publication namespace. Its target
+is either one selected payload root or an operations-only OpenAPI entry resource;
+the latter never receives a synthetic root.
 
 Package selection is deterministic:
 
@@ -67,12 +69,17 @@ must emit no bytes. This standalone-source path does not substitute for importin
 an existing native sidecar with aliases, defaults, or opaque native constraints.
 
 Generation is pure and all-or-nothing in memory. Files are sorted by path, and a
-failure returns an empty `Bundle`. Each code-generating contract also emits a
-schema-derived JetCheck suite for its root under the test directory. Library
+failure returns an empty `Bundle`. Each code-generating payload contract also
+emits a schema-derived JetCheck suite for its root under the test directory.
+An operations-only OpenAPI contract instead emits one mandatory suite derived
+from every checked request and response binding. Those tests call the generated
+native-first operation facade and cannot be narrowed through explicit targets.
+Library
 callers may supply `Contract.PropertyTests` to configure cases, attempt budgets,
 explicit targets, embedded examples, and serialized counterexample replay.
 The same all-or-nothing rule applies to unsupported test-generator strategies.
-`NoCodegen` suppresses models and their generated tests, but retains resources.
+`NoCodegen` suppresses models, facades, launchers, and generated tests when no
+other contract emits code, but retains resources.
 
 ## Owned output safety
 
@@ -202,23 +209,32 @@ complete owned output set and bytes without writes. `--json` emits a build-tool
 report. Imports are read through an OS root handle confined to the project and
 bundled using `language.CompileSources`; imports do not grant predicates I/O.
 For a native bundle, family `wire` overrides are rejected because the bundle is
-the published wire authority. A configured `root` must exactly match the bundle
-root. `package`, `javaPackage`, and `--package` remain explicit publication/code
+the published wire authority. A configured `root` must exactly match a payload
+bundle root. An operations-only OpenAPI bundle requires an empty `root` and the
+explicit origin format `openapi`; generation emits the composed operation facade
+and its mandatory request/response properties. `package`, `javaPackage`, and `--package` remain explicit publication/code
 generation overrides with the normal priority. Selecting only the bundle's
 origin format is the currently supported exact path. Omitting `formats` still
 requests all three formats and therefore fails closed when opaque native details
 cannot be represented cross-format; no target is silently skipped.
 
 Native project resources include `contract.refined.json` (the complete original
-bundle), the effective ordinary/refined selected root schema, and a
+bundle), the effective ordinary/refined selected target resource set, and a
 `<mode>-<format>-resources.json` manifest. That manifest preserves ordered URI
-identities, the selected root, and checked wire metadata. Dependency filenames
+identities, the typed project target, its entry resource, an optional payload
+root, and checked wire metadata. Dependency filenames
 are deterministic numeric names, never paths taken from schema URIs. Consumers
 of an external-reference schema must retain this resource set; the root file
 alone is not advertised as a self-contained bundle. Native JSON property
 candidates are filtered against the independent native oracle before testing
 the Refine predicates; resource/enforcement failures propagate instead of being
 mistaken for ordinary rejected samples.
+
+Release planning for operations-only bundles remains deliberately unsupported in
+this slice. The CLI reports that multi-entrypoint compatibility is unknown and
+stops before invoking a single-root comparison. There is no override route for
+that guard yet; project generation support does not imply release-promotion
+support.
 
 `refine project maven` emits an opt-in POM fragment; it does not edit a POM.
 The fragment invokes the real `project generate` command during `generate-sources`,

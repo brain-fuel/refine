@@ -87,7 +87,22 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(patternDir, "SNAPSHOT.refined.json"), patternBundle, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]},"code":{"formats":["json-schema"]}}}`), 0600); err != nil {
+	operationsProject, err := native.IngestOpenAPIOperations([]byte(`{"openapi":"3.1.2","info":{"title":"Health","version":"1"},"paths":{"/healthy":{"post":{"operationId":"checkHealth","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"boolean"}}}},"responses":{"204":{"description":"healthy"}}}}}}`), native.OpenAPIOperationIngestOptions{EntryResource: "https://example.test/health.openapi.json", Metadata: native.WireMetadata{PublicationNamespace: "example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationsBundle, err := operationsProject.Bundle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationsDir := filepath.Join(root, "schemata", "health")
+	if err = os.MkdirAll(operationsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(operationsDir, "SNAPSHOT.refined.json"), operationsBundle, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]},"code":{"formats":["json-schema"]},"health":{"formats":["openapi"]}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	fragment := exec.Command(executable, "project", "maven", "--root", root, "--executable", executable)
@@ -130,14 +145,25 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if inventory.ArtifactSHA256() != release.Digest(first) {
 		t.Fatal("actual Maven artifact digest mismatch")
 	}
-	foundGreeting := false
+	foundGreeting, foundOperations := false, false
 	for _, class := range inventory.Classes() {
 		if class.Path == "example/test/greeting/snapshot/Greeting.class" {
 			foundGreeting = true
 		}
+		if class.Path == "example/test/health/snapshot/RefineOpenAPIOperations.class" {
+			foundOperations = true
+		}
 	}
-	if !foundGreeting {
-		t.Fatal("actual Maven JAR inventory omitted generated Greeting class")
+	if !foundGreeting || !foundOperations {
+		t.Fatalf("actual Maven JAR inventory omitted generated families: greeting=%t rootless-operations=%t", foundGreeting, foundOperations)
+	}
+	operationSource, err := os.ReadFile(filepath.Join(root, "target", "generated-sources", "refine", "example", "test", "health", "snapshot", "RefineOpenAPIOperations.java"))
+	if err != nil || !strings.Contains(string(operationSource), "checkHealth") {
+		t.Fatal("Maven did not generate the rootless OpenAPI operation facade", err)
+	}
+	operationProperties, err := os.ReadFile(filepath.Join(root, "target", "generated-test-sources", "refine", "example", "test", "health", "snapshot", "ContractGeneratedProperties.java"))
+	if err != nil || !strings.Contains(string(operationProperties), "request checkHealth") || !strings.Contains(string(operationProperties), "response checkHealth 204") {
+		t.Fatal("Maven did not generate complete rootless OpenAPI properties", err)
 	}
 	run()
 	second, err := os.ReadFile(jar)
@@ -166,8 +192,8 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 		t.Fatal("build mutated released schema")
 	}
 	launcher, err := os.ReadFile(filepath.Join(root, "target", "generated-test-sources", "refine", "refine", "generated", "RefineGeneratedTests.java"))
-	if err != nil || !strings.Contains(string(launcher), "greeting.v1_0_0.ContractGeneratedProperties.main") || !strings.Contains(string(launcher), "greeting.snapshot.ContractGeneratedProperties.main") {
-		t.Fatal("all schema versions must execute generated properties", err)
+	if err != nil || !strings.Contains(string(launcher), "greeting.v1_0_0.ContractGeneratedProperties.main") || !strings.Contains(string(launcher), "greeting.snapshot.ContractGeneratedProperties.main") || !strings.Contains(string(launcher), "health.snapshot.ContractGeneratedProperties.main") {
+		t.Fatal("all schema versions and rootless operation families must execute generated properties", err)
 	}
 	impossible := []byte("package example.test\ntype Greeting = {text :: String where length it > 100}\n")
 	if err := os.WriteFile(filepath.Join(schemaDir, "SNAPSHOT.refine"), impossible, 0600); err != nil {

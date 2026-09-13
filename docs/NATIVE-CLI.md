@@ -2,7 +2,8 @@
 
 Native artifact commands emit their result on stdout and do not overwrite input
 files. A Refine bundle contains the exact original resources, editable checked
-source, root selector, and wire metadata; it is not an ordinary schema export.
+source, a typed payload-root or OpenAPI-operations target, and wire metadata; it
+is not an ordinary schema export.
 
 ```sh
 refine native ingest --type Person json-schema person.schema.json > person.refined.json
@@ -21,6 +22,13 @@ objects, each with `URI` and `Source`. The main input is appended after these
 dependencies (important for Avro name-definition order). Duplicate IDs, missing
 references, or resources that require network/filesystem resolution reject.
 Only one explicit input may be `-` for stdin. Inputs are bounded to 16 MiB each.
+
+An operations-only OpenAPI bundle selects its entry document rather than a
+Schema Object and has no payload root. `project generate` accepts that bundle
+with an empty family `root` and explicit `formats: ["openapi"]`, generating the
+checked operation facade, mandatory request/response properties, and complete
+resource manifests. The native CLI does not invent an HTTP client or route such
+a bundle through the single-payload `validate-payload` command.
 
 `source` exposes the checked editable language. `update` checks its replacement
 and retains the original native sidecar and metadata; invalid updates emit no

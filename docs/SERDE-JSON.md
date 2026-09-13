@@ -54,11 +54,17 @@ checks, and codec/caller limits. They neither change normal Jackson behavior nor
 make an invalid model valid. Reads snapshot the input after the byte-size check;
 writes return staged bytes only after all remaining gates pass.
 
-Record decoding discards undeclared fields by default. Preservation can be
-enabled independently for named record types; preserved JSON objects, arrays,
+Record decoding discards undeclared fields by default. Preservation or rejection
+can be enabled independently for named record occurrences. A policy follows an
+alias or closed generic application only until its first record shape, then
+nested fields select their own named policy; it never changes every specialization
+of an underlying generic family. Equal explicit modes on one alias chain coalesce,
+while conflicting modes reject generation. Preserved JSON objects, arrays,
 numbers, strings, Booleans, and nulls remain in the immutable model's raw data
-and are written back. A preserved value that was later changed to a language
-value with no exact JSON representation is rejected before output begins.
+and are written back. Reject mode fails before an undeclared member can be
+discarded and before either normal or refinement-bypass writes release bytes. A
+preserved value that was later changed to a language value with no exact JSON
+representation is likewise rejected before output begins.
 
 Nested named and anonymous records, recursive records, exact string-keyed maps,
 and closed nested generic

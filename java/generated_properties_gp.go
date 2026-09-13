@@ -66,6 +66,7 @@ type PropertyTestOptions struct {
 type propertyRule struct {
 	target string
 	code   string
+	offset int
 }
 type propertyEmitter struct {
 	declarations map[string]language.TypeDecl
@@ -154,7 +155,7 @@ func (e *propertyEmitter) integerLike(t *language.Type) bool {
 		return e.integerLike(base)
 	case language.NamedType:
 		name := __gp_m2.Name
-		if name == "Int" || strings.HasPrefix(name, "Int") || strings.HasPrefix(name, "UInt") {
+		if integerType(name) {
 			return true
 		}
 		if decl, ok := e.declarations[name]; ok && decl.Body != nil {
@@ -185,7 +186,7 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 		}
 		result = append(result, nested...)
 		for _, rule := range rules {
-			result = append(result, propertyRule{target: target, code: generatedRuleCode(path, rule)})
+			result = append(result, propertyRule{target: target, code: generatedRuleCode(path, rule), offset: rule.At.Start.Offset})
 		}
 	case language.RecordType:
 		fields := __gp_m3.Fields

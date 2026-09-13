@@ -16,6 +16,40 @@ import (
 	"goforge.dev/refine/native"
 )
 
+type openAPIGeneratedNames struct {
+	sidecar         string
+	responseSidecar string
+	codecs          map[string]string
+}
+
+// openAPINames is shared with the operation property adapter. Its allocation
+// order is part of the generated-source contract: adding the adapter must not
+// rename any existing facade or codec source.
+func openAPINames(program *language.Program, contractName, className string, sharedNative bool, typeNames []string) openAPIGeneratedNames {
+	used := map[string]bool{sourceNameKey(contractName): true, sourceNameKey(className): true}
+	for _, decl := range program.Syntax().Types {
+		used[sourceNameKey(decl.Name)] = true
+	}
+	unique := func(base string) string {
+		name := base
+		for used[sourceNameKey(name)] {
+			name += "_"
+		}
+		used[sourceNameKey(name)] = true
+		return name
+	}
+	sidecar := unique(className + "NativeParts")
+	response := sidecar
+	if !sharedNative {
+		response = unique(className + "NativeResponseParts")
+	}
+	codecs := map[string]string{}
+	for _, name := range typeNames {
+		codecs[name] = unique(className + "JSON" + fmt.Sprint(len(codecs)))
+	}
+	return openAPIGeneratedNames{sidecar: sidecar, responseSidecar: response, codecs: codecs}
+}
+
 // GenerateProjectOpenAPIContext composes checked native operation-part Schema
 // Objects with structural JSON decoding and the complete Refine request,
 // response, and context predicates. Inputs are semantic JSON values, never HTTP
@@ -56,21 +90,6 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 	}
 	metadata := project.Metadata()
 	namespace := metadata.PublicationNamespace
-	usedNames := map[string]bool{sourceNameKey(contractName): true, sourceNameKey(className): true}
-	for _, decl := range program.Syntax().Types {
-		usedNames[sourceNameKey(decl.Name)] = true
-	}
-	uniqueName := func(base string) string {
-		name := base
-		for usedNames[sourceNameKey(name)] {
-			name += "_"
-		}
-		usedNames[sourceNameKey(name)] = true
-		return name
-	}
-	sidecarName := uniqueName(className + "NativeParts")
-	responseSidecarName := sidecarName
-
 	targets := map[string]native.OpenAPISchemaTarget{}
 	requestTargets := map[string]native.OpenAPISchemaTarget{}
 	responseTargets := map[string]native.OpenAPISchemaTarget{}
@@ -121,6 +140,13 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		return nil, err
 	}
 	sharedNative := nativeResourceSlicesEqual(requestResources, responseResources)
+	typeNames := make([]string, 0, len(types))
+	for name := range types {
+		typeNames = append(typeNames, name)
+	}
+	sort.Strings(typeNames)
+	names := openAPINames(program, contractName, className, sharedNative, typeNames)
+	sidecarName, responseSidecarName := names.sidecar, names.responseSidecar
 	var nativeFiles, responseNativeFiles []File
 	if sharedNative {
 		selector, wrapper, wrapErr := nativeOpenAPIWrapper("", targets, catalog.Resources)
@@ -132,7 +158,6 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 			return nil, err
 		}
 	} else {
-		responseSidecarName = uniqueName(className + "NativeResponseParts")
 		requestSelector, requestWrapper, wrapErr := nativeOpenAPIWrapper("request", requestTargets, catalog.Resources)
 		if wrapErr != nil {
 			return nil, wrapErr
@@ -151,12 +176,7 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		}
 	}
 
-	typeNames := make([]string, 0, len(types))
-	for name := range types {
-		typeNames = append(typeNames, name)
-	}
-	sort.Strings(typeNames)
-	codecNames := map[string]string{}
+	codecNames := names.codecs
 	all := []File{}
 	seen := map[string]string{}
 	merge := func(next []File) error {
@@ -182,8 +202,7 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 		if _, err := program.PayloadType(name); err != nil {
 			return nil, &GenerationError{Message: "native OpenAPI target type is not a closed checked payload: " + name}
 		}
-		codec := uniqueName(className + "JSON" + fmt.Sprint(len(codecNames)))
-		codecNames[name] = codec
+		codec := codecNames[name]
 		options, err := JSONSerdeOptionsFromMetadata(name, metadata)
 		if err != nil {
 			return nil, err

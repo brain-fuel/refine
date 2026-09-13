@@ -1,0 +1,67 @@
+package native
+
+import (
+    "errors"
+    "fmt"
+    "sort"
+
+    "goforge.dev/refine/language"
+)
+
+// A wire policy belongs to one nominal occurrence, not to every use of its
+// underlying record family. Equal explicit policies on its transparent alias
+// chain compose; contradictory policies are never resolved by map order.
+func mergeExtraFieldPolicy(pending,next ExtraFieldMode)(ExtraFieldMode,error){
+    if next==""{return pending,nil};if pending!=""&&pending!=next{return "",fmt.Errorf("conflicting extra-field policies %q and %q on one record occurrence",pending,next)};return next,nil
+}
+
+type extraFieldWork struct{remaining int}
+func (w *extraFieldWork)take(n int)error{if n<0||n>w.remaining{return &Error{Code:"native.limit",Message:"extra-field policy resolution exceeds its structural work limit"}};w.remaining-=n;return nil}
+type extraFieldBinding struct{typ *language.Type;environment map[string]extraFieldBinding}
+
+// Only the transparent type spine is inspected. Lexically captured arguments
+// implement simultaneous substitution without copying whole record bodies.
+// Fields terminate resolution, so recursive fields and anonymous child records
+// do not inherit a policy from their enclosing occurrence.
+func recordExtraFieldPolicy(types map[string]language.TypeDecl,modes map[string]ExtraFieldMode,name string,body *language.Type,work *extraFieldWork)([]language.Field,ExtraFieldMode,bool,error){
+    pending:=modes[name];current:=extraFieldBinding{typ:body}
+    for depth:=0;depth<512;depth++{
+        if err:=work.take(1);err!=nil{return nil,"",false,err};if current.typ==nil{return nil,pending,false,nil}
+        match current.typ.Form{
+        case language.RefinedType(base,_):current.typ=base
+        case language.RecordType(fields):return fields,pending,true,nil
+        case language.NamedType(named):
+            if bound,ok:=current.environment[named];ok{current=bound;continue}
+            decl,ok:=types[named];if !ok||decl.Body==nil{return nil,pending,false,nil};if len(decl.Parameters)!=0{return nil,"",false,fmt.Errorf("extra-field policy encountered unbound generic %s",named)}
+            next,err:=mergeExtraFieldPolicy(pending,modes[named]);if err!=nil{return nil,"",false,err};pending=next;current=extraFieldBinding{typ:decl.Body}
+        case language.AppliedType(_,_):
+            constructor:=current.typ;arguments:=[]*language.Type{};constructorName:=""
+            for constructor!=nil{if err:=work.take(1);err!=nil{return nil,"",false,err};done:=false;match constructor.Form{case language.AppliedType(fn,argument):arguments=append(arguments,argument);constructor=fn;case language.NamedType(found):constructorName=found;done=true;case _:done=true};if done{break}}
+            decl,ok:=types[constructorName];if !ok||decl.Body==nil{return nil,pending,false,nil};if len(arguments)!=len(decl.Parameters){return nil,"",false,fmt.Errorf("extra-field policy encountered incorrect generic arity for %s",constructorName)}
+            if err:=work.take(len(arguments));err!=nil{return nil,"",false,err};environment:=make(map[string]extraFieldBinding,len(arguments));for i,parameter:=range decl.Parameters{environment[parameter]=extraFieldBinding{typ:arguments[len(arguments)-1-i],environment:current.environment}}
+            next,err:=mergeExtraFieldPolicy(pending,modes[constructorName]);if err!=nil{return nil,"",false,err};pending=next;current=extraFieldBinding{typ:decl.Body,environment:environment}
+        case _:return nil,pending,false,nil
+        }
+    }
+    return nil,"",false,&Error{Code:"native.limit",Message:"extra-field policy resolution exceeds its alias depth limit"}
+}
+
+func validateExtraFieldPolicies(types map[string]language.TypeDecl,modes map[string]ExtraFieldMode)error{
+    if len(modes)>len(types){return fmt.Errorf("extra-field policies outnumber declared types")};names:=make([]string,0,len(modes));for name:=range modes{names=append(names,name)};sort.Strings(names)
+    work:=&extraFieldWork{remaining:language.DefaultSubstitutionNodes}
+    for _,name:=range names{
+        decl,ok:=types[name];if !ok{return fmt.Errorf("extra-field policy names unknown type %s",name)};mode:=modes[name];if mode!=DiscardExtraFields&&mode!=PreserveExtraFields&&mode!=RejectExtraFields{return fmt.Errorf("invalid extra-field mode for %s",name)}
+        _,_,record,err:=recordExtraFieldPolicy(types,modes,name,decl.Body,work);if err!=nil{return fmt.Errorf("extra-field policy for %s: %w",name,err)};if !record{return fmt.Errorf("extra-field policy requires record type %s",name)}
+    };return nil
+}
+
+// Closing a named alias must not close the definition it references. A local
+// allOf overlay recognizes that record's declared names while retaining every
+// native constraint in the original reference, including its refinements.
+func (l *lowerer)applyExtraFieldPolicy(name string,body *language.Type,schema any)(any,error){
+    if len(l.extraFields)==0{return schema,nil};fields,mode,record,err:=recordExtraFieldPolicy(l.declarations,l.extraFields,name,body,&l.extraFieldWork);if err!=nil{var limit *Error;if errors.As(err,&limit)&&limit.Code=="native.limit"{return nil,&Error{Code:"native.limit",Format:l.format,Pointer:name,Message:limit.Message,Cause:err}};return nil,l.unrepresentable(name,err.Error())};if !record||mode!=RejectExtraFields{return schema,nil}
+    object,ok:=schema.(map[string]any);if ok&&object["type"]=="object"{object["additionalProperties"]=false;return object,nil}
+    if err:=l.extraFieldWork.take(len(fields));err!=nil{return nil,&Error{Code:"native.limit",Format:l.format,Pointer:name,Message:"extra-field closure properties exceed the aggregate lowering work limit",Cause:err}}
+    properties:=make(map[string]any,len(fields));for _,field:=range fields{properties[field.Name]=map[string]any{}}
+    return map[string]any{"allOf":[]any{schema,map[string]any{"type":"object","properties":properties,"additionalProperties":false}}},nil
+}
