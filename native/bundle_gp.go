@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 
 	"goforge.dev/refine/language"
-	"goforge.dev/refine/schemajson"
+	_ "goforge.dev/refine/schemajson"
 )
 
 type bundleTarget struct {
@@ -16,16 +16,17 @@ type bundleTarget struct {
 	Resource string      `json:"resource"`
 }
 type bundleFile struct {
-	Version                 int                   `json:"version"`
-	Format                  Format                `json:"format"`
-	Root                    *ResourceSelector     `json:"root,omitempty"`
-	Target                  *bundleTarget         `json:"target,omitempty"`
-	Resources               []Resource            `json:"resources"`
-	EditableSource          string                `json:"editableSource"`
-	LanguageEntry           string                `json:"languageEntry,omitempty"`
-	LanguageFiles           []language.SourceFile `json:"languageFiles,omitempty"`
-	NativeConstraintSources []Resource            `json:"nativeConstraintSources,omitempty"`
-	Metadata                WireMetadata          `json:"metadata"`
+	Version                 int                     `json:"version"`
+	Format                  Format                  `json:"format"`
+	Root                    *ResourceSelector       `json:"root,omitempty"`
+	Target                  *bundleTarget           `json:"target,omitempty"`
+	Resources               []Resource              `json:"resources"`
+	EditableSource          string                  `json:"editableSource"`
+	LanguageEntry           string                  `json:"languageEntry,omitempty"`
+	LanguageFiles           []language.SourceFile   `json:"languageFiles,omitempty"`
+	NativeConstraintSources []Resource              `json:"nativeConstraintSources,omitempty"`
+	Metadata                WireMetadata            `json:"metadata"`
+	ReleasePolicy           *language.ReleasePolicy `json:"releasePolicy,omitempty"`
 }
 
 // Bundle returns one self-contained JSON distribution. Native resources remain
@@ -34,7 +35,7 @@ func (p *Project) Bundle() ([]byte, error) {
 	if p == nil || p.program == nil || p.document == nil {
 		return nil, &Error{Code: "native.project", Message: "a checked project is required"}
 	}
-	wire := bundleFile{Version: 1, Format: p.Format(), Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), NativeConstraintSources: p.NativeConstraintSources(), Metadata: p.Metadata()}
+	wire := bundleFile{Version: 1, Format: p.Format(), Resources: p.Resources(), EditableSource: p.source, LanguageEntry: p.LanguageEntry(), LanguageFiles: p.LanguageFiles(), NativeConstraintSources: p.NativeConstraintSources(), Metadata: p.Metadata(), ReleasePolicy: p.ReleasePolicy()}
 	switch p.Kind() {
 	case PayloadProject:
 		if !p.HasPayloadRoot() {
@@ -59,8 +60,9 @@ func (p *Project) Bundle() ([]byte, error) {
 }
 
 func ParseBundle(input []byte) (*Project, error) {
-	if _, err := schemajson.Parse(input, schemajson.Limits{}); err != nil {
-		return nil, wrap("", "native.bundle", "", err)
+	_, checkedPolicy, err := ReleaseComparisonBundle(input)
+	if err != nil {
+		return nil, err
 	}
 	var wire bundleFile
 	decoder := json.NewDecoder(bytes.NewReader(input))
@@ -86,7 +88,12 @@ func ParseBundle(input []byte) (*Project, error) {
 				return nil, err
 			}
 		}
-		return project.WithMetadata(wire.Metadata)
+		project, err = project.WithMetadata(wire.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		project.releasePolicy = copyNativeReleasePolicy(checkedPolicy)
+		return project, nil
 	}
 	if wire.Version != 2 {
 		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "unsupported bundle version"}
@@ -101,7 +108,12 @@ func ParseBundle(input []byte) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ingestOpenAPIOperationResources(wire.Resources, OpenAPIOperationIngestOptions{EntryResource: wire.Target.Resource, Metadata: wire.Metadata}, bundled)
+	project, err := ingestOpenAPIOperationResources(wire.Resources, OpenAPIOperationIngestOptions{EntryResource: wire.Target.Resource, Metadata: wire.Metadata}, bundled)
+	if err != nil {
+		return nil, err
+	}
+	project.releasePolicy = copyNativeReleasePolicy(checkedPolicy)
+	return project, nil
 }
 
 func applyBundledSource(project *Project, wire bundleFile) (*Project, error) {

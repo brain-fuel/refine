@@ -20,13 +20,16 @@ type Resource struct { URI string; Source string }
 // Project couples editable checked language source to an immutable native
 // sidecar. The sidecar remains authoritative for constraints not represented by
 // the language projection.
-type Project struct { document *Document; target ProjectTarget; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool; avroDefaultChecks []AvroDefaultCheck; schemaChecks analysis.SchemaReport; openAPIOperations *openAPIOperationIndex }
+type Project struct { document *Document; target ProjectTarget; root ResourceSelector; source string; program *language.Program; metadata WireMetadata; releasePolicy *language.ReleasePolicy; resources []Resource; languageEntry string; languageFiles []language.SourceFile; jsonOrigins map[string]*provenance.JSONSchema; nativeUnitSources map[string]string; nativeUnitsInEditable map[string]bool; avroDefaultChecks []AvroDefaultCheck; schemaChecks analysis.SchemaReport; openAPIOperations *openAPIOperationIndex }
 
 func (p *Project) Format()Format{if p==nil||p.document==nil{return ""};return p.document.Format()}
 func (p *Project) Version()string{if p==nil||p.document==nil{return ""};return p.document.Version()}
 func (p *Project) Root()ResourceSelector{if p==nil{return ResourceSelector{}};return p.root}
 func (p *Project) EditableSource()string{if p==nil{return ""};return p.source}
 func (p *Project) Metadata()WireMetadata{if p==nil{return WireMetadata{}};return copyMetadata(p.metadata)}
+// ReleasePolicy is release authority carried by the version-controlled native
+// bundle. It is deliberately separate from wire metadata.
+func (p *Project) ReleasePolicy()*language.ReleasePolicy{if p==nil{return nil};return copyNativeReleasePolicy(p.releasePolicy)}
 func (p *Project) Resources()[]Resource{if p==nil{return nil};return append([]Resource(nil),p.resources...)}
 func (p *Project) LanguageEntry()string{if p==nil{return ""};return p.languageEntry}
 func (p *Project) LanguageFiles()[]language.SourceFile{if p==nil{return nil};out:=append([]language.SourceFile(nil),p.languageFiles...);for i:=range out{out[i].Imports=append([]string(nil),out[i].Imports...)};return out}

@@ -5,8 +5,8 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
+	_ "os"
+	_ "path/filepath"
 	"strings"
 	"testing"
 
@@ -52,9 +52,7 @@ func TestReleaseDocumentationClaimRetainsContractChanges(t *testing.T) {
 			}
 			comparison := report.Comparisons[0]
 			override := `,"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"all compatibility dimensions reviewed"}]`
-			if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.1", override)), 0600); err != nil {
-				t.Fatal(err)
-			}
+			writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("documentation", "1.0.1", override))
 			workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 			if err != nil {
 				t.Fatal(err)
@@ -158,9 +156,7 @@ func TestReleaseDocumentationClaimRetainsNativeSourceGraphWithOverrides(t *testi
 			}
 			comparison := workflow.reports[0].Comparisons[0]
 			override := `,"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"compatibility reviewed"}]`
-			if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.1", override)), 0600); err != nil {
-				t.Fatal(err)
-			}
+			writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("documentation", "1.0.1", override))
 			workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 			if err != nil {
 				t.Fatal(err)
@@ -194,9 +190,7 @@ func TestDocumentationOnlyDependencyCommentChangeIsNonAffectingButStillPending(t
 	}
 	comparison := report.Comparisons[0]
 	override := `,"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native and Java compatibility reviewed"}]`
-	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.1", override)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("documentation", "1.0.1", override))
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", []string{"foo"})
 	if err != nil {
 		t.Fatal(err)

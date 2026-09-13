@@ -122,7 +122,7 @@ func GenerateProjectOpenAPIContext(project *native.Project, contractName, classN
 			}
 		}
 	}
-	if totalParts == 0 || totalParts > 1024 || totalResponses > 256 {
+	if totalParts > 1024 || totalResponses > 256 {
 		return nil, &GenerationError{Message: "generated native OpenAPI facade exceeds its part or response binding limit"}
 	}
 	for _, target := range targets {

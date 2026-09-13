@@ -57,12 +57,14 @@ func CompileSources(entry string,sources map[string]string)(*SourceBundle,error)
         bind:=func(table map[string]string,name string)error{if owner,exists:=table[name];exists{return &ImportError{Code:"language.import_collision",SourceID:file.ID,Message:"declaration "+name+" conflicts with "+owner}};table[name]=file.ID;return nil}
         for _,decl:=range module.Types{if err:=bind(types,decl.Name);err!=nil{return nil,err};for _,variant:=range decl.Variants{if err:=bind(terms,variant.Name);err!=nil{return nil,err}}}
         for _,fn:=range module.Functions{if err:=bind(terms,fn.Name);err!=nil{return nil,err}}
-        clean:=*module;clean.Package="";clean.Imports=nil;clean.Limits=SchemaLimits{}
+        clean:=*module;clean.Package="";clean.Imports=nil;clean.Limits=SchemaLimits{};clean.ReleasePolicy=nil
         text:=Format(&clean)
         if len(text)>(16<<20)-flattened.Len(){return nil,&ImportError{Code:"language.import_limit",SourceID:file.ID,Message:"flattened source exceeds 16 MiB"}}
         start:=flattened.Len();flattened.WriteString(text);flattened.WriteByte('\n');segments=append(segments,segment{id:file.ID,start:start,end:flattened.Len()})
     }
-    program,err:=Compile(flattened.String());if err!=nil{
+    flattenedSource:=flattened.String()
+    if policy:=r.modules[entry].ReleasePolicy;policy!=nil{var err error;flattenedSource,err=AppendReleasePolicyFooter(flattenedSource,policy);if err!=nil{return nil,&ImportError{Code:"language.import_limit",SourceID:entry,Message:err.Error(),Cause:err}}}
+    program,err:=Compile(flattenedSource);if err!=nil{
         owner:=entry;if detail,ok:=err.(*Error);ok{for _,part:=range segments{if detail.At.Start.Offset>=part.start&&detail.At.Start.Offset<part.end{owner=part.id;break}}}
         return nil,&ImportError{Code:"language.import_type",SourceID:owner,Message:"bundled type checking failed (positions refer to canonical flattened source): "+err.Error(),Cause:err}
     }

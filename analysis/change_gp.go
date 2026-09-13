@@ -47,6 +47,8 @@ func CompareContractSyntax(baseline *language.Program, baselineRoot string, cand
 		return ContractSyntaxEvidence{}, err
 	}
 	old, next := baseline.Syntax(), candidate.Syntax()
+	old.ReleasePolicy = nil
+	next.ReleasePolicy = nil
 	oldCanonical, nextCanonical := language.Format(old), language.Format(next)
 	result := ContractSyntaxEvidence{Version: ContractSyntaxVersion, BaselineFingerprint: contractSyntaxDigest(baselineRoot, oldCanonical), CandidateFingerprint: contractSyntaxDigest(candidateRoot, nextCanonical), Equal: baselineRoot == candidateRoot && oldCanonical == nextCanonical, Differences: []SyntaxDifference{}}
 	if result.Equal {

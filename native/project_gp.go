@@ -44,6 +44,7 @@ type Project struct {
 	source                string
 	program               *language.Program
 	metadata              WireMetadata
+	releasePolicy         *language.ReleasePolicy
 	resources             []Resource
 	languageEntry         string
 	languageFiles         []language.SourceFile
@@ -84,6 +85,15 @@ func (p *Project) Metadata() WireMetadata {
 		return WireMetadata{}
 	}
 	return copyMetadata(p.metadata)
+}
+
+// ReleasePolicy is release authority carried by the version-controlled native
+// bundle. It is deliberately separate from wire metadata.
+func (p *Project) ReleasePolicy() *language.ReleasePolicy {
+	if p == nil {
+		return nil
+	}
+	return copyNativeReleasePolicy(p.releasePolicy)
 }
 func (p *Project) Resources() []Resource {
 	if p == nil {

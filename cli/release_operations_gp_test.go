@@ -87,15 +87,28 @@ func TestReleaseOperationsPlansAsymmetricEntrypointsAndExactOverrides(t *testing
 		overrides += `{"baseline":"` + comparison.Baseline + `","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"reviewed exact native operation and Java surfaces"}`
 	}
 	config := operationReleaseConfig("feature", "1.1.0", `,"overrides":[`+overrides+`]`)
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(config), 0600); err != nil {
+	writeReleaseConfigWithSchemaAuthority(t, root, config)
+	approved, err := buildReleaseWorkflow(root, "refine.project.json", []string{"api"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	approved, err := buildReleaseWorkflow(root, "refine.project.json", []string{"api"})
-	if err != nil || !approved.reports[0].Plan.Ready {
-		t.Fatalf("exact operation overrides rejected: %v %+v", err, approved.reports[0].Plan)
+	if !approved.reports[0].Plan.Ready {
+		t.Fatalf("exact operation overrides rejected: %+v", approved.reports[0].Plan)
 	}
 	snapshot := filepath.Join(root, "schemata", "api", "SNAPSHOT.refined.json")
-	if err := os.WriteFile(snapshot, append(candidate, '\n'), 0600); err != nil {
+	authorized, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, policy, err := native.ReleaseComparisonBundle(authorized)
+	if err != nil || policy == nil {
+		t.Fatalf("schema policy missing after migration: %v", err)
+	}
+	changed, err := native.AppendBundleReleasePolicy(append(candidate, '\n'), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(snapshot, changed, 0600); err != nil {
 		t.Fatal(err)
 	}
 	stale, err := buildReleaseWorkflow(root, "refine.project.json", []string{"api"})

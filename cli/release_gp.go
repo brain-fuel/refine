@@ -72,6 +72,7 @@ type releaseSchemaEntry struct {
 	bundle        *language.SourceBundle
 	nativeProject *native.Project
 	program       *language.Program
+	releasePolicy *language.ReleasePolicy
 	content       release.ContentID
 	policyContent release.ContentID
 }
@@ -217,14 +218,17 @@ func canonicalReleaseSource(file language.SourceFile, catalog releaseCatalog) (s
 	if entry := catalog.entries[file.ID]; entry != nil {
 		canonicalID = "family:" + entry.family
 	}
-	module, err := language.Parse(file.Source)
+	source, _, _, err := language.SplitReleasePolicyFooter(file.Source)
+	if err != nil {
+		return "", "", err
+	}
+	module, err := language.Parse(source)
 	if err != nil {
 		return "", "", err
 	}
 	if len(module.Imports) != len(file.Imports) {
 		return "", "", fmt.Errorf("release identity import metadata mismatch for %s", file.ID)
 	}
-	source := file.Source
 	for i := len(module.Imports) - 1; i >= 0; i-- {
 		span := module.Imports[i].At
 		start, end := span.Start.Offset, span.End.Offset
@@ -307,6 +311,10 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 		return nil
 	}
 	if entry.kind == nativeBundleSchema {
+		comparisonBytes, policy, err := native.ReleaseComparisonBundle(entry.raw)
+		if err != nil {
+			return err
+		}
 		imported, err := native.ParseBundle(entry.raw)
 		if err != nil {
 			return err
@@ -334,12 +342,13 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 				return err
 			}
 		}
-		policy := release.Digest([]byte("refine.release-policy.v1\x00" + entryPolicy(entry, config)))
-		rawIdentity := release.Digest(append([]byte("refine.native-bundle.v1\x00"), entry.raw...))
+		projectPolicy := release.Digest([]byte("refine.release-policy.v1\x00" + entryPolicy(entry, config)))
+		rawIdentity := release.Digest(append([]byte("refine.native-bundle.v1\x00"), comparisonBytes...))
 		entry.nativeProject = imported
 		entry.program = program
-		entry.policyContent = policy
-		entry.content = release.Digest([]byte("refine.release-comparison.v2\x00" + string(rawIdentity) + "\x00" + string(policy)))
+		entry.releasePolicy = policy
+		entry.policyContent = projectPolicy
+		entry.content = release.Digest([]byte("refine.release-comparison.v2\x00" + string(rawIdentity) + "\x00" + string(projectPolicy)))
 		return nil
 	}
 	bundle, err := loadSources(root, entry.sourcePath)
@@ -352,6 +361,7 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 	}
 	entry.bundle = bundle
 	entry.program = bundle.Program()
+	entry.releasePolicy = bundle.ReleasePolicy()
 	entry.content = content
 	entry.policyContent = policy
 	return nil
@@ -680,20 +690,12 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 				return releaseWorkflow{}, err
 			}
 		}
-		for _, item := range settings.Release.Overrides {
-			ref, e := policyRef(family, item.releaseComparisonPolicy)
-			if e != nil {
-				return releaseWorkflow{}, fmt.Errorf("family %s override: %w", family, e)
-			}
-			planning.Overrides = append(planning.Overrides, release.CompatibilityOverride{Comparison: ref, Reason: item.Reason})
+		schemaOverrides, schemaFixes, e := planningReleasePolicy(family, snapshot, settings.Release)
+		if e != nil {
+			return releaseWorkflow{}, e
 		}
-		for _, item := range settings.Release.BreakingFixes {
-			ref, e := policyRef(family, item.releaseComparisonPolicy)
-			if e != nil {
-				return releaseWorkflow{}, fmt.Errorf("family %s breaking fix: %w", family, e)
-			}
-			planning.BreakingFixes = append(planning.BreakingFixes, release.BreakingFix{Comparison: ref, Justification: item.Justification})
-		}
+		planning.Overrides = append(planning.Overrides, schemaOverrides...)
+		planning.BreakingFixes = append(planning.BreakingFixes, schemaFixes...)
 		var documentation *releaseDocumentationEvidence
 		if planning.Change == release.DocumentationOnly && len(baselines) > 0 {
 			latest := baselines[len(baselines)-1]

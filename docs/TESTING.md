@@ -121,6 +121,22 @@ targets from the working tree, not by compiling an arbitrary historical tree.
 These are development selections, not substitutes for the integration gate.
 Extend a selection when a change adds a new test or affects another behavior.
 
+The portable release-policy frontend changes the common module parser, formatter
+and offline import flattening. Its deterministic development selections are:
+
+```sh
+go test ./language -run '^(TestReleasePolicyStrictJSON|TestReleasePolicyFooterPreservesContractBytesAndSpans|TestReleasePolicyFooterCannotHideInCommentsOrMoveBeforeContract|TestReleasePolicyImportsKeepOnlyEntryAuthority)$'
+go test ./language -run '^(TestOfflineSourceImports|TestImportFailures|TestImportGraphProperties|TestSchemaLimitsParseFormatAndRejectMalformedDeclarations|TestImportedSchemaLimitsUseExplicitComponentMinimum|TestSyntaxResourceLimits|FuzzParseFormat)$'
+go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=1000x -fuzzminimizetime=1000x -timeout=2m
+```
+
+The first selection covers the new metadata boundary; the second covers existing
+import/limit callers and the parser's seed corpus. The single counted campaign
+exercises the changed parse/format boundary, including new footer/comment seeds.
+These passing checks are reused while native-carrier and CLI integration proceed;
+they are not rerun for documentation changes. A coherent shared-parser checkpoint
+still needs the full integration gate once, including generated-code consumers.
+
 The schema-limit, diagnostic-path, and operations-only OpenAPI batch uses the
 following focused checks. Commands already run by the owning agent are reused;
 review fixes rerun only the affected anchors, not this whole list. Java commands

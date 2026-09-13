@@ -153,6 +153,7 @@ func releaseConstraintSyntax(project *native.Project) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		module.ReleasePolicy = nil
 		units[i].Source = language.Format(module)
 	}
 	encoded, err := json.Marshal(units)

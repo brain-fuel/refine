@@ -49,8 +49,20 @@ component does not constrain another module. Caller limits can tighten but
 never relax the effective schema limits.
 
 `import "relative/path.refine"` is parsed and formatted without file access.
-The standalone static checker currently refuses unresolved imports. The bundler
-and multi-module compilation stage remain required work.
+The standalone static checker refuses unresolved imports. `CompileSources`
+resolves a supplied offline source map, checks its import graph, and compiles
+the flattened declarations without filesystem or network access.
+
+A schema can carry release approvals in one final `@releasePolicy` footer.
+Its argument is a quoted JSON object with `version: 1`, optional `overrides`,
+and optional `breakingFixes`; see [RELEASE.md](RELEASE.md) for record fields and
+the planner's content-binding rules. This is release metadata, not an evaluated
+predicate. `AppendReleasePolicyFooter` owns exactly one added LF before the
+annotation and one after it. No trailing comments or extra whitespace are
+allowed after that final LF. Removing the footer restores all original contract
+bytes, including existing line endings, and cannot move diagnostic spans.
+Imported policies are retained in original source files but never inherited as
+the entry schema's approvals. Formatting emits the entry policy last.
 
 ## Expressions and patterns
 

@@ -1,0 +1,26 @@
+package analysis
+
+import (
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+)
+
+func TestContractSyntaxExcludesReleaseAuthorityButRetainsContract(t *testing.T) {
+    base:=operationProgram(t,"Int where it >= 0","Int","")
+    annotated:=func(source,reason string)*language.Program{
+        t.Helper()
+        policy:=&language.ReleasePolicy{Version:1,Overrides:[]language.CompatibilityApproval{{ReleaseComparison:language.ReleaseComparison{Baseline:"1.0.0",BaselineSHA256:strings.Repeat("a",64),SnapshotSHA256:strings.Repeat("b",64),Direction:"backward"},Reason:reason}}}
+        text,err:=language.AppendReleasePolicyFooter(source,policy);if err!=nil{t.Fatal(err)}
+        program,err:=language.Compile(text);if err!=nil{t.Fatal(err)};return program
+    }
+    catalog:=[]OperationEntrypoint{operation("read","GET","/items",response("200"))}
+    for _,program:=range []*language.Program{annotated(base.Source(),"review one"),annotated(base.Source(),"review two")} {
+        payload,err:=CompareContractSyntax(base,"Request",program,"Request");if err!=nil||!payload.Equal||payload.BaselineFingerprint!=payload.CandidateFingerprint{t.Fatalf("policy changed payload contract: %+v %v",payload,err)}
+        operations,err:=CompareOperationContractSyntax(operationContract(base,catalog...),operationContract(program,catalog...));if err!=nil||!operations.Equal||operations.BaselineFingerprint!=operations.CandidateFingerprint{t.Fatalf("policy changed operation contract: %+v %v",operations,err)}
+    }
+    changed:=annotated(strings.Replace(base.Source(),"it >= 0","it >= 1",1),"review one")
+    payload,err:=CompareContractSyntax(base,"Request",changed,"Request");if err!=nil||payload.Equal{t.Fatalf("policy hid a payload edit: %+v %v",payload,err)}
+    operations,err:=CompareOperationContractSyntax(operationContract(base,catalog...),operationContract(changed,catalog...));if err!=nil||operations.Equal{t.Fatalf("policy hid an operation edit: %+v %v",operations,err)}
+}

@@ -27,12 +27,13 @@ func (e *Error) Error() string {
 }
 
 type Module struct {
-	Source    string
-	Package   string
-	Imports   []Import
-	Limits    SchemaLimits
-	Types     []TypeDecl
-	Functions []Function
+	Source        string
+	Package       string
+	Imports       []Import
+	Limits        SchemaLimits
+	ReleasePolicy *ReleasePolicy
+	Types         []TypeDecl
+	Functions     []Function
 	// Immutable after Compile; deliberately absent from fresh Syntax() copies.
 	inferred             map[*Expr]*Type
 	functionScopes       map[string]map[string]string

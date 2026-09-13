@@ -16,8 +16,8 @@ or repeating an expensive integration test.
 | Java serde | Jackson 3 and Apache Avro binary/JSON adapters; validated construction/read/write, staged output, explicit refinement bypasses. Avro `big-decimal` physical bytes are supported; semantic `Real` conversion is not implicit. See [SERDE-JSON.md](SERDE-JSON.md) and [SERDE-AVRO.md](SERDE-AVRO.md). |
 | English and ordinary output | Algorithmic explanations and explicit documented-loss controls; unsupported exact wire representations reject. See [EXPLANATIONS.md](EXPLANATIONS.md). |
 | OpenAPI execution | Checked semantic-JSON request/response/context facade, real request tokens, rootless operation projects and same-artifact Maven assembly. See [OPENAPI-CONTEXT.md](OPENAPI-CONTEXT.md) and [PROJECT.md](PROJECT.md). |
-| Generated tests and examples | JetCheck strategies, clause-targeted invalid properties, explicit generation exhaustion, and worked example families. Operation-specific coverage has its own API and limitations. See [GENERATED-TESTS.md](GENERATED-TESTS.md). |
-| Release workflow | Immutable histories, content-bound approvals, semantic-version planning, recoverable promotion, publication-ledger and Maven class-removal gates. Rootless operation comparison checks opposite request/response directions and retains unknown relational/native-wire/ABI evidence. See [RELEASE.md](RELEASE.md). |
+| Generated tests and examples | JetCheck strategies, clause-targeted invalid properties, explicit generation exhaustion, and worked example families. Zero-part OpenAPI occurrences use real empty transport envelopes and singleton replay. Operation-specific coverage has its own API and limitations. See [GENERATED-TESTS.md](GENERATED-TESTS.md). |
+| Release workflow | Immutable histories, schema-carried content-bound approvals, semantic-version planning, recoverable promotion, publication-ledger and Maven class-removal gates. Rootless operation comparison checks opposite request/response directions and retains unknown relational/native-wire/ABI evidence. See [RELEASE.md](RELEASE.md). |
 
 The entries above identify existing code and tests, not unrestricted support for
 every schema construct. In particular, an explicit unsupported error is safer
@@ -40,15 +40,6 @@ requires that operation.
 - Remaining native projection/annotation and scoped-edit boundaries documented
   in [NATIVE.md](NATIVE.md), including general reference projection, per-OpenAPI-
   object annotations, and unsupported scoped changes beneath applicators.
-- All-zero-semantic-part OpenAPI Java catalogs still reject generation. Supporting
-  them must validate the actual empty transport envelopes, not credit unrelated
-  generated payloads that are discarded before validation.
-- Compatibility approvals and breaking-fix policy currently live in checked-in
-  `refine.project.json`. That satisfies persistence and content binding, but not
-  the stricter agreed schema-file-carried approval requirement. A portable schema
-  annotation needs an explicit identity rule that excludes the approval itself
-  without excluding any contract content; a self-referential raw-file digest
-  cannot serve that purpose.
 
 General satisfiability and compatibility may correctly remain `unknown` under
 the agreed contract. A sound unknown result, enforced through the existing

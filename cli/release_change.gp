@@ -48,7 +48,7 @@ func releaseSourcePackages(entry *releaseSchemaEntry,catalog releaseCatalog)(str
 }
 
 func sameReleaseResources(a,b []native.Resource)bool{if len(a)!=len(b){return false};left,right:=append([]native.Resource(nil),a...),append([]native.Resource(nil),b...);sort.Slice(left,func(i,j int)bool{return left[i].URI<left[j].URI});sort.Slice(right,func(i,j int)bool{return right[i].URI<right[j].URI});for i:=range left{if left[i]!=right[i]{return false}};return true}
-func releaseConstraintSyntax(project *native.Project)(string,error){units:=project.NativeConstraintSources();sort.Slice(units,func(i,j int)bool{return units[i].URI<units[j].URI});for i:=range units{module,err:=language.Parse(units[i].Source);if err!=nil{return "",err};units[i].Source=language.Format(module)};encoded,err:=json.Marshal(units);return string(encoded),err}
+func releaseConstraintSyntax(project *native.Project)(string,error){units:=project.NativeConstraintSources();sort.Slice(units,func(i,j int)bool{return units[i].URI<units[j].URI});for i:=range units{module,err:=language.Parse(units[i].Source);if err!=nil{return "",err};module.ReleasePolicy=nil;units[i].Source=language.Format(module)};encoded,err:=json.Marshal(units);return string(encoded),err}
 
 // Dependency evidence is deliberately narrower than compatibility evidence.
 // Only conclusive documentation equivalence makes a changed pin non-affecting;

@@ -148,6 +148,7 @@ func checkOperationContract(input OperationContract) (checkedOperationContract, 
 		}
 	}
 	syntax := input.Program.Syntax()
+	syntax.ReleasePolicy = nil
 	checker := newOperationContractChecker(syntax, language.DefaultSubstitutionNodes)
 	result := checkedOperationContract{program: input.Program, operations: make([]OperationEntrypoint, len(input.Operations)), byID: map[string]OperationEntrypoint{}, entrypoints: count}
 	locations := map[string]bool{}

@@ -113,6 +113,256 @@ func openAPIPropertyPart(root string, target native.OpenAPISchemaTarget) string 
 	return "part(" + strings.Join(parts, ",") + ")"
 }
 
+type openAPIEnvelopeType struct {
+	typ      *language.Type
+	bindings map[string]openAPIEnvelopeType
+}
+type openAPIEnvelopeField struct {
+	name string
+	typ  openAPIEnvelopeType
+}
+type openAPIEnvelopeAudit struct {
+	declarations map[string]language.TypeDecl
+	remaining    int
+}
+
+func (a *openAPIEnvelopeAudit) take(units int) error {
+	if units < 0 || units > a.remaining {
+		return fmt.Errorf("transport envelope structural work limit exceeded")
+	}
+	a.remaining -= units
+	return nil
+}
+func (a *openAPIEnvelopeAudit) application(value openAPIEnvelopeType) (string, []openAPIEnvelopeType, error) {
+	arguments := []openAPIEnvelopeType{}
+	current := value
+	for {
+		if current.typ == nil {
+			return "", nil, fmt.Errorf("transport envelope application contains an absent type")
+		}
+		if err := a.take(1); err != nil {
+			return "", nil, err
+		}
+		switch __gp_m0 := any(current.typ.Form).(type) {
+		case language.AppliedType:
+			fn := __gp_m0.Constructor
+			arg := __gp_m0.Argument
+			arguments = append(arguments, openAPIEnvelopeType{typ: arg, bindings: current.bindings})
+			current = openAPIEnvelopeType{typ: fn, bindings: current.bindings}
+		case language.NamedType:
+			name := __gp_m0.Name
+			if replacement, ok := current.bindings[name]; ok {
+				current = replacement
+				continue
+			}
+			for left, right := 0, len(arguments)-1; left < right; left, right = left+1, right-1 {
+				arguments[left], arguments[right] = arguments[right], arguments[left]
+			}
+			return name, arguments, nil
+		default:
+			return "", nil, fmt.Errorf("transport envelope application has no named constructor")
+		}
+	}
+}
+func (a *openAPIEnvelopeAudit) record(value openAPIEnvelopeType, active map[string]bool, depth int) ([]openAPIEnvelopeField, error) {
+	if value.typ == nil || depth > 128 {
+		return nil, fmt.Errorf("transport envelope type resolution limit exceeded")
+	}
+	if err := a.take(1); err != nil {
+		return nil, err
+	}
+	switch __gp_m1 := any(value.typ.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m1.Base
+		return a.record(openAPIEnvelopeType{typ: base, bindings: value.bindings}, active, depth+1)
+	case language.RecordType:
+		fields := __gp_m1.Fields
+		if err := a.take(len(fields)); err != nil {
+			return nil, err
+		}
+		out := make([]openAPIEnvelopeField, len(fields))
+		for i, field := range fields {
+			out[i] = openAPIEnvelopeField{name: field.Name, typ: openAPIEnvelopeType{typ: field.Type, bindings: value.bindings}}
+		}
+		return out, nil
+	case language.NamedType:
+		name := __gp_m1.Name
+		if replacement, ok := value.bindings[name]; ok {
+			return a.record(replacement, active, depth+1)
+		}
+		if active[name] {
+			return nil, fmt.Errorf("cyclic transport envelope alias")
+		}
+		decl, ok := a.declarations[name]
+		if !ok || len(decl.Parameters) > 0 || decl.Body == nil {
+			return nil, fmt.Errorf("transport envelope is not a closed record")
+		}
+		active[name] = true
+		defer delete(active, name)
+		return a.record(openAPIEnvelopeType{typ: decl.Body}, active, depth+1)
+	case language.AppliedType:
+		name, args, err := a.application(value)
+		if err != nil {
+			return nil, err
+		}
+		decl, ok := a.declarations[name]
+		if !ok || decl.Body == nil || len(args) != len(decl.Parameters) {
+			return nil, fmt.Errorf("transport envelope is not a closed record")
+		}
+		if err := a.take(len(args)); err != nil {
+			return nil, err
+		}
+		bindings := make(map[string]openAPIEnvelopeType, len(args))
+		for i, param := range decl.Parameters {
+			bindings[param] = args[i]
+		}
+		return a.record(openAPIEnvelopeType{typ: decl.Body, bindings: bindings}, active, depth+1)
+	default:
+	}
+	return nil, fmt.Errorf("transport envelope is not a record")
+}
+func (a *openAPIEnvelopeAudit) absent(value openAPIEnvelopeType, active map[string]bool, depth int) (bool, error) {
+	if value.typ == nil || depth > 128 {
+		return false, fmt.Errorf("transport optional type resolution limit exceeded")
+	}
+	if err := a.take(1); err != nil {
+		return false, err
+	}
+	switch __gp_m2 := any(value.typ.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m2.Base
+		return a.absent(openAPIEnvelopeType{typ: base, bindings: value.bindings}, active, depth+1)
+	case language.NamedType:
+		name := __gp_m2.Name
+		if replacement, ok := value.bindings[name]; ok {
+			return a.absent(replacement, active, depth+1)
+		}
+		if active[name] {
+			return false, fmt.Errorf("cyclic transport optional alias")
+		}
+		if decl, ok := a.declarations[name]; ok && len(decl.Parameters) == 0 && decl.Body != nil {
+			active[name] = true
+			defer delete(active, name)
+			return a.absent(openAPIEnvelopeType{typ: decl.Body}, active, depth+1)
+		}
+	case language.AppliedType:
+		name, args, err := a.application(value)
+		if err != nil {
+			return false, err
+		}
+		if name == "Maybe" && len(args) == 1 {
+			return true, nil
+		}
+		if decl, ok := a.declarations[name]; ok && decl.Body != nil && len(args) == len(decl.Parameters) {
+			if err := a.take(len(args)); err != nil {
+				return false, err
+			}
+			bindings := make(map[string]openAPIEnvelopeType, len(args))
+			for i, param := range decl.Parameters {
+				bindings[param] = args[i]
+			}
+			return a.absent(openAPIEnvelopeType{typ: decl.Body, bindings: bindings}, active, depth+1)
+		}
+	default:
+	}
+	return false, nil
+}
+
+func openAPITransportEnvelopeBounded(declarations map[string]language.TypeDecl, name string, request bool, work int) error {
+	decl, ok := declarations[name]
+	if !ok || len(decl.Parameters) > 0 {
+		return fmt.Errorf("zero-part transport target %s must be a closed declaration", name)
+	}
+	audit := &openAPIEnvelopeAudit{declarations: declarations, remaining: work}
+	typ := decl.Body
+	if typ == nil {
+		typ = &language.Type{Form: language.NamedType{Name: name}, At: decl.At}
+	}
+	fields, err := audit.record(openAPIEnvelopeType{typ: typ}, map[string]bool{}, 0)
+	if err != nil {
+		return fmt.Errorf("zero-part transport target %s: %w", name, err)
+	}
+	foundParameters, foundHeaders, foundBody := false, false, false
+	for _, field := range fields {
+		switch field.name {
+		case "parameters":
+			if !request {
+				return fmt.Errorf("zero-part response target %s cannot declare parameters", name)
+			}
+			foundParameters = true
+			nested, nestedErr := audit.record(field.typ, map[string]bool{}, 0)
+			if nestedErr != nil {
+				return fmt.Errorf("zero-part request target %s parameters: %w", name, nestedErr)
+			}
+			for _, item := range nested {
+				optional, optionalErr := audit.absent(item.typ, map[string]bool{}, 0)
+				if optionalErr != nil {
+					return optionalErr
+				}
+				if !optional {
+					return fmt.Errorf("zero-part request target %s has required unmapped parameter field %s", name, item.name)
+				}
+			}
+		case "headers":
+			foundHeaders = true
+			nested, nestedErr := audit.record(field.typ, map[string]bool{}, 0)
+			if nestedErr != nil {
+				return fmt.Errorf("zero-part transport target %s headers: %w", name, nestedErr)
+			}
+			for _, item := range nested {
+				optional, optionalErr := audit.absent(item.typ, map[string]bool{}, 0)
+				if optionalErr != nil {
+					return optionalErr
+				}
+				if !optional {
+					return fmt.Errorf("zero-part transport target %s has required unmapped header field %s", name, item.name)
+				}
+			}
+		case "body":
+			foundBody = true
+			optional, optionalErr := audit.absent(field.typ, map[string]bool{}, 0)
+			if optionalErr != nil {
+				return optionalErr
+			}
+			if !optional {
+				return fmt.Errorf("zero-part transport target %s has a required unmapped body", name)
+			}
+		default:
+			optional, optionalErr := audit.absent(field.typ, map[string]bool{}, 0)
+			if optionalErr != nil {
+				return optionalErr
+			}
+			if !optional {
+				return fmt.Errorf("zero-part transport target %s has required unmapped field %s", name, field.name)
+			}
+		}
+	}
+	if request && !foundParameters {
+		return fmt.Errorf("zero-part request target %s lacks parameters", name)
+	}
+	if !foundHeaders {
+		return fmt.Errorf("zero-part transport target %s lacks headers", name)
+	}
+	if !foundBody {
+		return fmt.Errorf("zero-part transport target %s lacks body", name)
+	}
+	return nil
+}
+func openAPITransportEnvelope(declarations map[string]language.TypeDecl, name string, request bool) error {
+	return openAPITransportEnvelopeBounded(declarations, name, request, language.DefaultSubstitutionNodes)
+}
+
+func openAPITransportData(codec string, request bool) string {
+	raw := `{"headers":{}}`
+	if request {
+		raw = `{"parameters":{},"headers":{}}`
+	}
+	return codec + ".readDataWithoutRefinements(" + javaQuote(raw) + ".getBytes(java.nio.charset.StandardCharsets.UTF_8))"
+}
+func openAPITransportGenerator(codec string, request bool) string {
+	return "org.jetbrains.jetCheck.Generator.<Data>constant(" + openAPITransportData(codec, request) + ")"
+}
+
 // GenerateProjectOpenAPIPropertyTests emits one executable JetCheck launcher
 // which exercises every checked request and response binding through the real
 // native-first OpenAPI facade. Targets cannot narrow the authoritative catalog.
@@ -169,23 +419,24 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		declarations[decl.Name] = decl
 	}
 	types := map[string]bool{}
+	generatedTypes := map[string]bool{}
 	contextTypes := map[string]bool{}
-	parts := 0
 	responses := 0
 	for _, operation := range catalog.Operations {
 		types[operation.RequestType] = true
-		parts += len(operation.RequestParts)
+		if len(operation.RequestParts) > 0 {
+			generatedTypes[operation.RequestType] = true
+		}
 		for _, response := range operation.Responses {
 			types[response.TypeExpression] = true
+			if len(response.Parts) > 0 {
+				generatedTypes[response.TypeExpression] = true
+			}
 			if response.ContextType != "" {
 				contextTypes[response.ContextType] = true
 			}
-			parts += len(response.Parts)
 			responses++
 		}
-	}
-	if parts == 0 {
-		return nil, &GenerationError{Message: "operation properties require at least one semantic native part"}
 	}
 	if responses == 0 {
 		return nil, &GenerationError{Message: "operation properties require at least one response binding"}
@@ -307,6 +558,9 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		if !ok || len(decl.Parameters) > 0 {
 			return nil, &GenerationError{Message: "operation property target must be a closed declaration: " + name}
 		}
+		if !generatedTypes[name] {
+			continue
+		}
 		typ := decl.Body
 		if typ == nil {
 			typ = &language.Type{Form: language.NamedType{Name: name}, At: decl.At}
@@ -333,6 +587,13 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 	for opIndex, operation := range catalog.Operations {
 		requestOccurrences[operation.RequestType] = append(requestOccurrences[operation.RequestType], opIndex)
 		requestMethod := fmt.Sprintf("request%d", opIndex)
+		requestGenerator := generators[operation.RequestType]
+		if len(operation.RequestParts) == 0 {
+			if auditErr := openAPITransportEnvelope(declarations, operation.RequestType, true); auditErr != nil {
+				return nil, &GenerationError{Message: auditErr.Error()}
+			}
+			requestGenerator = openAPITransportGenerator(codecField[operation.RequestType], true)
+		}
 		fmt.Fprintf(&methods, "    private static %s.RequestJSON %s(Data data){var root=parse(%s.writeDataWithoutRefinements(data));var parameters=new java.util.ArrayList<%s.ParameterJSON>();var headers=new java.util.ArrayList<%s.HeaderJSON>();%s.MediaJSON body=null;\n", facadeName, requestMethod, codecField[operation.RequestType], facadeName, facadeName, facadeName)
 		for partIndex, target := range operation.RequestParts {
 			variable := fmt.Sprintf("part%d", partIndex)
@@ -367,14 +628,23 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			}
 			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, javaQuote(rule.code), javaQuote("invalid request "+operation.OperationID+" "+rule.code), ruleIndex, opIndex, javaQuote(rule.code), javaQuote(replay))
 		}
-		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, generators[operation.RequestType], contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
+		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, requestGenerator, contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
 		calls = append(calls, fmt.Sprintf("requestProperty%d();", opIndex))
 		for _, response := range operation.Responses {
 			status, statusErr := openAPIPropertyStatus(operation, response)
 			if statusErr != nil {
 				return nil, statusErr
 			}
-			occurrence := openAPIResponseProperty{index: pairIndex, operation: opIndex, target: response.TypeExpression, requestGenerator: generators[operation.RequestType]}
+			responseGenerator := generators[response.TypeExpression]
+			responseExact := ""
+			if len(response.Parts) == 0 {
+				if auditErr := openAPITransportEnvelope(declarations, response.TypeExpression, false); auditErr != nil {
+					return nil, &GenerationError{Message: auditErr.Error()}
+				}
+				responseGenerator = openAPITransportGenerator(codecField[response.TypeExpression], false)
+				responseExact = "if(!pair.response().equals(" + openAPITransportData(codecField[response.TypeExpression], false) + "))return false;"
+			}
+			occurrence := openAPIResponseProperty{index: pairIndex, operation: opIndex, target: response.TypeExpression, requestGenerator: requestGenerator}
 			responseOccurrences[response.TypeExpression] = append(responseOccurrences[response.TypeExpression], occurrence)
 			if response.ContextType != "" {
 				contextOccurrences[response.ContextType] = append(contextOccurrences[response.ContextType], occurrence)
@@ -394,8 +664,8 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			fmt.Fprintf(&methods, "    private record Pair%d(Data request,Data response){}\n", pairIndex)
 			fmt.Fprintf(&methods, "    private static boolean responseCandidate%d(Pair%d pair){try{var token=FACADE.validateRequest(%s,%s(pair.request()));var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);if(outcome.incomplete())throw new AssertionError(\"operation response validation was indeterminate\");return outcome.state()==Validation.State.VALID;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
 			fmt.Fprintf(&methods, "    private static boolean responseInvalidCandidate%d(Pair%d pair,String code){try{var token=FACADE.validateRequest(%s,%s(pair.request()));return targeted(FACADE.validateResponse(%s,%s(pair.response()),token),code);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
-			fmt.Fprintf(&methods, "    private static boolean responseExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
-			fmt.Fprintf(&methods, "    private static boolean contextExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
+			fmt.Fprintf(&methods, "    private static boolean responseExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, responseExact, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
+			fmt.Fprintf(&methods, "    private static boolean contextExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, responseExact, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
 			responseRules, ruleErr := openAPIPropertyRules(emitter, declarations, response.TypeExpression)
 			if ruleErr != nil {
 				return nil, ruleErr
@@ -453,7 +723,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			if response.ContextType != "" {
 				label = "context " + operation.OperationID + " " + response.Status
 			}
-			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;},%s);%s}\n", pairIndex, generators[operation.RequestType], generators[response.TypeExpression], pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, javaQuote(validReplay), responseInvalid.String())
+			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;},%s);%s}\n", pairIndex, requestGenerator, responseGenerator, pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, javaQuote(validReplay), responseInvalid.String())
 			calls = append(calls, fmt.Sprintf("responseProperty%d();", pairIndex))
 			pairIndex++
 		}

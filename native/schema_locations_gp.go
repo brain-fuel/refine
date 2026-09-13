@@ -156,6 +156,9 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 		}
 	}
 	if len(seeds) == 0 {
+		if p.openAPIOperations != nil && len(p.openAPIOperations.catalog.Operations) > 0 {
+			return nil
+		}
 		return fmt.Errorf("OpenAPI project has no selected payload or checked operation Schema Object locations")
 	}
 	for _, seed := range seeds {

@@ -109,8 +109,12 @@ func recoverSyntax(failure *error) {
 // Import resolution and type checking are separate compilation phases.
 func Parse(source string) (module *Module, failure error) {
 	defer recoverSyntax(&failure)
-	p := parser{tokens: lex(source)}
-	result := &Module{Source: source}
+	_, policy, _, tokens, err := splitReleasePolicyTokens(source, lex(source))
+	if err != nil {
+		return nil, err
+	}
+	p := parser{tokens: tokens}
+	result := &Module{Source: source, ReleasePolicy: policy}
 	functions := make(map[string]int)
 	types := make(map[string]bool)
 	hasLimits := false

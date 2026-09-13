@@ -59,17 +59,13 @@ func TestReleasePlanAllBaselinesExactOverrideAndDocumentationIdentity(t *testing
 	}
 	latest := report.Comparisons[2]
 	extra := `,"overrides":[{"baseline":"1.0.1","baselineSha256":"` + latest.BaselineSHA256 + `","snapshotSha256":"` + latest.SnapshotSHA256 + `","direction":"backward","reason":"native and Java compatibility reviewed"},{"baseline":"1.0.0","baselineSha256":"` + report.Comparisons[0].BaselineSHA256 + `","snapshotSha256":"` + report.Comparisons[0].SnapshotSHA256 + `","direction":"backward","reason":"native and Java compatibility reviewed"}]`
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.2", extra)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("documentation", "1.0.2", extra))
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil || !workflow.reports[0].Plan.Ready {
 		t.Fatalf("exact overrides rejected: %v %+v", err, workflow.reports[0].Plan)
 	}
 	stale := strings.Replace(extra, latest.SnapshotSHA256, strings.Repeat("0", 64), 1)
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("documentation", "1.0.2", stale)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("documentation", "1.0.2", stale))
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -101,17 +97,13 @@ func TestReleaseCLIRequiresDistinctBreakingFixJustification(t *testing.T) {
 	backward := workflow.reports[0].Comparisons[0]
 	identity := `"baseline":"1.0.0","baselineSha256":"` + backward.BaselineSHA256 + `","snapshotSha256":"` + backward.SnapshotSHA256 + `","direction":"backward"`
 	extra := `,"overrides":[{` + identity + `,"reason":"acknowledge accepted-value break"}],"breakingFixes":[{` + identity + `,"justification":"repairs an incorrectly broad lower bound"}]`
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("breaking", "1.0.1", extra)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("breaking", "1.0.1", extra))
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil || !workflow.reports[0].Plan.Ready {
 		t.Fatalf("breaking fix rejected: %v %+v", err, workflow.reports[0].Plan)
 	}
 	same := strings.Replace(extra, "repairs an incorrectly broad lower bound", "acknowledge accepted-value break", 1)
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(releaseConfig("breaking", "1.0.1", same)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, releaseConfig("breaking", "1.0.1", same))
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -135,9 +127,7 @@ func TestReleaseOverrideIdentityIncludesRootPackageAndWirePolicy(t *testing.T) {
 	}
 	identity := `{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"reviewed"}`
 	configured := strings.Replace(base, `"intended":"1.0.1"`, `"intended":"1.0.1","overrides":[`+identity+`]`, 1)
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(configured), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, configured)
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil || !workflow.reports[0].Plan.Ready {
 		t.Fatalf("fresh policy override rejected: %v %+v", err, workflow.reports[0].Plan)
@@ -222,9 +212,7 @@ func TestReleasePromotePinsBatchAndLeavesSnapshotWithoutPendingVersion(t *testin
 	comparison := workflow.reports[0].Comparisons[0]
 	override := `,"overrides":[{"baseline":"0.1.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native and Java compatibility reviewed"}]`
 	secondConfig = `{"families":{"foo":{"root":"Foo","release":{"change":"documentation","intended":"0.1.1"` + override + `}},"bar":{"root":"Bar","release":{"change":"none"}}}}`
-	if err := os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(secondConfig), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, secondConfig)
 	out.Reset()
 	stderr.Reset()
 	if code := releaseCommand([]string{"promote", "--root", root, "--json", "foo"}, &out, &stderr); code != 0 {
@@ -337,9 +325,7 @@ func TestReleaseNoCodegenRemovalRequiresAndAppliesMavenArtifactPlan(t *testing.T
 	comparison := workflow.reports[0].Comparisons[0]
 	override := `"overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"reviewed"}]`
 	policy = `{"release":{"maven":{"current":"1.0.0","intended":"1.1.0"}},"families":{"foo":{"root":"Foo","noCodegen":["v1.0.0"],"release":{"change":"documentation","intended":"1.0.1",` + override + `}}}}`
-	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(policy), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, policy)
 	inventory := generatedSourceInventory(t, root, "target/generated-sources/refine/foo/v1_0_0")
 	writePublicationRecord(t, root, "foo", "1.0.0", release.PublicationPublished, inventory)
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
@@ -383,9 +369,7 @@ func TestReleaseNativeBundlePlanningUsesExactBundleIdentity(t *testing.T) {
 		t.Fatalf("native unknown dimensions not reported: %+v", comparison)
 	}
 	override := `{"families":{"foo":{"formats":["json-schema"],"release":{"change":"feature","intended":"1.1.0","overrides":[{"baseline":"1.0.0","baselineSha256":"` + comparison.BaselineSHA256 + `","snapshotSha256":"` + comparison.SnapshotSHA256 + `","direction":"backward","reason":"native wire and Java ABI reviewed from the exact bundle"}]}}}}`
-	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(override), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeReleaseConfigWithSchemaAuthority(t, root, override)
 	workflow, err = buildReleaseWorkflow(root, "refine.project.json", nil)
 	if err != nil || !workflow.reports[0].Plan.Ready {
 		t.Fatalf("exact native override rejected: %v %+v", err, workflow.reports[0].Plan)

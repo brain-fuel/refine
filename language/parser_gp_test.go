@@ -207,7 +207,7 @@ func FuzzParseFormat(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, source := range []string{string(data), "type X = Int where it > 0", "f :: Int -> Int\nf n = n + 1", "", "{- nested {- -} -}"} {
+	for _, source := range []string{string(data), "type X = Int where it > 0", "f :: Int -> Int\nf n = n + 1", "", "{- nested {- -} -}", "type X = Int\n\n@releasePolicy \"{\\\"version\\\":1}\"\n", "type X = Int\n{-\n@releasePolicy \"ignored\"\n-}\n"} {
 		f.Add(source)
 	}
 	f.Fuzz(func(t *testing.T, source string) {

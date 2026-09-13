@@ -116,11 +116,15 @@ inside a context; additional context clauses use the context selector. Valid
 pairs use the context selector when bound to a context and the response selector
 otherwise.
 
-The current operation generator rejects caller target narrowing, standalone
-adapter overrides and catalogs with no semantic native parts. The last case
-remains fail-closed because the current response facade does not expose the
-assembled response `Data`; crediting an arbitrary typed candidate for an empty
-transport response would weaken the property claim.
+The current operation generator rejects caller target narrowing and standalone
+adapter overrides. Operations with no semantic native parts use an exact
+transport-first singleton: the checked codec decodes the authoritative empty
+request or response envelope, and that value crosses the real facade. It never
+credits an arbitrary typed value whose fields were discarded while constructing
+an empty transport message. Required edited fields without a native mapping
+reject generation; absence-capable `Maybe` fields canonicalize to `Nothing`.
+Supplying any undeclared parameter, header, or body is still rejected by the
+closed empty native wrapper.
 
 ### Shared generator behavior
 

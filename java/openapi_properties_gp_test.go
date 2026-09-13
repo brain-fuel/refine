@@ -5,9 +5,11 @@ package java
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -17,7 +19,7 @@ import (
 	"goforge.dev/refine/value"
 )
 
-func captureOperationReplay(t *testing.T, compiler, vm, classpath string, facade, properties []File, method string) string {
+func captureOperationReplay(t *testing.T, compiler, vm, classpath string, facade, properties []File, qualified, method string) string {
 	t.Helper()
 	root := t.TempDir()
 	sources := []string{}
@@ -42,7 +44,7 @@ func captureOperationReplay(t *testing.T, compiler, vm, classpath string, facade
 		sources = append(sources, target)
 	}
 	harness := filepath.Join(root, "Capture.java")
-	capture := `public final class Capture {public static void main(String[] args){try{example.openapiproperties.ContractGeneratedProperties.main(args);throw new AssertionError("capture property passed");}catch(org.jetbrains.jetCheck.PropertyFalsified failure){var raw=failure.getFailure().getMinimalCounterexample().getSerializedData();System.out.println("REPLAY:"+java.util.Base64.getEncoder().encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}}}`
+	capture := fmt.Sprintf(`public final class Capture {public static void main(String[] args){try{%s.main(args);throw new AssertionError("capture property passed");}catch(org.jetbrains.jetCheck.PropertyFalsified failure){var raw=failure.getFailure().getMinimalCounterexample().getSerializedData();System.out.println("REPLAY:"+java.util.Base64.getEncoder().encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}}}`, qualified)
 	if err := os.WriteFile(harness, []byte(capture), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +82,17 @@ const operationPropertiesDocument = `{
   "responses":{"201":{"description":"created","content":{"application/json":{"schema":{"type":"string","minLength":2}}}},"4XX":{"description":"failure","content":{"application/json":{"schema":{"type":"integer","maximum":9}}}}}
  }}}}
 `
+
+const zeroOperationDocument = `{"openapi":"3.1.2","info":{"title":"zero","version":"1"},"paths":{"/ping":{"get":{"operationId":"ping","responses":{"204":{"description":"empty"}}}}}}`
+
+func zeroOperationProject(t *testing.T) *native.Project {
+	t.Helper()
+	project, err := native.IngestOpenAPIOperations([]byte(zeroOperationDocument), native.OpenAPIOperationIngestOptions{EntryResource: "https://example.test/zero-api.json", Metadata: native.WireMetadata{PublicationNamespace: "example.openapizero"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
 
 func operationPropertyProject(t *testing.T) *native.Project {
 	t.Helper()
@@ -278,6 +291,30 @@ func operationResponseTarget(t *testing.T, project *native.Project, status strin
 	return ""
 }
 
+func TestOpenAPITransportEnvelopeAuditSharesStructuralBudget(t *testing.T) {
+	named := func(name string) *language.Type { return &language.Type{Form: language.NamedType{Name: name}} }
+	apply := func(name string, argument *language.Type) *language.Type {
+		return &language.Type{Form: language.AppliedType{Constructor: named(name), Argument: argument}}
+	}
+	empty := &language.Type{Form: language.RecordType{Fields: []language.Field{}}}
+	optional := language.TypeDecl{Name: "Optional", Parameters: []string{"a"}, Body: apply("Maybe", named("a"))}
+	identity := language.TypeDecl{Name: "Id", Parameters: []string{"a"}, Body: named("a")}
+	poison := named("Int")
+	for i := 0; i < 24; i++ {
+		poison = &language.Type{Form: language.AppliedType{Constructor: poison, Argument: poison}}
+	}
+	parameters := &language.Type{Form: language.RecordType{Fields: []language.Field{{Name: "first", Type: apply("Optional", poison)}, {Name: "second", Type: apply("Id", apply("Id", apply("Maybe", named("Int"))))}}}}
+	record := &language.Type{Form: language.RecordType{Fields: []language.Field{{Name: "parameters", Type: parameters}, {Name: "headers", Type: empty}, {Name: "body", Type: apply("Maybe", empty)}}}}
+	request := language.TypeDecl{Name: "Request", Body: apply("Id", apply("Id", record))}
+	declarations := map[string]language.TypeDecl{"Id": identity, "Optional": optional, "Request": request}
+	if err := openAPITransportEnvelopeBounded(declarations, "Request", true, 192); err != nil {
+		t.Fatalf("lazy envelope audit rejected a finite nested generic or traversed an irrelevant shared type DAG: %v", err)
+	}
+	if err := openAPITransportEnvelopeBounded(declarations, "Request", true, 20); err == nil || !strings.Contains(err.Error(), "structural work limit") {
+		t.Fatalf("envelope aliases received fresh per-field work budgets: %v", err)
+	}
+}
+
 // One javac/JVM anchor covers the complete catalog, native-first request and
 // response filtering, a real request token for context, and hard exhaustion.
 func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
@@ -315,8 +352,8 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 			t.Fatalf("operation property source lacks %q", required)
 		}
 	}
-	requestReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "requestProperty0")
-	pairReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "responseProperty0")
+	requestReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "example.openapiproperties.ContractGeneratedProperties", "requestProperty0")
+	pairReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "example.openapiproperties.ContractGeneratedProperties", "responseProperty0")
 	propertyOptions.Replays = []PropertyReplay{{Target: OpenAPIRequestReplayTarget("createItem"), Kind: ReplayValid, SerializedData: requestReplay}, {Target: OpenAPIContextReplayTarget("createItem", "201"), Kind: ReplayValid, SerializedData: pairReplay}}
 	properties, err = GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", propertyOptions)
 	if err != nil {
@@ -335,6 +372,63 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	}
 	all = append(all, facade...)
 	all = append(all, properties...)
+	zero := zeroOperationProject(t)
+	zeroFacade, err := GenerateProjectOpenAPIContext(zero, "Contract", "ZeroFacade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroOptions := PropertyTestOptions{CaseCount: 3, AttemptBudget: 3, Seed: 743}
+	zeroProperties, err := GenerateProjectOpenAPIPropertyTests(zero, "example.openapizero", "Contract", "ZeroFacade", zeroOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(zeroProperties[0].Source, `Generator.<Data>constant(`) || !strings.Contains(zeroProperties[0].Source, `{\"parameters\":{},\"headers\":{}}`) || !strings.Contains(zeroProperties[0].Source, `{\"headers\":{}}`) {
+		t.Fatal("zero-part properties did not use exact transport singleton generators")
+	}
+	zeroReplay := captureOperationReplay(t, compiler, vm, classpath, zeroFacade, zeroProperties, "example.openapizero.ContractGeneratedProperties", "requestProperty0")
+	zeroOptions.Replays = []PropertyReplay{{Target: OpenAPIRequestReplayTarget("ping"), Kind: ReplayValid, SerializedData: zeroReplay}}
+	zeroProperties, err = GenerateProjectOpenAPIPropertyTests(zero, "example.openapizero", "Contract", "ZeroFacade", zeroOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroProgram, err := language.Compile(zero.EditableSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroCatalog, err := zero.OpenAPIOperationIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroTypes := []string{zeroCatalog.Operations[0].RequestType, zeroCatalog.Operations[0].Responses[0].TypeExpression}
+	sort.Strings(zeroTypes)
+	requestResources, err := zero.OpenAPIValidationResources(native.OpenAPIRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseResources, err := zero.OpenAPIValidationResources(native.OpenAPIResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroNames := openAPINames(zeroProgram, "Contract", "ZeroFacade", nativeResourceSlicesEqual(requestResources, responseResources), zeroTypes)
+	all = append(all, zeroFacade...)
+	all = append(all, zeroProperties...)
+	all = append(all, File{Path: "ZeroHarness.java", Source: fmt.Sprintf(zeroOperationHarnessJava, zeroNames.sidecar, zeroNames.sidecar, zeroNames.sidecar)})
+	optionalSource := strings.Replace(zero.EditableSource(), "parameters :: {}", "parameters :: {note :: Maybe String}", 1)
+	optional, err := zero.WithEditedSource(optionalSource)
+	if err != nil {
+		t.Fatalf("optional zero-part envelope edit rejected: %v", err)
+	}
+	if files, generateErr := GenerateProjectOpenAPIPropertyTests(optional, "example.openapizero", "Contract", "ZeroFacade", PropertyTestOptions{}); generateErr != nil || len(files) != 1 {
+		t.Fatalf("optional zero-part envelope field rejected: %v", generateErr)
+	}
+	requiredSource := strings.Replace(zero.EditableSource(), "parameters :: {}", "parameters :: {required :: Int}", 1)
+	required, editErr := zero.WithEditedSource(requiredSource)
+	if editErr != nil {
+		t.Fatalf("required zero-part envelope edit failed before generator audit: %v", editErr)
+	}
+	if files, generateErr := GenerateProjectOpenAPIPropertyTests(required, "example.openapizero", "Contract", "ZeroFacade", PropertyTestOptions{}); generateErr == nil || files != nil || !strings.Contains(generateErr.Error(), "required unmapped parameter field") {
+		t.Fatalf("required zero-part field did not fail atomically: %v %#v", generateErr, files)
+	}
 	if files, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{Targets: []PropertyTarget{{Name: "anything"}}}); err == nil || files != nil {
 		t.Fatalf("target narrowing returned partial output: %v %#v", err, files)
 	}
@@ -386,9 +480,35 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	}
 }
 
+const zeroOperationHarnessJava = `
+public final class ZeroHarness {
+ private static byte[] bytes(String value){return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);}
+ private static void require(boolean value){if(!value)throw new AssertionError("zero-part operation assertion failed");}
+ private static void undeclared(Runnable action){try{action.run();throw new AssertionError("undeclared semantic part accepted");}catch(IllegalArgumentException expected){require(expected.getMessage()!=null&&expected.getMessage().contains("not declared"));}}
+ public static void run(){
+  var facade=new example.openapizero.ZeroFacade();
+  var request=new example.openapizero.ZeroFacade.RequestJSON(java.util.List.of(),java.util.List.of(),null);
+  var token=facade.validateRequest("ping",request);
+  var empty=new example.openapizero.Data.Struct(java.util.List.of());
+  var nothing=new example.openapizero.Data.Variant("Nothing",java.util.List.of());
+  var expectedRequest=new example.openapizero.Data.Struct(java.util.List.of(new example.openapizero.Data.Field("parameters",empty),new example.openapizero.Data.Field("headers",empty),new example.openapizero.Data.Field("body",nothing)));
+  require(token.data().equals(expectedRequest));
+  var response=new example.openapizero.ZeroFacade.ResponseJSON("204",java.util.List.of(),null);
+  require(facade.validateResponse("ping",response,token).state()==example.openapizero.Validation.State.VALID);
+  undeclared(()->facade.validateRequest("ping",new example.openapizero.ZeroFacade.RequestJSON(java.util.List.of(new example.openapizero.ZeroFacade.ParameterJSON("query","x",bytes("1"))),java.util.List.of(),null)));
+  undeclared(()->facade.validateRequest("ping",new example.openapizero.ZeroFacade.RequestJSON(java.util.List.of(),java.util.List.of(new example.openapizero.ZeroFacade.HeaderJSON("x",bytes("1"))),null)));
+  undeclared(()->facade.validateRequest("ping",new example.openapizero.ZeroFacade.RequestJSON(java.util.List.of(),java.util.List.of(),new example.openapizero.ZeroFacade.MediaJSON("application/json",bytes("{}")))));
+  undeclared(()->facade.validateResponse("ping",new example.openapizero.ZeroFacade.ResponseJSON("204",java.util.List.of(new example.openapizero.ZeroFacade.HeaderJSON("x",bytes("1"))),null),token));
+  undeclared(()->facade.validateResponse("ping",new example.openapizero.ZeroFacade.ResponseJSON("204",java.util.List.of(),new example.openapizero.ZeroFacade.MediaJSON("application/json",bytes("{}"))),token));
+  var nativeValidator=new example.openapizero.%s();nativeValidator.validate(bytes("{}"));try{nativeValidator.validate(bytes("{\"x\":1}"));throw new AssertionError("empty native wrapper accepted an unknown property");}catch(example.openapizero.%s.NativeValidationException expected){require(expected.code()==example.openapizero.%s.Code.INVALID);}
+  example.openapizero.ContractGeneratedProperties.main(new String[0]);
+ }
+}
+`
+
 const openAPIPropertyHarnessJava = `
 public final class OpenAPIPropertyHarness {
  private static boolean contains(Throwable failure,String text){for(Throwable current=failure;current!=null;current=current.getCause())if(current.getMessage()!=null&&current.getMessage().contains(text))return true;return false;}
- public static void main(String[] args)throws Throwable{example.openapiproperties.ContractGeneratedProperties.main(args);try{example.openapiexhaustion.ContractGeneratedProperties.main(args);throw new AssertionError("impossible targeted-invalid candidates did not exhaust");}catch(Throwable expected){if(!contains(expected,"property generation exhausted: invalid request impossible never.invalid"))throw expected;}}
+ public static void main(String[] args)throws Throwable{example.openapiproperties.ContractGeneratedProperties.main(args);ZeroHarness.run();try{example.openapiexhaustion.ContractGeneratedProperties.main(args);throw new AssertionError("impossible targeted-invalid candidates did not exhaust");}catch(Throwable expected){if(!contains(expected,"property generation exhausted: invalid request impossible never.invalid"))throw expected;}}
 }
 `

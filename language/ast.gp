@@ -14,6 +14,7 @@ type Module struct {
     Package string
     Imports []Import
     Limits SchemaLimits
+    ReleasePolicy *ReleasePolicy
     Types []TypeDecl
     Functions []Function
     // Immutable after Compile; deliberately absent from fresh Syntax() copies.

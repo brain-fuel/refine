@@ -116,6 +116,11 @@ func Format(module *Module) string {
         }
         b.WriteByte('\n')
     }
+    if module.ReleasePolicy != nil {
+        policy, err := FormatReleasePolicyJSON(module.ReleasePolicy)
+        if err != nil { panic(err) }
+        b.WriteString("\n@releasePolicy " + quote(string(policy)) + "\n")
+    }
     return b.String()
 }
 

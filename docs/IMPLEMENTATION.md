@@ -1953,3 +1953,63 @@ current implementation still performs no Maven deployment or product release.
   Java; no JVM test was repeated. The two changed rootless project callers then
   passed in 0.354s. This batch adds no local full-suite, Maven lifecycle or fuzz
   repeat; CI supplies the distinct cross-platform integration gate.
+- Pushed checkpoint `ce77cf826aeaf56e166a747aa4a421aa5c11a34e`.
+  [CI run 34737539642](https://github.com/brain-fuel/refine/actions/runs/34737539642)
+  remained queued at the next checkpoint review; it was not restarted or
+  represented as successful.
+
+## Portable release authority and empty OpenAPI envelopes — validated locally
+
+- Zero-native-part Java operation properties now use exact transport-first
+  singleton envelopes decoded by the real generated codec. Required unmapped
+  edited fields reject; optional fields remain `Nothing`. The grouped operation
+  harness passed in 9.305s, covering request tokens, response validation,
+  serialized singleton replay and rejection of extra parameters/headers/body.
+  Native schema traversal yields no invented schema locations for a checked
+  zero-part catalog. Scoped generation consistency and vet passed. Root review
+  then requested bounded lazy type resolution for this new audit path; that
+  Go-only correction has its own focused test and does not justify repeating
+  the unchanged emitted-Java harness.
+- The envelope audit's aggregate-work/DAG anchor passed in 0.268s. Root review
+  then caught false cycle detection for finite repeated `Id` specializations.
+  The corrected anchor also exercises `Id (Id record)` and
+  `Id (Id (Maybe Int))`, and passed in 0.272s. Only that Go anchor reran;
+  generated Java text was unchanged and its prior JVM result was reused.
+- The language release-policy frontend adds strict, bounded version-1 metadata
+  and an EOF-only footer with exact owned LF delimiters. Lexical recognition
+  prevents comments from acquiring authority. Parsing retains the original
+  source and every contract span; formatting and import flattening keep only
+  entry-file authority. The four new `TestReleasePolicy...` anchors passed in
+  0.323s, including strict keys, duplicate records, Unicode, byte restoration,
+  immutable accessors, malformed footer placement and import noninheritance.
+  Native-carrier and release-planner integration are a separate pending gate.
+- Existing import/limit callers and `FuzzParseFormat` seeds passed in 0.270s.
+  One additional parser campaign selected exactly `FuzzParseFormat`, requested
+  1,000 iterations, and completed 1,030 executions in 0.326s with no failure
+  (parallel workers finish in-flight cases). The target and budgets are explicit;
+  generated fuzz inputs and wall-clock timing are not claimed deterministic.
+- An isolated QuickJS-NG WASM prototype ran the same guest in Go/wazero and
+  Java/Chicory, with identical Unicode/syntax vectors, interruption and recovery.
+  It changes no repository dependency or production matcher. Edition-locked
+  syntax, bounded compilation and failure classification must be established
+  before considering a production replacement; prototype success is not regex
+  conformance evidence for the current product.
+- Native bundle authority and CLI integration are green: the selected carrier
+  anchor passed in 0.254s and eleven planner/promotion/identity anchors passed
+  in 2.505s. Review fixes reject case-folded carrier keys and empty append
+  targets, preserve strict parsed authority, and keep stale approval hashes
+  attached when testing changed contract bytes. The first migration selection
+  exposed an overbroad native-project footer rejection and fixtures that removed
+  mandatory policy; those failures were corrected within this scope. Generation
+  consistency for native/analysis/CLI and the diff check passed. No Java or Maven
+  harness was run by the release-policy owner.
+- Root's payload/operation syntax-identity anchor passed in 0.253s. Whole-tree
+  generation consistency, `go vet ./...`, and `git diff --check` passed. After
+  freezing all source, one `go test -race -timeout=20m ./... -skip
+  '^TestMavenRegenerationAndReproducibleArtifact$'` integration gate passed with
+  Java 25 and every pinned Java dependency directory required. The Java package
+  took 241.253s; native took 36.373s; all other packages passed. The shared
+  parser/AST change warranted this one consumer-wide gate. The unchanged Maven
+  lifecycle reused its earlier 24.661s result; no second Maven invocation or
+  integration retry followed. The earlier `ce77cf8` CI run remained queued and
+  is not represented as green.

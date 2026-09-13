@@ -157,8 +157,8 @@ ABI compatibility.
 
 ## Project release workflow
 
-The CLI reads release policy from the checked-in `refine.project.json` used by
-project generation:
+The CLI reads change classification, intended versions, Maven settings, and
+forward-guarantee policy from checked-in `refine.project.json`:
 
 ```json
 {
@@ -177,26 +177,38 @@ project generation:
       "root": "Booking",
       "release": {
         "change": "fix",
-        "intended": "1.4.3",
-        "overrides": [{
-          "baseline": "1.4.2",
-          "baselineSha256": "<lowercase SHA-256 from release plan>",
-          "snapshotSha256": "<lowercase SHA-256 from release plan>",
-          "direction": "backward",
-          "reason": "reviewed against the deployed wire and Java consumers"
-        }],
-        "breakingFixes": [{
-          "baseline": "1.4.2",
-          "baselineSha256": "<same exact baseline identity>",
-          "snapshotSha256": "<same exact snapshot identity>",
-          "direction": "backward",
-          "justification": "repairs values accepted contrary to the contract"
-        }]
+        "intended": "1.4.3"
       }
     }
   }
 }
 ```
+
+Compatibility authority belongs to the SNAPSHOT schema itself. A standalone
+source has one final footer after all declarations (the inner strict JSON is a
+normal escaped Refine text literal). This schematic example is not executable:
+replace every angle-bracket placeholder with the exact lowercase SHA-256 from
+the release plan:
+
+```haskell
+@releasePolicy "{\"version\":1,\"overrides\":[{\"baseline\":\"1.4.2\",\"baselineSha256\":\"<lowercase SHA-256 from release plan>\",\"snapshotSha256\":\"<lowercase SHA-256 from release plan>\",\"direction\":\"backward\",\"reason\":\"reviewed against the deployed wire and Java consumers\"}],\"breakingFixes\":[{\"baseline\":\"1.4.2\",\"baselineSha256\":\"<same exact baseline identity>\",\"snapshotSha256\":\"<same exact snapshot identity>\",\"direction\":\"backward\",\"justification\":\"repairs values accepted contrary to the contract\"}]}"
+```
+
+A `.refined.json` native bundle carries the same object as its final top-level
+`releasePolicy` member. It is separate from `metadata`: approvals do not alter
+wire behavior. Imported schemas can retain their own historical policies, but
+only the selected family's SNAPSHOT policy supplies authority for its plan.
+The footer/member and its owned delimiter are excluded from comparison identity;
+all other schema bytes, imports, native resources, targets, and project policy
+remain content-bound. This avoids a self-referential digest without masking any
+contract comment or whitespace.
+
+Legacy `overrides` and `breakingFixes` fields in `refine.project.json` remain
+parse-compatible only as exact duplicates of schema-carried records. A
+config-only record fails with `release.policy_migration`; a conflicting duplicate
+fails with `release.policy_conflict`. Planning and promotion never invent or
+update approval records automatically; promotion's existing exact import-pin
+materialization is unchanged.
 
 `change` is one of `none`, `documentation`, `fix`, `feature`, or `breaking`.
 Versions in policy use canonical `x.y.z` text without a `v` prefix. Unknown
@@ -225,8 +237,9 @@ snapshots use the matching extension. Defining one family/version with both
 extensions is rejected. A native bundle is treated as one exact self-contained
 release input: its original native documents, URI-addressed resources, sidecar
 metadata, editable/imported source graph, and native constraint units all bind
-the comparison SHA. Even whitespace changes to the checked-in bundle invalidate
-an earlier override. The comparison SHA for Refine sources binds the exact
+the comparison SHA. Except for the exactly delimited final `releasePolicy`
+carrier, even whitespace changes to the checked-in bundle invalidate an earlier
+override. The comparison SHA for Refine sources binds the exact
 original reachable sources—including comments and documentation—while
 normalizing family entry names and import spellings. Consequently changing
 documentation invalidates an override, while promotion's mechanical

@@ -33,7 +33,7 @@ type ContractSyntaxEvidence struct {
 func CompareContractSyntax(baseline *language.Program,baselineRoot string,candidate *language.Program,candidateRoot string)(ContractSyntaxEvidence,error){
     if baseline==nil||candidate==nil{return ContractSyntaxEvidence{},fmt.Errorf("analysis: two checked programs are required")}
     if _,err:=baseline.PayloadType(baselineRoot);err!=nil{return ContractSyntaxEvidence{},err};if _,err:=candidate.PayloadType(candidateRoot);err!=nil{return ContractSyntaxEvidence{},err}
-    old,next:=baseline.Syntax(),candidate.Syntax();oldCanonical,nextCanonical:=language.Format(old),language.Format(next)
+    old,next:=baseline.Syntax(),candidate.Syntax();old.ReleasePolicy=nil;next.ReleasePolicy=nil;oldCanonical,nextCanonical:=language.Format(old),language.Format(next)
     result:=ContractSyntaxEvidence{Version:ContractSyntaxVersion,BaselineFingerprint:contractSyntaxDigest(baselineRoot,oldCanonical),CandidateFingerprint:contractSyntaxDigest(candidateRoot,nextCanonical),Equal:baselineRoot==candidateRoot&&oldCanonical==nextCanonical,Differences:[]SyntaxDifference{}}
     if result.Equal{return result,nil}
     if baselineRoot!=candidateRoot{result.Differences=append(result.Differences,SyntaxDifference{Kind:"root"})}
