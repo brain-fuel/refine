@@ -14,9 +14,12 @@ import (
 )
 
 type openAPIPropertyExample struct {
-	label  string
-	target string
-	source string
+	label          string
+	target         string
+	source         string
+	expected       PropertyOutcome
+	nativeExpected PropertyNativeOutcome
+	codes          []string
 }
 type openAPIResponseProperty struct {
 	index            int
@@ -27,6 +30,32 @@ type openAPIResponseProperty struct {
 type openAPIPropertyRule struct {
 	rule propertyRule
 	role string
+}
+
+const openAPIReplayPrefix = "@refine-openapi-property/v1/"
+
+func openAPIReplayTarget(role, operationID, status string) string {
+	return fmt.Sprintf("%s%s/%d:%s/%d:%s", openAPIReplayPrefix, role, len(operationID), operationID, len(status), status)
+}
+
+// OpenAPIRequestReplayTarget returns the opaque replay selector for one
+// operation's request property. The generator still verifies that the selector
+// names exactly one authoritative catalog property.
+func OpenAPIRequestReplayTarget(operationID string) string {
+	return openAPIReplayTarget("request", operationID, "")
+}
+
+// OpenAPIResponseReplayTarget selects response-origin invalid predicates,
+// including those evaluated within a context. It also selects valid response
+// pairs when the binding has no additional context type.
+func OpenAPIResponseReplayTarget(operationID, status string) string {
+	return openAPIReplayTarget("response", operationID, status)
+}
+
+// OpenAPIContextReplayTarget returns the opaque replay selector for a response
+// pair validated through an additional checked context type.
+func OpenAPIContextReplayTarget(operationID, status string) string {
+	return openAPIReplayTarget("context", operationID, status)
 }
 
 func openAPIPropertyRules(emitter *propertyEmitter, declarations map[string]language.TypeDecl, name string) ([]propertyRule, error) {
@@ -87,9 +116,10 @@ func openAPIPropertyPart(root string, target native.OpenAPISchemaTarget) string 
 // GenerateProjectOpenAPIPropertyTests emits one executable JetCheck launcher
 // which exercises every checked request and response binding through the real
 // native-first OpenAPI facade. Targets cannot narrow the authoritative catalog.
-// This first version accepts valid examples only; invalid/indeterminate
-// examples, replay pairs, and standalone wire-adapter overrides reject the
-// complete generation request instead of being skipped.
+// Examples cover valid, invalid, indeterminate, and native-invalid outcomes.
+// Replay selectors bind request values or request/response pairs to one exact
+// catalog property. Standalone wire-adapter overrides reject the complete
+// generation request instead of being skipped.
 func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, contractName, facadeName string, options PropertyTestOptions) ([]File, error) {
 	if project == nil || !project.HasOpenAPINativeBindings() {
 		return nil, &GenerationError{Message: "checked native OpenAPI operation bindings are required for operation properties"}
@@ -108,9 +138,6 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 	}
 	if len(options.Targets) > 0 {
 		return nil, &GenerationError{Message: "operation property targets are authoritative and cannot be narrowed"}
-	}
-	if len(options.Replays) > 0 {
-		return nil, &GenerationError{Message: "operation property replay pairs are not supported by this generator version"}
 	}
 	if options.JSONModule != "" || options.AvroSerde != "" || options.NativeJSONValidator != "" {
 		return nil, &GenerationError{Message: "operation properties use the generated OpenAPI facade; standalone wire adapters are not accepted"}
@@ -142,6 +169,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		declarations[decl.Name] = decl
 	}
 	types := map[string]bool{}
+	contextTypes := map[string]bool{}
 	parts := 0
 	responses := 0
 	for _, operation := range catalog.Operations {
@@ -149,6 +177,9 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		parts += len(operation.RequestParts)
 		for _, response := range operation.Responses {
 			types[response.TypeExpression] = true
+			if response.ContextType != "" {
+				contextTypes[response.ContextType] = true
+			}
 			parts += len(response.Parts)
 			responses++
 		}
@@ -176,14 +207,33 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 	seeds := map[string][]string{}
 	examples := []openAPIPropertyExample{}
 	addExample := func(label, target string, dataSource string, expected PropertyOutcome, nativeExpected PropertyNativeOutcome, codes []string) error {
-		if !types[target] {
-			return fmt.Errorf("%s targets %s, which is not an operation request or response type", label, target)
+		if !types[target] && !contextTypes[target] {
+			return fmt.Errorf("%s targets %s, which is not an operation request, response, or context type", label, target)
 		}
-		if expected != ExampleValid || nativeExpected != ExampleNativeValid || len(codes) != 0 {
-			return fmt.Errorf("%s uses an outcome not faithfully representable by operation pair properties", label)
+		if expected != ExampleValid && expected != ExampleInvalid && expected != ExampleIndeterminate {
+			return fmt.Errorf("%s has an invalid expected outcome", label)
 		}
-		seeds[target] = append(seeds[target], dataSource)
-		examples = append(examples, openAPIPropertyExample{label: label, target: target, source: dataSource})
+		if nativeExpected != ExampleNativeValid && nativeExpected != ExampleNativeInvalid {
+			return fmt.Errorf("%s has an invalid native expected outcome", label)
+		}
+		if expected == ExampleValid && len(codes) > 0 {
+			return fmt.Errorf("valid %s cannot require diagnostics", label)
+		}
+		if expected == ExampleInvalid && len(codes) != 1 {
+			return fmt.Errorf("invalid %s must require exactly one diagnostic code", label)
+		}
+		for _, code := range codes {
+			if code == "" {
+				return fmt.Errorf("%s has an empty diagnostic code", label)
+			}
+		}
+		if nativeExpected == ExampleNativeInvalid && (expected != ExampleValid || len(codes) > 0) {
+			return fmt.Errorf("native-invalid %s must be Refine-valid and cannot claim refinement diagnostics", label)
+		}
+		if expected == ExampleValid && nativeExpected == ExampleNativeValid && types[target] {
+			seeds[target] = append(seeds[target], dataSource)
+		}
+		examples = append(examples, openAPIPropertyExample{label: label, target: target, source: dataSource, expected: expected, nativeExpected: nativeExpected, codes: append([]string(nil), codes...)})
 		return nil
 	}
 	checked, err := native.CheckExamples(program, project.Metadata().Examples)
@@ -216,6 +266,40 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			return nil, err
 		}
 	}
+	replayValues := map[string]string{}
+	for i, replay := range options.Replays {
+		if replay.Target == "" || replay.SerializedData == "" {
+			return nil, fmt.Errorf("operation replay %d requires a target and serialized data", i)
+		}
+		if replay.Kind != ReplayValid && replay.Kind != ReplayInvalid {
+			return nil, fmt.Errorf("operation replay %d has invalid kind", i)
+		}
+		if replay.Kind == ReplayValid && replay.DiagnosticCode != "" {
+			return nil, fmt.Errorf("valid operation replay %d must not name a diagnostic", i)
+		}
+		if replay.Kind == ReplayInvalid && replay.DiagnosticCode == "" {
+			return nil, fmt.Errorf("invalid operation replay %d requires a diagnostic code", i)
+		}
+		key := replayKey(replay.Target, replay.Kind, replay.DiagnosticCode)
+		if _, exists := replayValues[key]; exists {
+			return nil, fmt.Errorf("duplicate operation replay selector %s", replay.Target)
+		}
+		replayValues[key] = replay.SerializedData
+	}
+	emittedReplays := map[string]bool{}
+	usedReplays := map[string]bool{}
+	propertyReplay := func(target string, kind ReplayKind, code string) (string, error) {
+		key := replayKey(target, kind, code)
+		if emittedReplays[key] {
+			return "", fmt.Errorf("operation property selector %s is ambiguous for diagnostic %s", target, code)
+		}
+		emittedReplays[key] = true
+		if value, ok := replayValues[key]; ok {
+			usedReplays[key] = true
+			return value, nil
+		}
+		return "", nil
+	}
 	emitter := &propertyEmitter{declarations: declarations, visiting: map[string]bool{}}
 	generators := map[string]string{}
 	for _, name := range typeNames {
@@ -245,6 +329,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 	pairIndex := 0
 	requestOccurrences := map[string][]int{}
 	responseOccurrences := map[string][]openAPIResponseProperty{}
+	contextOccurrences := map[string][]openAPIResponseProperty{}
 	for opIndex, operation := range catalog.Operations {
 		requestOccurrences[operation.RequestType] = append(requestOccurrences[operation.RequestType], opIndex)
 		requestMethod := fmt.Sprintf("request%d", opIndex)
@@ -264,22 +349,36 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		fmt.Fprintf(&methods, "return new %s.RequestJSON(parameters,headers,body);}\n", facadeName)
 		fmt.Fprintf(&methods, "    private static boolean requestCandidate%d(Data data){try{var token=FACADE.validateRequest(%s,%s(data));return token.data().equals(data);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar)
 		fmt.Fprintf(&methods, "    private static boolean requestInvalidCandidate%d(Data data,String code){try{FACADE.validateRequest(%s,%s(data));return false;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){return targeted(failure.outcome(),code);}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar)
+		fmt.Fprintf(&methods, "    private static boolean requestExample%d(Data data,Validation.State expected,boolean nativeInvalid,String... codes){try{var token=FACADE.validateRequest(%s,%s(data));return !nativeInvalid&&expected==Validation.State.VALID&&token.data().equals(data);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){return !nativeInvalid&&matchesOutcome(failure.outcome(),expected,codes);}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar)
 		requestRules, ruleErr := openAPIPropertyRules(emitter, declarations, operation.RequestType)
 		if ruleErr != nil {
 			return nil, ruleErr
 		}
+		requestSelector := OpenAPIRequestReplayTarget(operation.OperationID)
+		validReplay, replayErr := propertyReplay(requestSelector, ReplayValid, "")
+		if replayErr != nil {
+			return nil, replayErr
+		}
 		var invalid strings.Builder
 		for ruleIndex, rule := range requestRules {
-			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s));", ruleIndex, opIndex, javaQuote(rule.code), javaQuote("invalid request "+operation.OperationID+" "+rule.code), ruleIndex, opIndex, javaQuote(rule.code))
+			replay, replayErr := propertyReplay(requestSelector, ReplayInvalid, rule.code)
+			if replayErr != nil {
+				return nil, replayErr
+			}
+			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, javaQuote(rule.code), javaQuote("invalid request "+operation.OperationID+" "+rule.code), ruleIndex, opIndex, javaQuote(rule.code), javaQuote(replay))
 		}
-		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);});%s}\n", opIndex, generators[operation.RequestType], contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), invalid.String())
+		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, generators[operation.RequestType], contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
 		calls = append(calls, fmt.Sprintf("requestProperty%d();", opIndex))
 		for _, response := range operation.Responses {
 			status, statusErr := openAPIPropertyStatus(operation, response)
 			if statusErr != nil {
 				return nil, statusErr
 			}
-			responseOccurrences[response.TypeExpression] = append(responseOccurrences[response.TypeExpression], openAPIResponseProperty{index: pairIndex, operation: opIndex, target: response.TypeExpression, requestGenerator: generators[operation.RequestType]})
+			occurrence := openAPIResponseProperty{index: pairIndex, operation: opIndex, target: response.TypeExpression, requestGenerator: generators[operation.RequestType]}
+			responseOccurrences[response.TypeExpression] = append(responseOccurrences[response.TypeExpression], occurrence)
+			if response.ContextType != "" {
+				contextOccurrences[response.ContextType] = append(contextOccurrences[response.ContextType], occurrence)
+			}
 			responseMethod := fmt.Sprintf("response%d", pairIndex)
 			fmt.Fprintf(&methods, "    private static %s.ResponseJSON %s(Data data){var root=parse(%s.writeDataWithoutRefinements(data));var headers=new java.util.ArrayList<%s.HeaderJSON>();%s.MediaJSON body=null;\n", facadeName, responseMethod, codecField[response.TypeExpression], facadeName, facadeName)
 			for partIndex, target := range response.Parts {
@@ -295,6 +394,8 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			fmt.Fprintf(&methods, "    private record Pair%d(Data request,Data response){}\n", pairIndex)
 			fmt.Fprintf(&methods, "    private static boolean responseCandidate%d(Pair%d pair){try{var token=FACADE.validateRequest(%s,%s(pair.request()));var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);if(outcome.incomplete())throw new AssertionError(\"operation response validation was indeterminate\");return outcome.state()==Validation.State.VALID;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
 			fmt.Fprintf(&methods, "    private static boolean responseInvalidCandidate%d(Pair%d pair,String code){try{var token=FACADE.validateRequest(%s,%s(pair.request()));return targeted(FACADE.validateResponse(%s,%s(pair.response()),token),code);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
+			fmt.Fprintf(&methods, "    private static boolean responseExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
+			fmt.Fprintf(&methods, "    private static boolean contextExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
 			responseRules, ruleErr := openAPIPropertyRules(emitter, declarations, response.TypeExpression)
 			if ruleErr != nil {
 				return nil, ruleErr
@@ -328,29 +429,62 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 					rules = append(rules, openAPIPropertyRule{rule: rule, role: role})
 				}
 			}
+			validSelector := OpenAPIResponseReplayTarget(operation.OperationID, response.Status)
+			if response.ContextType != "" {
+				validSelector = OpenAPIContextReplayTarget(operation.OperationID, response.Status)
+			}
+			validReplay, replayErr := propertyReplay(validSelector, ReplayValid, "")
+			if replayErr != nil {
+				return nil, replayErr
+			}
 			var responseInvalid strings.Builder
 			for ruleIndex, item := range rules {
-				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(invalid%d,p->responseInvalidCandidate%d(p,%s));", ruleIndex, pairIndex, javaQuote(item.rule.code), javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code), ruleIndex, pairIndex, javaQuote(item.rule.code))
+				selector := OpenAPIResponseReplayTarget(operation.OperationID, response.Status)
+				if item.role == "context" {
+					selector = OpenAPIContextReplayTarget(operation.OperationID, response.Status)
+				}
+				replay, replayErr := propertyReplay(selector, ReplayInvalid, item.rule.code)
+				if replayErr != nil {
+					return nil, replayErr
+				}
+				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(invalid%d,p->responseInvalidCandidate%d(p,%s),%s);", ruleIndex, pairIndex, javaQuote(item.rule.code), javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code), ruleIndex, pairIndex, javaQuote(item.rule.code), javaQuote(replay))
 			}
 			label := "response " + operation.OperationID + " " + response.Status
 			if response.ContextType != "" {
 				label = "context " + operation.OperationID + " " + response.Status
 			}
-			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;});%s}\n", pairIndex, generators[operation.RequestType], generators[response.TypeExpression], pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, responseInvalid.String())
+			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;},%s);%s}\n", pairIndex, generators[operation.RequestType], generators[response.TypeExpression], pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, javaQuote(validReplay), responseInvalid.String())
 			calls = append(calls, fmt.Sprintf("responseProperty%d();", pairIndex))
 			pairIndex++
 		}
 	}
 	for exampleIndex, example := range examples {
 		method := fmt.Sprintf("example%d", exampleIndex)
+		state := "VALID"
+		if example.expected == ExampleInvalid {
+			state = "INVALID"
+		} else if example.expected == ExampleIndeterminate {
+			state = "INDETERMINATE"
+		}
+		args := "Validation.State." + state + "," + fmt.Sprint(example.nativeExpected == ExampleNativeInvalid)
+		for _, code := range example.codes {
+			args += "," + javaQuote(code)
+		}
 		fmt.Fprintf(&methods, "    private static void %s(){var data=%s;", method, example.source)
+		if example.nativeExpected == ExampleNativeInvalid {
+			fmt.Fprintf(&methods, "if(!matchesOutcome(%s.validate(%s,data),Validation.State.VALID))throw new AssertionError(%s);", contractName, javaQuote(example.target), javaQuote(example.label+" declared Refine-valid outcome"))
+		}
 		covered := 0
 		for _, operationIndex := range requestOccurrences[example.target] {
-			fmt.Fprintf(&methods, "if(!requestCandidate%d(data))throw new AssertionError(%s);", operationIndex, javaQuote(example.label+" request boundary"))
+			fmt.Fprintf(&methods, "if(!requestExample%d(data,%s))throw new AssertionError(%s);", operationIndex, args, javaQuote(example.label+" request boundary"))
 			covered++
 		}
 		for _, occurrence := range responseOccurrences[example.target] {
-			fmt.Fprintf(&methods, "var compatible%d=requiring(%s,request->responseCandidate%d(new Pair%d(request,data)),ATTEMPTS,%s);checkExample(compatible%d,request->responseCandidate%d(new Pair%d(request,data)));", covered, occurrence.requestGenerator, occurrence.index, occurrence.index, javaQuote(example.label+" compatible request context"), covered, occurrence.index, occurrence.index)
+			fmt.Fprintf(&methods, "var compatible%d=requiring(%s,request->responseExample%d(new Pair%d(request,data),%s),ATTEMPTS,%s);checkExample(compatible%d,request->responseExample%d(new Pair%d(request,data),%s));", covered, occurrence.requestGenerator, occurrence.index, occurrence.index, args, javaQuote(example.label+" compatible request context"), covered, occurrence.index, occurrence.index, args)
+			covered++
+		}
+		for _, occurrence := range contextOccurrences[example.target] {
+			fmt.Fprintf(&methods, "var pair%d=new Pair%d(contextField(data,\"request\"),contextField(data,\"response\"));if(!contextExample%d(pair%d,%s))throw new AssertionError(%s);", covered, occurrence.index, occurrence.index, covered, args, javaQuote(example.label+" context boundary"))
 			covered++
 		}
 		if covered == 0 {
@@ -358,6 +492,11 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		}
 		methods.WriteString("}\n")
 		calls = append(calls, method+"();")
+	}
+	for key := range replayValues {
+		if !usedReplays[key] {
+			return nil, &GenerationError{Message: "operation replay does not match exactly one generated catalog property"}
+		}
 	}
 	class := contractName + "GeneratedProperties"
 	header := "// Generated by Refine: OpenAPI JetCheck 0.3.0 operation properties.\n"
@@ -373,9 +512,11 @@ public final class %s {
     private static tools.jackson.databind.JsonNode parse(byte[] raw){return TREE.readTree(raw);}
     private static byte[] part(tools.jackson.databind.JsonNode root,String... path){var value=root;for(var name:path){if(value==null||!value.isObject())return null;value=value.get(name);}return value==null?null:TREE.writeValueAsBytes(value);}
     private static <T> org.jetbrains.jetCheck.Generator<T> requiring(org.jetbrains.jetCheck.Generator<T> raw,java.util.function.Predicate<T> wanted,int attempts,String label){return org.jetbrains.jetCheck.Generator.from(env->{for(int i=0;i<attempts;i++){T value=env.generate(raw);if(wanted.test(value)){env.generate(org.jetbrains.jetCheck.Generator.integers());return value;}}throw new AssertionError("property generation exhausted: "+label+" after "+attempts+" attempts");});}
-    private static <T> void check(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property){org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property);}
+    private static <T> void check(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property,String replay){if(replay.isEmpty())org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property);else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property);}
     private static <T> void checkExample(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property){org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(1).silent().forAll(generator,property);}
     private static boolean targeted(Validation.Outcome outcome,String code){if(outcome.incomplete()||outcome.state()==Validation.State.INDETERMINATE)throw new AssertionError("operation validation was indeterminate");return outcome.state()==Validation.State.INVALID&&outcome.diagnostics().stream().anyMatch(d->d.code().equals(code));}
+    private static boolean matchesOutcome(Validation.Outcome outcome,Validation.State state,String... codes){if(outcome.state()!=state)return false;if(state!=Validation.State.INDETERMINATE&&outcome.incomplete())return false;for(var code:codes)if(outcome.diagnostics().stream().noneMatch(d->d.code().equals(code)))return false;return true;}
+    private static Data contextField(Data data,String name){if(!(data instanceof Data.Struct record)||record.fields().size()!=2)throw new AssertionError("operation context example must contain exactly request and response");Data found=null;for(var field:record.fields()){if(!field.name().equals("request")&&!field.name().equals("response"))throw new AssertionError("operation context example has an unknown field");if(field.name().equals(name)){if(found!=null)throw new AssertionError("duplicate operation context field");found=field.value();}}if(found==null)throw new AssertionError("operation context example lacks "+name);return found;}
 %s
     public static void main(String[] args){%s}
 }

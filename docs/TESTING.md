@@ -187,6 +187,40 @@ one artifact, while retaining the same four lifecycle invocations. The focused
 native, Java, rootless caller and rooted regression results above are reused;
 this is not another local full Java or repository run.
 
+The following follow-up selection isolates generic JSON descriptor identity and
+its aggregate work bound. It executes one Java harness and one pure-Go test,
+not the full Java package:
+
+```sh
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^(TestJacksonGenericAnonymousRecordDescriptorsAreSpecializationSensitive|TestJSONDescriptorTypeKeysHaveAggregateStructuralBounds)$'
+```
+
+For rootless release integration, the initial reviewed selection was:
+
+```sh
+go test ./analysis ./cli -run '^(TestCompareOperationsUsesAsymmetricRequestAndResponseDirections|TestCompareOperationsClassifiesOperationAndStatusSurfaceDirection|TestCompareOperationsKeepsChangedRelationalContextUnknown|TestReleaseOperationsPlansAsymmetricEntrypointsAndExactOverrides|TestReleaseOperationsRemovalRequiresCompatibilityBoundary|TestReleaseOperationsInitialPromotionAndUnchangedSnapshot|TestReleaseOperationsDocumentationClaimRetainsAllEntrypointsAndResources|TestReleasePlanAllBaselinesExactOverrideAndDocumentationIdentity|TestReleaseOverrideIdentityIncludesRootPackageAndWirePolicy|TestReleasePromotePinsBatchAndLeavesSnapshotWithoutPendingVersion|TestReleaseNativeBundlePlanningUsesExactBundleIdentity|TestProjectCLIRootlessTargetConfiguration)$'
+```
+
+An alias-fixture correction reran only the failed context anchor. Subsequent
+inventory-copy and initial-root validation corrections selected the three
+analysis anchors plus `TestReleaseOperationsInitialPromotionAndUnchangedSnapshot`
+and `TestReleaseInitialPayloadValidatesSelectedRoot`. Successful unrelated CLI
+approval, removal and documentation results were reused. Final review of generic
+context traversal has its own bounded-DAG/context selection, recorded with its
+result in IMPLEMENTATION.md.
+
+```sh
+go test ./analysis -run '^(TestCompareOperationsKeepsChangedRelationalContextUnknown|TestOperationContextResolutionBoundsGenericDAGWork)$'
+```
+
+The operation example/replay generator uses the existing
+`^TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding$` harness with pinned
+Java dependencies. Its owner waits for coherent shared Java generation; the
+coordinator does not repeat the successful descriptor harness. Changed property
+output requires the two rootless project generation anchors above. This follow-up
+does not alter Maven lifecycle/dependency integration, so no additional local
+Maven lifecycle is scheduled; CI still covers it on both platforms.
+
 | Change | Selected checks | Why |
 | --- | --- | --- |
 | Map allocation/order preflights | `go test ./language -run '^TestMapLiteralAllocationPreflight$'`; `go test ./native -run '^(TestNativeMapOrderingAndJSONAllocationPreflights|TestJSONMapRefinementsAndUnicodeBoundary|TestAvroMapProjectionDecodeAndLowering)$'`; `REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedJavaMapParity$'` with pinned dependencies | Preallocation charging, nonallocating JSON cardinality, aggregate native ordering cap and unchanged exact Go/Java budget reports; no unrelated function/serde harness reruns |

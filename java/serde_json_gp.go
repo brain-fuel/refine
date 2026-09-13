@@ -4,7 +4,10 @@
 package java
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"hash"
 	"path"
 	"sort"
 	"strings"
@@ -613,7 +616,7 @@ func jsonRecordPolicyShape(t *language.Type, decls map[string]language.TypeDecl,
 		if subErr != nil {
 			return false, selection, &GenerationError{Message: "JSON extra-field policy substitution exceeded its structural bound"}
 		}
-		key := "applied:" + jsonTypeKey(t, 0)
+		key := "applied:" + jsonTypeKey(t, nodes)
 		if seen[key] {
 			return false, selection, &GenerationError{Message: "recursive JSON alias while resolving extra-field policy for " + selection.Origin}
 		}
@@ -633,6 +636,94 @@ func jsonExtraKey(key string, selection jsonExtraSelection) string {
 		return key + "@extra:reject"
 	}
 	return key
+}
+
+// Generic substitution intentionally preserves source spans, so an anonymous
+// record's offset alone cannot distinguish its closed field types.
+const jsonTypeKeyBytesPerWork = 32
+
+func consumeJSONTypeKeyWork(work *int, units int) bool {
+	if work == nil || *work < 0 || units < 0 || *work > language.DefaultSubstitutionNodes-units {
+		return false
+	}
+	*work += units
+	return true
+}
+func jsonTypeKeyTextWork(text string) int {
+	if len(text) > language.DefaultSubstitutionNodes*jsonTypeKeyBytesPerWork {
+		return language.DefaultSubstitutionNodes + 1
+	}
+	return (len(text) + jsonTypeKeyBytesPerWork - 1) / jsonTypeKeyBytesPerWork
+}
+func jsonTypeFingerprintPart(digest hash.Hash, text string, at language.Span, nodes *int) {
+	if !consumeJSONTypeKeyWork(nodes, jsonTypeKeyTextWork(text)) {
+		unsupported(at, "JSON type fingerprint text exceeded its structural bound")
+	}
+	size := [8]byte{}
+	binary.BigEndian.PutUint64(size[:], uint64(len(text)))
+	digest.Write(size[:])
+	buffer := [4096]byte{}
+	for len(text) > 0 {
+		count := copy(buffer[:], text)
+		digest.Write(buffer[:count])
+		text = text[count:]
+	}
+}
+func jsonTypeFingerprintCount(digest hash.Hash, count int) {
+	size := [8]byte{}
+	binary.BigEndian.PutUint64(size[:], uint64(count))
+	digest.Write(size[:])
+}
+func jsonTypeFingerprintNode(digest hash.Hash, t *language.Type, depth int, nodes *int) {
+	if t == nil {
+		unsupported(language.Span{}, "JSON type fingerprint encountered an absent type")
+	}
+	if !consumeJSONTypeKeyWork(nodes, 1) || depth > 512 {
+		unsupported(t.At, "JSON type fingerprint exceeded its structural bound")
+	}
+	switch __gp_m3 := any(t.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m3.Base
+		jsonTypeFingerprintNode(digest, base, depth+1, nodes)
+	case language.NamedType:
+		name := __gp_m3.Name
+		digest.Write([]byte{1})
+		jsonTypeFingerprintPart(digest, name, t.At, nodes)
+	case language.ListType:
+		element := __gp_m3.Element
+		digest.Write([]byte{2})
+		jsonTypeFingerprintNode(digest, element, depth+1, nodes)
+	case language.AppliedType:
+		fn := __gp_m3.Constructor
+		arg := __gp_m3.Argument
+		digest.Write([]byte{3})
+		jsonTypeFingerprintNode(digest, fn, depth+1, nodes)
+		jsonTypeFingerprintNode(digest, arg, depth+1, nodes)
+	case language.ArrowType:
+		argument := __gp_m3.Argument
+		result := __gp_m3.Result
+		digest.Write([]byte{4})
+		jsonTypeFingerprintNode(digest, argument, depth+1, nodes)
+		jsonTypeFingerprintNode(digest, result, depth+1, nodes)
+	case language.RecordType:
+		fields := __gp_m3.Fields
+		digest.Write([]byte{5})
+		jsonTypeFingerprintCount(digest, len(fields))
+		for _, field := range fields {
+			jsonTypeFingerprintPart(digest, field.Name, field.At, nodes)
+			jsonTypeFingerprintNode(digest, field.Type, depth+1, nodes)
+		}
+	default:
+		panic("goplus: impossible enum value in match")
+	}
+}
+func jsonTypeFingerprint(t *language.Type, nodes *int) string {
+	digest := sha256.New()
+	jsonTypeFingerprintNode(digest, t, 0, nodes)
+	return fmt.Sprintf("%x", digest.Sum(nil))
+}
+func jsonAnonymousTypeKey(t *language.Type, nodes *int) string {
+	return fmt.Sprintf("@anonymous:%d:%s", t.At.Start.Offset, jsonTypeFingerprint(t, nodes))
 }
 
 type jsonShapeEmitter struct {
@@ -746,12 +837,12 @@ func (e *jsonShapeEmitter) shape(t *language.Type, depth int) string {
 }
 func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type, depth int, selection jsonExtraSelection) string {
 	e.visit(t, depth)
-	switch __gp_m3 := any(t.Form).(type) {
+	switch __gp_m4 := any(t.Form).(type) {
 	case language.RefinedType:
-		base := __gp_m3.Base
+		base := __gp_m4.Base
 		return e.shapeWithExtra(base, depth+1, selection)
 	case language.NamedType:
-		name := __gp_m3.Name
+		name := __gp_m4.Name
 
 		if shape, ok := e.namedScalar(name, t.At); ok {
 			return shape
@@ -808,19 +899,19 @@ func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type, depth int, selection
 		}
 		return e.shapeWithExtra(decl.Body, depth+1, next)
 	case language.RecordType:
-		fields := __gp_m3.Fields
+		fields := __gp_m4.Fields
 		key := selection.Key
 		if key == "" {
-			key = "@anonymous:" + fmt.Sprint(t.At.Start.Offset)
+			key = jsonAnonymousTypeKey(t, &e.nodes)
 		}
 		return e.record(key, fields, selection, depth)
 	case language.ListType:
-		element := __gp_m3.Element
+		element := __gp_m4.Element
 		e.terminalExtra(selection, t)
 		return "new S(\"list\"," + e.shape(element, depth+1) + ",null,null,0,null)"
 	case language.AppliedType:
-		fn := __gp_m3.Constructor
-		arg := __gp_m3.Argument
+		fn := __gp_m4.Constructor
+		arg := __gp_m4.Argument
 		if fn == nil || arg == nil {
 			unsupported(t.At, "invalid generic JSON field")
 		}
@@ -837,7 +928,7 @@ func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type, depth int, selection
 			e.terminalExtra(selection, t)
 			return "new S(\"map\"," + e.shape(args[1], depth+1) + ",null,null,0,null)"
 		}
-		key := jsonTypeKey(t, 0)
+		key := jsonTypeKey(t, &e.nodes)
 		if selection.Key == "" {
 			selection.Key = key
 		}
@@ -874,26 +965,54 @@ func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type, depth int, selection
 	}
 	return ""
 }
-func jsonTypeKey(t *language.Type, depth int) (key string) {
-	if depth > 512 {
-		unsupported(t.At, "JSON type key depth limit exceeded")
+
+const jsonReadableTypeKeyLimit = 4096
+
+func jsonReadableTypeKey(t *language.Type, depth int, nodes *int) (string, bool) {
+	if t == nil {
+		unsupported(language.Span{}, "JSON type key encountered an absent type")
 	}
-	t = unrefined(t)
-	switch __gp_m4 := any(t.Form).(type) {
+	if !consumeJSONTypeKeyWork(nodes, 1) || depth > 512 {
+		unsupported(t.At, "JSON type key exceeded its structural bound")
+	}
+	switch __gp_m5 := any(t.Form).(type) {
+	case language.RefinedType:
+		base := __gp_m5.Base
+		return jsonReadableTypeKey(base, depth+1, nodes)
 	case language.NamedType:
-		name := __gp_m4.Name
-		return name
+		name := __gp_m5.Name
+		if !consumeJSONTypeKeyWork(nodes, jsonTypeKeyTextWork(name)) {
+			unsupported(t.At, "JSON type key text exceeded its structural bound")
+		}
+		if len(name) > jsonReadableTypeKeyLimit {
+			return "", false
+		}
+		return name, true
 	case language.ListType:
-		element := __gp_m4.Element
-		return "[" + jsonTypeKey(element, depth+1) + "]"
+		element := __gp_m5.Element
+		item, ok := jsonReadableTypeKey(element, depth+1, nodes)
+		if !ok || len(item) > jsonReadableTypeKeyLimit-2 {
+			return "", false
+		}
+		return "[" + item + "]", true
 	case language.AppliedType:
-		fn := __gp_m4.Constructor
-		arg := __gp_m4.Argument
-		return jsonTypeKey(fn, depth+1) + "<" + jsonTypeKey(arg, depth+1) + ">"
+		fn := __gp_m5.Constructor
+		arg := __gp_m5.Argument
+		left, okLeft := jsonReadableTypeKey(fn, depth+1, nodes)
+		right, okRight := jsonReadableTypeKey(arg, depth+1, nodes)
+		if !okLeft || !okRight || len(left) > jsonReadableTypeKeyLimit-len(right)-2 {
+			return "", false
+		}
+		return left + "<" + right + ">", true
 	default:
-		key = "@" + fmt.Sprint(t.At.Start.Offset)
+		return "", false
 	}
-	return key
+}
+func jsonTypeKey(t *language.Type, nodes *int) string {
+	if key, ok := jsonReadableTypeKey(t, 0, nodes); ok {
+		return key
+	}
+	return "@shape:" + jsonTypeFingerprint(t, nodes)
 }
 
 const jsonSerdeJava = `

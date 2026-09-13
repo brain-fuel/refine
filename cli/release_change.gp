@@ -20,19 +20,19 @@ type releaseDocumentationEvidence struct {
     Reasons []string `json:"reasons"`
 }
 
-func documentationEvidence(baseline,snapshot *releaseSchemaEntry,baselineRoot,snapshotRoot string,catalog releaseCatalog)(*releaseDocumentationEvidence,error){
-    syntax,err:=analysis.CompareContractSyntax(baseline.program,baselineRoot,snapshot.program,snapshotRoot);if err!=nil{return nil,err}
+func documentationEvidence(baseline,snapshot *releaseSchemaEntry,catalog releaseCatalog,config projectConfig)(*releaseDocumentationEvidence,error){
+    syntax,comparable,err:=compareReleaseSyntax(baseline,snapshot,config);if err!=nil{return nil,err}
     result:=&releaseDocumentationEvidence{Baseline:baseline.version.String(),Syntax:syntax,Outcome:analysis.Yes,Reasons:[]string{}}
     different:=func(reason string){result.Outcome=analysis.No;result.Reasons=append(result.Reasons,reason)}
     uncertain:=func(reason string){if result.Outcome!=analysis.No{result.Outcome=analysis.Unknown};result.Reasons=append(result.Reasons,reason)}
-    if !syntax.Equal{different("checked language declarations, predicates, functions, diagnostics, budgets, or root changed")}
+    if !comparable{different("schema entrypoint target changed between a payload and an operation catalog")}else if !syntax.Equal{different("checked language declarations, predicates, functions, diagnostics, budgets, or selected entrypoints changed")}
     if baseline.kind!=snapshot.kind{different("schema source format changed")}
     oldPackages,err:=releaseSourcePackages(baseline,catalog);if err!=nil{return nil,err};nextPackages,err:=releaseSourcePackages(snapshot,catalog);if err!=nil{return nil,err};if oldPackages!=nextPackages{different("reachable source publication packages or dependency graph changed")}
     old,next:=baseline.nativeProject,snapshot.nativeProject
     if old!=nil&&next!=nil{
         oldMetadata,err:=json.Marshal(old.Metadata());if err!=nil{return nil,err};nextMetadata,err:=json.Marshal(next.Metadata());if err!=nil{return nil,err}
         if string(oldMetadata)!=string(nextMetadata){different("native wire, operation, example, or publication metadata changed")}
-        if old.Format()!=next.Format()||old.Version()!=next.Version()||old.Root()!=next.Root(){different("native format, version, or root selection changed")}
+        if old.Format()!=next.Format()||old.Version()!=next.Version()||old.Target()!=next.Target(){different("native format, version, or target selection changed")}
         if !sameReleaseResources(old.Resources(),next.Resources()){uncertain("native resource changes require classification; documentation-only native equivalence is not proven")}
         oldUnits,err:=releaseConstraintSyntax(old);if err!=nil{return nil,err};nextUnits,err:=releaseConstraintSyntax(next);if err!=nil{return nil,err};if oldUnits!=nextUnits{different("native constraint unit syntax changed")}
     }else if (old==nil)!=(next==nil){different("native validation boundary changed")}
@@ -55,8 +55,7 @@ func releaseConstraintSyntax(project *native.Project)(string,error){units:=proje
 // unsupported native/resource comparisons remain contract-affecting.
 func dependencyAffectsContract(baseline,snapshot *releaseSchemaEntry,catalog releaseCatalog,config projectConfig)(bool,error){
     if baseline==nil||snapshot==nil{return true,nil};if baseline.policyContent!=snapshot.policyContent{return true,nil}
-    baselineRoot,err:=releaseEntryRoot(baseline,baseline.family,config.Families[baseline.family]);if err!=nil{return true,err};snapshotRoot,err:=releaseEntryRoot(snapshot,snapshot.family,config.Families[snapshot.family]);if err!=nil{return true,err}
-    evidence,err:=documentationEvidence(baseline,snapshot,baselineRoot,snapshotRoot,catalog);if err!=nil{return true,err};return evidence.Outcome!=analysis.Yes,nil
+    evidence,err:=documentationEvidence(baseline,snapshot,catalog,config);if err!=nil{return true,err};return evidence.Outcome!=analysis.Yes,nil
 }
 
 func classifyDependencyImports(snapshot,baseline releaseEntryImports,catalog releaseCatalog,config projectConfig)([]release.ImportPin,error){

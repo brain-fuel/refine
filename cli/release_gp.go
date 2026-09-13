@@ -24,7 +24,6 @@ import (
 	"goforge.dev/refine/project"
 	"goforge.dev/refine/release"
 	"goforge.dev/refine/schemajson"
-	"goforge.dev/refine/validation"
 )
 
 type releaseProjectPolicy struct {
@@ -615,11 +614,16 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 		if err := compileReleaseEntry(root, snapshot, catalog, config); err != nil {
 			return releaseWorkflow{}, err
 		}
-		if err = rememberEntryInputs(&workflow, snapshot); err != nil {
-			return releaseWorkflow{}, err
+		if releaseOperationsEntry(snapshot) {
+			if _, err := releaseOperationContract(snapshot); err != nil {
+				return releaseWorkflow{}, err
+			}
+		} else {
+			if _, err := releaseEntryRoot(snapshot, family, settings); err != nil {
+				return releaseWorkflow{}, err
+			}
 		}
-		snapshotRoot, err := releaseEntryRoot(snapshot, family, settings)
-		if err != nil {
+		if err = rememberEntryInputs(&workflow, snapshot); err != nil {
 			return releaseWorkflow{}, err
 		}
 		snapshotImports, err := entryImports(root, snapshot, catalog, config, intended, true)
@@ -644,10 +648,6 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 			if err = rememberEntryInputs(&workflow, baseline); err != nil {
 				return releaseWorkflow{}, err
 			}
-			baselineRoot, e := releaseEntryRoot(baseline, family, settings)
-			if e != nil {
-				return releaseWorkflow{}, e
-			}
 			imports, e := entryImports(root, baseline, catalog, config, intended, false)
 			if e != nil {
 				return releaseWorkflow{}, e
@@ -656,7 +656,7 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 			if baseline == baselines[len(baselines)-1] {
 				latestImports = imports
 			}
-			logical, e := analysis.Compare(baseline.program, baselineRoot, snapshot.program, snapshotRoot, validation.Limits{})
+			logical, logicalKind, e := compareReleaseEntrypoints(baseline, snapshot, family, settings)
 			if e != nil {
 				return releaseWorkflow{}, e
 			}
@@ -668,7 +668,7 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 				nativeFinding := analysis.Finding{Outcome: analysis.Unknown, Code: "analysis.native_unknown", Explanation: "Native wire compatibility has no general proof engine."}
 				abiFinding := analysis.Finding{Outcome: analysis.Unknown, Code: "analysis.java_abi_unknown", Explanation: "Generated Java source and ABI compatibility have no general proof engine; historical per-version ABI metadata is not available."}
 				result := comparisonResult(finding.Outcome)
-				detail := fmt.Sprintf("logical=%s; native-wire=unknown; java-abi=unknown", finding.Outcome)
+				detail := fmt.Sprintf("%s=%s; native-wire=unknown; java-abi=unknown", logicalKind, finding.Outcome)
 				ref := release.ComparisonRef{Family: family, Baseline: *baseline.version, BaselineContent: baseline.content, CandidateContent: snapshot.content, Direction: direction}
 				planning.Comparisons = append(planning.Comparisons, release.CompatibilityEvidence{Comparison: ref, Result: result, Detail: detail})
 				comparisons = append(comparisons, releaseComparisonReport{Baseline: baseline.version.String(), BaselineSHA256: string(baseline.content), SnapshotSHA256: string(snapshot.content), BaselinePolicySHA256: string(baseline.policyContent), SnapshotPolicySHA256: string(snapshot.policyContent), Direction: direction.String(), Logical: finding, Native: nativeFinding, JavaABI: abiFinding, Result: resultName(result), Detail: detail})
@@ -697,13 +697,9 @@ func buildReleaseWorkflow(rootPath, configPath string, selection []string) (rele
 		var documentation *releaseDocumentationEvidence
 		if planning.Change == release.DocumentationOnly && len(baselines) > 0 {
 			latest := baselines[len(baselines)-1]
-			latestRoot, e := releaseEntryRoot(latest, family, settings)
-			if e != nil {
-				return releaseWorkflow{}, e
-			}
-			documentation, e = documentationEvidence(latest, snapshot, latestRoot, snapshotRoot, catalog)
-			if e != nil {
-				return releaseWorkflow{}, e
+			documentation, err = documentationEvidence(latest, snapshot, catalog, config)
+			if err != nil {
+				return releaseWorkflow{}, err
 			}
 		}
 		plan := release.Plan(planning)

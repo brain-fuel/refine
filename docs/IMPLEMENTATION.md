@@ -1835,7 +1835,7 @@ current implementation still performs no Maven deployment or product release.
   completed successfully on both Linux and macOS, including the counted selected
   fuzz campaigns. The earlier deadline-race failure was not retried or relabeled.
 
-## Operation project assembly and explicit extra-field rejection — validated locally
+## Operation project assembly and explicit extra-field rejection — validated
 
 - Added distinct `discard`/`preserve`/`reject` JSON wire policies. Discard now
   retains permissive native acceptance instead of incorrectly lowering to a
@@ -1890,3 +1890,66 @@ current implementation still performs no Maven deployment or product release.
   all four lifecycle builds with Java 25 and the pinned dependency directories.
   Earlier successful native, Java, CLI and project selections were reused;
   neither a full local suite nor another Maven invocation followed this result.
+- Pushed checkpoint `02bb5bd48e41565dd685a86af649bf7000cb9311`.
+  [CI run 34736369351](https://github.com/brain-fuel/refine/actions/runs/34736369351)
+  completed successfully on Linux and macOS, including their required Java/Maven
+  integration and selected counted fuzz campaigns. This terminal successful run
+  is not retried.
+
+## Operation release evidence and property completion — validated locally
+
+- Current source review corrected stale documentation that still described
+  native Avro JSON, Java `big-decimal` physical-byte serde, and the composed
+  native OpenAPI facade as absent. Their implementation and focused regressions
+  already exist; no runtime test was repeated for these documentation edits.
+  `RELEASE-READINESS.md` separates confirmed remaining scope from historical TODOs.
+- A focused anonymous generic Jackson regression reproduced reuse of an integer
+  descriptor for a string specialization. The initial direct-record fix passed
+  in 1.544s. Review found the same source-offset hazard in applied anonymous type
+  arguments and requested aggregate-bounded structural fingerprints. That
+  extension changes the fixture and implementation, so only its affected harness
+  and cheap key-bound tests are selected; the first green run is not claimed as
+  coverage for the later changes.
+- The final JSON descriptor selection passed in 1.421s: direct anonymous and
+  applied-anonymous generic specializations plus exact/one-over/aggregate/DAG
+  key-work bounds. Fingerprints stream framed wire-shape structure and charge
+  both node visits and text bytes; no unbounded formatted-type expansion remains
+  in this key path. Generation consistency passed and the owner froze the files.
+- Read-only native regex review confirmed both false rejection and false
+  acceptance relative to the generated ECMA-262 Unicode matcher. Upgrading
+  regexp2 alone would not establish parity. A shared-engine feasibility study
+  is separate from this checkpoint; no dependency or production regex change,
+  repeated JVM gate, or regex fuzz campaign was made for that audit.
+- The reviewed operation example/replay harness passed in 6.273s. It captures
+  real minimized JetCheck data for both request values and request/response
+  pairs, regenerates the same strategies with those values, and executes their
+  `rechecking` paths. It also verifies invalid, exact-indeterminate and actual
+  native-invalid examples, exact context envelopes, selector ambiguity rejection
+  and hard invalid-generation exhaustion. Deliberate language-indeterminate
+  examples use non-ASCII values outside the random text distribution, so random
+  properties do not rely on a lucky seed avoiding those values. Native/resource
+  failures remain fatal. Shared Java generation is consistent and frozen; the
+  descriptor harness was not repeated.
+- Rootless release comparison now uses the actual operation catalog. Requests
+  and responses have opposite inclusion directions; effective status selection
+  honors exact/class/default precedence. Changed relational contracts stay
+  unknown unless supported identity evidence applies; marginal counterexamples
+  do not falsely prove a request-response break. Native-wire and Java ABI
+  evidence remain separate unknowns, subject to existing exact persisted policy.
+  Initial/unchanged/all-baseline planning and verbatim promotion are supported.
+- The initial release selection passed CLI in 2.440s, with one analysis alias
+  fixture subsequently corrected and rerun alone (0.181s). Review then removed
+  repeated module snapshots and restored initial payload-root validation that
+  had been lost when removing the rootless guard. The five-anchor correction
+  selection passed analysis in 0.436s and CLI in 0.896s. Final generic-context
+  review replaced formatted/substituted expanding types with lazy bounded
+  environments and explicitly framed operation/response counts. Only
+  `TestCompareOperationsKeepsChangedRelationalContextUnknown` and
+  `TestOperationContextResolutionBoundsGenericDAGWork` reran (0.188s); other
+  successful CLI evidence was reused.
+- Whole-tree generation consistency passed. Scoped vet identified an unreachable
+  Go return after the descriptor helper's exhaustive match. Removing the return
+  and regenerating Java fixed that scoped vet check without changing generated
+  Java; no JVM test was repeated. The two changed rootless project callers then
+  passed in 0.354s. This batch adds no local full-suite, Maven lifecycle or fuzz
+  repeat; CI supplies the distinct cross-platform integration gate.

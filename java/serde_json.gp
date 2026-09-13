@@ -1,7 +1,10 @@
 package java
 
 import (
+    "crypto/sha256"
+    "encoding/binary"
     "fmt"
+    "hash"
     "path"
     "sort"
     "strings"
@@ -165,11 +168,28 @@ func jsonRecordPolicyShape(t *language.Type,decls map[string]language.TypeDecl,m
     case language.RefinedType(base,_):return jsonRecordPolicyShape(base,decls,modes,selection,seen,depth+1,nodes)
     case language.RecordType(_):return true,selection,nil
     case language.NamedType(name):decl,ok:=decls[name];if !ok||decl.Body==nil||len(decl.Parameters)>0{return false,selection,nil};next,err:=mergeJSONExtraSelection(selection,name,modes);if err!=nil{return false,selection,err};key:="named:"+name;if seen[key]{return false,selection,&GenerationError{Message:"recursive JSON alias while resolving extra-field policy for "+selection.Origin}};seen[key]=true;record,result,walkErr:=jsonRecordPolicyShape(decl.Body,decls,modes,next,seen,depth+1,nodes);delete(seen,key);return record,result,walkErr
-    case language.AppliedType(_,_):name,args:=applied(t);decl,ok:=decls[name];if !ok||decl.Body==nil||len(args)!=len(decl.Parameters){return false,selection,nil};next,err:=mergeJSONExtraSelection(selection,name,modes);if err!=nil{return false,selection,err};bindings:=map[string]*language.Type{};for i,param:=range decl.Parameters{bindings[param]=args[i]};closed,subErr:=language.SubstituteTypeBounded(decl.Body,bindings,language.DefaultSubstitutionNodes);if subErr!=nil{return false,selection,&GenerationError{Message:"JSON extra-field policy substitution exceeded its structural bound"}};key:="applied:"+jsonTypeKey(t,0);if seen[key]{return false,selection,&GenerationError{Message:"recursive JSON alias while resolving extra-field policy for "+selection.Origin}};seen[key]=true;record,result,walkErr:=jsonRecordPolicyShape(closed,decls,modes,next,seen,depth+1,nodes);delete(seen,key);return record,result,walkErr
+    case language.AppliedType(_,_):name,args:=applied(t);decl,ok:=decls[name];if !ok||decl.Body==nil||len(args)!=len(decl.Parameters){return false,selection,nil};next,err:=mergeJSONExtraSelection(selection,name,modes);if err!=nil{return false,selection,err};bindings:=map[string]*language.Type{};for i,param:=range decl.Parameters{bindings[param]=args[i]};closed,subErr:=language.SubstituteTypeBounded(decl.Body,bindings,language.DefaultSubstitutionNodes);if subErr!=nil{return false,selection,&GenerationError{Message:"JSON extra-field policy substitution exceeded its structural bound"}};key:="applied:"+jsonTypeKey(t,nodes);if seen[key]{return false,selection,&GenerationError{Message:"recursive JSON alias while resolving extra-field policy for "+selection.Origin}};seen[key]=true;record,result,walkErr:=jsonRecordPolicyShape(closed,decls,modes,next,seen,depth+1,nodes);delete(seen,key);return record,result,walkErr
     case _:return false,selection,nil
     }
 }
 func jsonExtraKey(key string,selection jsonExtraSelection)string{if selection.Mode==jsonExtraPreserve{return key+"@extra:preserve"};if selection.Mode==jsonExtraReject{return key+"@extra:reject"};return key}
+// Generic substitution intentionally preserves source spans, so an anonymous
+// record's offset alone cannot distinguish its closed field types.
+const jsonTypeKeyBytesPerWork=32
+func consumeJSONTypeKeyWork(work *int,units int)bool{if work==nil||*work<0||units<0||*work>language.DefaultSubstitutionNodes-units{return false};*work+=units;return true}
+func jsonTypeKeyTextWork(text string)int{if len(text)>language.DefaultSubstitutionNodes*jsonTypeKeyBytesPerWork{return language.DefaultSubstitutionNodes+1};return (len(text)+jsonTypeKeyBytesPerWork-1)/jsonTypeKeyBytesPerWork}
+func jsonTypeFingerprintPart(digest hash.Hash,text string,at language.Span,nodes *int){if !consumeJSONTypeKeyWork(nodes,jsonTypeKeyTextWork(text)){unsupported(at,"JSON type fingerprint text exceeded its structural bound")};size:=[8]byte{};binary.BigEndian.PutUint64(size[:],uint64(len(text)));digest.Write(size[:]);buffer:=[4096]byte{};for len(text)>0{count:=copy(buffer[:],text);digest.Write(buffer[:count]);text=text[count:]}}
+func jsonTypeFingerprintCount(digest hash.Hash,count int){size:=[8]byte{};binary.BigEndian.PutUint64(size[:],uint64(count));digest.Write(size[:])}
+func jsonTypeFingerprintNode(digest hash.Hash,t *language.Type,depth int,nodes *int){if t==nil{unsupported(language.Span{},"JSON type fingerprint encountered an absent type")};if !consumeJSONTypeKeyWork(nodes,1)||depth>512{unsupported(t.At,"JSON type fingerprint exceeded its structural bound")};match t.Form{
+    case language.RefinedType(base,_):jsonTypeFingerprintNode(digest,base,depth+1,nodes)
+    case language.NamedType(name):digest.Write([]byte{1});jsonTypeFingerprintPart(digest,name,t.At,nodes)
+    case language.ListType(element):digest.Write([]byte{2});jsonTypeFingerprintNode(digest,element,depth+1,nodes)
+    case language.AppliedType(fn,arg):digest.Write([]byte{3});jsonTypeFingerprintNode(digest,fn,depth+1,nodes);jsonTypeFingerprintNode(digest,arg,depth+1,nodes)
+    case language.ArrowType(argument,result):digest.Write([]byte{4});jsonTypeFingerprintNode(digest,argument,depth+1,nodes);jsonTypeFingerprintNode(digest,result,depth+1,nodes)
+    case language.RecordType(fields):digest.Write([]byte{5});jsonTypeFingerprintCount(digest,len(fields));for _,field:=range fields{jsonTypeFingerprintPart(digest,field.Name,field.At,nodes);jsonTypeFingerprintNode(digest,field.Type,depth+1,nodes)}
+}}
+func jsonTypeFingerprint(t *language.Type,nodes *int)string{digest:=sha256.New();jsonTypeFingerprintNode(digest,t,0,nodes);return fmt.Sprintf("%x",digest.Sum(nil))}
+func jsonAnonymousTypeKey(t *language.Type,nodes *int)string{return fmt.Sprintf("@anonymous:%d:%s",t.At.Start.Offset,jsonTypeFingerprint(t,nodes))}
 
 type jsonShapeEmitter struct{decls map[string]language.TypeDecl;options JSONSerdeOptions;extraModes map[string]jsonExtraFieldMode;definitions map[string]string;building map[string]bool;order []string;nodes int}
 type jsonVariantShape struct{name string;arguments []*language.Type}
@@ -189,13 +209,22 @@ func (e *jsonShapeEmitter) shapeWithExtra(t *language.Type,depth int,selection j
         if integerType(name){e.terminalExtra(selection,t);return "new S(\"integer\",null,null,null,0,null)"};switch name{case "String":e.terminalExtra(selection,t);return "new S(\"text\",null,null,null,0,null)";case "Bool":e.terminalExtra(selection,t);return "new S(\"bool\",null,null,null,0,null)";case "Real":e.terminalExtra(selection,t);if e.options.Reals==JSONRealUnspecified{unsupported(t.At,"exact Real JSON encoding policy is required")};return "new S(\"real\",null,null,null,0,null)";case "Timestamp":e.terminalExtra(selection,t);if e.options.Timestamps!=JSONTimestampRFC3339String{unsupported(t.At,"Timestamp JSON encoding policy is required")};return "new S(\"timestamp\",null,null,null,0,null)"}
         if name=="JSON"{e.terminalExtra(selection,t);return "new S(\"json\",null,null,null,0,null)"}
         decl,ok:=e.decls[name];if !ok{unsupported(t.At,"unknown JSON field type")};if selection.Key==""{selection.Key=name};next,err:=mergeJSONExtraSelection(selection,name,e.extraModes);if err!=nil{unsupported(t.At,err.Error())};if len(decl.Parameters)>0{unsupported(t.At,"generic JSON field requires type arguments")};if decl.Body==nil{e.terminalExtra(next,t);return e.unionDecl(name,name,decl.Variants,nil,depth)};return e.shapeWithExtra(decl.Body,depth+1,next)
-    case language.RecordType(fields):key:=selection.Key;if key==""{key="@anonymous:"+fmt.Sprint(t.At.Start.Offset)};return e.record(key,fields,selection,depth)
+    case language.RecordType(fields):key:=selection.Key;if key==""{key=jsonAnonymousTypeKey(t,&e.nodes)};return e.record(key,fields,selection,depth)
     case language.ListType(element):e.terminalExtra(selection,t);return "new S(\"list\","+e.shape(element,depth+1)+",null,null,0,null)"
-    case language.AppliedType(fn,arg):if fn==nil||arg==nil{unsupported(t.At,"invalid generic JSON field")};name,args:=applied(t);if name=="Maybe"&&len(args)==1{e.terminalExtra(selection,t);return "new S(\"maybe\","+e.shape(args[0],depth+1)+",null,null,0,null)"};if name=="Nullable"&&len(args)==1{e.terminalExtra(selection,t);return "new S(\"nullable\","+e.shape(args[0],depth+1)+",null,null,0,null)"};if name=="Map"&&len(args)==2{e.terminalExtra(selection,t);return "new S(\"map\","+e.shape(args[1],depth+1)+",null,null,0,null)"};key:=jsonTypeKey(t,0);if selection.Key==""{selection.Key=key};if name=="Result"&&len(args)==2{e.terminalExtra(selection,t);return e.union(key,"Result",[]jsonVariantShape{{name:"Err",arguments:args[:1]},{name:"Ok",arguments:args[1:]}},depth)};decl,ok:=e.decls[name];if !ok{unsupported(t.At,"unknown generic JSON field")};next,err:=mergeJSONExtraSelection(selection,name,e.extraModes);if err!=nil{unsupported(t.At,err.Error())};if len(args)!=len(decl.Parameters){unsupported(t.At,"generic JSON type argument count mismatch")};bindings:=map[string]*language.Type{};for i,param:=range decl.Parameters{bindings[param]=args[i]};if decl.Body==nil{e.terminalExtra(next,t);return e.unionDecl(key,name,decl.Variants,bindings,depth)};closed,subErr:=language.SubstituteTypeBounded(decl.Body,bindings,language.DefaultSubstitutionNodes);if subErr!=nil{unsupported(t.At,subErr.Error())};return e.shapeWithExtra(closed,depth+1,next)
+    case language.AppliedType(fn,arg):if fn==nil||arg==nil{unsupported(t.At,"invalid generic JSON field")};name,args:=applied(t);if name=="Maybe"&&len(args)==1{e.terminalExtra(selection,t);return "new S(\"maybe\","+e.shape(args[0],depth+1)+",null,null,0,null)"};if name=="Nullable"&&len(args)==1{e.terminalExtra(selection,t);return "new S(\"nullable\","+e.shape(args[0],depth+1)+",null,null,0,null)"};if name=="Map"&&len(args)==2{e.terminalExtra(selection,t);return "new S(\"map\","+e.shape(args[1],depth+1)+",null,null,0,null)"};key:=jsonTypeKey(t,&e.nodes);if selection.Key==""{selection.Key=key};if name=="Result"&&len(args)==2{e.terminalExtra(selection,t);return e.union(key,"Result",[]jsonVariantShape{{name:"Err",arguments:args[:1]},{name:"Ok",arguments:args[1:]}},depth)};decl,ok:=e.decls[name];if !ok{unsupported(t.At,"unknown generic JSON field")};next,err:=mergeJSONExtraSelection(selection,name,e.extraModes);if err!=nil{unsupported(t.At,err.Error())};if len(args)!=len(decl.Parameters){unsupported(t.At,"generic JSON type argument count mismatch")};bindings:=map[string]*language.Type{};for i,param:=range decl.Parameters{bindings[param]=args[i]};if decl.Body==nil{e.terminalExtra(next,t);return e.unionDecl(key,name,decl.Variants,bindings,depth)};closed,subErr:=language.SubstituteTypeBounded(decl.Body,bindings,language.DefaultSubstitutionNodes);if subErr!=nil{unsupported(t.At,subErr.Error())};return e.shapeWithExtra(closed,depth+1,next)
     case _:unsupported(t.At,"unsupported JSON field shape")
     };return ""
 }
-func jsonTypeKey(t *language.Type,depth int)(key string){if depth>512{unsupported(t.At,"JSON type key depth limit exceeded")};t=unrefined(t);match t.Form{case language.NamedType(name):return name;case language.ListType(element):return "["+jsonTypeKey(element,depth+1)+"]";case language.AppliedType(fn,arg):return jsonTypeKey(fn,depth+1)+"<"+jsonTypeKey(arg,depth+1)+">";case _:key="@"+fmt.Sprint(t.At.Start.Offset)};return key}
+const jsonReadableTypeKeyLimit=4096
+func jsonReadableTypeKey(t *language.Type,depth int,nodes *int)(string,bool){if t==nil{unsupported(language.Span{},"JSON type key encountered an absent type")};if !consumeJSONTypeKeyWork(nodes,1)||depth>512{unsupported(t.At,"JSON type key exceeded its structural bound")};match t.Form{
+    case language.RefinedType(base,_):return jsonReadableTypeKey(base,depth+1,nodes)
+    case language.NamedType(name):if !consumeJSONTypeKeyWork(nodes,jsonTypeKeyTextWork(name)){unsupported(t.At,"JSON type key text exceeded its structural bound")};if len(name)>jsonReadableTypeKeyLimit{return "",false};return name,true
+    case language.ListType(element):item,ok:=jsonReadableTypeKey(element,depth+1,nodes);if !ok||len(item)>jsonReadableTypeKeyLimit-2{return "",false};return "["+item+"]",true
+    case language.AppliedType(fn,arg):left,okLeft:=jsonReadableTypeKey(fn,depth+1,nodes);right,okRight:=jsonReadableTypeKey(arg,depth+1,nodes);if !okLeft||!okRight||len(left)>jsonReadableTypeKeyLimit-len(right)-2{return "",false};return left+"<"+right+">",true
+    case _:return "",false
+    }
+}
+func jsonTypeKey(t *language.Type,nodes *int)string{if key,ok:=jsonReadableTypeKey(t,0,nodes);ok{return key};return "@shape:"+jsonTypeFingerprint(t,nodes)}
 
 const jsonSerdeJava = `
 public final class %s extends tools.jackson.databind.module.SimpleModule {

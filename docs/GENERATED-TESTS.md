@@ -95,13 +95,32 @@ root. Request, response and context checks use the generated native-first
 facade and real validated-request tokens. Every request/response binding gets
 valid properties; discovered clauses get targeted-invalid properties. Candidate
 exhaustion and indeterminate validation fail the suite rather than skip cases.
-Valid embedded examples execute explicitly, with response examples paired with
-a compatible valid request. Rootless Maven assembly includes this launcher in
+Valid, refinement-invalid, indeterminate, and native-invalid examples execute
+explicitly through the real facade at every matching catalog occurrence.
+Response examples search within `AttemptBudget` for a compatible valid request;
+context examples carry their exact request/response pair. Native resource or
+enforcement failures remain fatal and cannot satisfy an expected Refine
+indeterminate outcome. Metadata catalog v1 supports conclusive valid/invalid
+Refine outcomes only; the caller `PropertyExample` API additionally supports
+indeterminate expectations. Rootless Maven assembly includes this launcher in
 the same artifact as the project's other schema families.
 
-The current operation generator rejects invalid/indeterminate examples, replay
-pairs, caller target narrowing, standalone adapter overrides and catalogs with
-no semantic native parts. These are explicit limitations, not omitted checks.
+Operation replays use opaque selectors returned by
+`OpenAPIRequestReplayTarget`, `OpenAPIResponseReplayTarget`, or
+`OpenAPIContextReplayTarget`. Request replays carry one `Data` generator value;
+response and context replays carry the generated request/response pair. Each
+selector, kind, and diagnostic must identify exactly one emitted property;
+unmatched or ambiguous entries reject generation atomically.
+Response-origin invalid clauses use the response selector even when validated
+inside a context; additional context clauses use the context selector. Valid
+pairs use the context selector when bound to a context and the response selector
+otherwise.
+
+The current operation generator rejects caller target narrowing, standalone
+adapter overrides and catalogs with no semantic native parts. The last case
+remains fail-closed because the current response facade does not expose the
+assembled response `Data`; crediting an arbitrary typed candidate for an empty
+transport response would weaken the property claim.
 
 ### Shared generator behavior
 

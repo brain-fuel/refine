@@ -23,8 +23,8 @@ type releaseDocumentationEvidence struct {
 	Reasons  []string                        `json:"reasons"`
 }
 
-func documentationEvidence(baseline, snapshot *releaseSchemaEntry, baselineRoot, snapshotRoot string, catalog releaseCatalog) (*releaseDocumentationEvidence, error) {
-	syntax, err := analysis.CompareContractSyntax(baseline.program, baselineRoot, snapshot.program, snapshotRoot)
+func documentationEvidence(baseline, snapshot *releaseSchemaEntry, catalog releaseCatalog, config projectConfig) (*releaseDocumentationEvidence, error) {
+	syntax, comparable, err := compareReleaseSyntax(baseline, snapshot, config)
 	if err != nil {
 		return nil, err
 	}
@@ -36,8 +36,10 @@ func documentationEvidence(baseline, snapshot *releaseSchemaEntry, baselineRoot,
 		}
 		result.Reasons = append(result.Reasons, reason)
 	}
-	if !syntax.Equal {
-		different("checked language declarations, predicates, functions, diagnostics, budgets, or root changed")
+	if !comparable {
+		different("schema entrypoint target changed between a payload and an operation catalog")
+	} else if !syntax.Equal {
+		different("checked language declarations, predicates, functions, diagnostics, budgets, or selected entrypoints changed")
 	}
 	if baseline.kind != snapshot.kind {
 		different("schema source format changed")
@@ -66,8 +68,8 @@ func documentationEvidence(baseline, snapshot *releaseSchemaEntry, baselineRoot,
 		if string(oldMetadata) != string(nextMetadata) {
 			different("native wire, operation, example, or publication metadata changed")
 		}
-		if old.Format() != next.Format() || old.Version() != next.Version() || old.Root() != next.Root() {
-			different("native format, version, or root selection changed")
+		if old.Format() != next.Format() || old.Version() != next.Version() || old.Target() != next.Target() {
+			different("native format, version, or target selection changed")
 		}
 		if !sameReleaseResources(old.Resources(), next.Resources()) {
 			uncertain("native resource changes require classification; documentation-only native equivalence is not proven")
@@ -167,15 +169,7 @@ func dependencyAffectsContract(baseline, snapshot *releaseSchemaEntry, catalog r
 	if baseline.policyContent != snapshot.policyContent {
 		return true, nil
 	}
-	baselineRoot, err := releaseEntryRoot(baseline, baseline.family, config.Families[baseline.family])
-	if err != nil {
-		return true, err
-	}
-	snapshotRoot, err := releaseEntryRoot(snapshot, snapshot.family, config.Families[snapshot.family])
-	if err != nil {
-		return true, err
-	}
-	evidence, err := documentationEvidence(baseline, snapshot, baselineRoot, snapshotRoot, catalog)
+	evidence, err := documentationEvidence(baseline, snapshot, catalog, config)
 	if err != nil {
 		return true, err
 	}

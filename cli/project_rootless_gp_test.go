@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"goforge.dev/refine/native"
@@ -74,16 +73,11 @@ func TestProjectCLIGeneratesRootlessOpenAPIOperationBundle(t *testing.T) {
 	}
 }
 
-func TestProjectCLIRootlessTargetConfigurationAndReleaseComparisonFailClosed(t *testing.T) {
+func TestProjectCLIRootlessTargetConfiguration(t *testing.T) {
 	for _, config := range []string{`{"families":{"api":{"root":"Fake","formats":["openapi"]}}}`, `{"families":{"api":{}}}`, `{"families":{"api":{"formats":["json-schema"]}}}`} {
 		root := rootlessProjectFixture(t, config, "SNAPSHOT")
 		if _, err := loadProject(root, "refine.project.json", ""); err == nil {
 			t.Fatalf("invalid rootless configuration accepted: %s", config)
 		}
-	}
-	root := rootlessProjectFixture(t, `{"families":{"api":{"formats":["openapi"],"release":{"change":"none"}}}}`, "v1.0.0", "SNAPSHOT")
-	_, err := buildReleaseWorkflow(root, "refine.project.json", []string{"api"})
-	if err == nil || !strings.Contains(err.Error(), "multi-entrypoint release compatibility is unknown") {
-		t.Fatalf("rootless release invented a payload comparison: %v", err)
 	}
 }

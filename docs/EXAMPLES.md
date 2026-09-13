@@ -45,11 +45,17 @@ A generated JSON or Avro adapter executes the assertion through its staged
 normal model/wire boundary. Generation fails if the example requests native
 rejection but no such adapter is configured.
 
-Project generation currently emits one wire property target. Embedded cases
-must target that root, or a target explicitly selected by a compatible library
-caller; a case outside the generated target set rejects generation instead of
-being skipped. `NoCodegen` retains and validates the metadata but intentionally
-emits no executable Java test, so native expectations remain unevaluated.
+Rooted project generation emits the configured wire property target. OpenAPI
+operation generation instead executes each case at every authoritative request,
+response, or context occurrence of its checked target type. Response values are
+paired with a compatible valid request; context values contain the exact
+request/response pair. A case outside the generated target set rejects
+generation instead of being skipped. Metadata catalog v1 retains its one-code
+conclusive valid/invalid contract; library callers may additionally supply an
+indeterminate `PropertyExample`, which must produce an exact indeterminate
+Refine outcome while native resource failures remain fatal. `NoCodegen` retains
+and validates the metadata but intentionally emits no executable Java test, so
+native expectations remain unevaluated.
 
 For `.refine` catalogs, `families.<name>.wire.examples` in
 `refine.project.json` is family-wide and therefore must be valid for every

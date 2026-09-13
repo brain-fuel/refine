@@ -1,0 +1,28 @@
+package cli
+
+import (
+    "fmt"
+
+    "goforge.dev/refine/analysis"
+    "goforge.dev/refine/native"
+    "goforge.dev/refine/validation"
+)
+
+func releaseOperationsEntry(entry *releaseSchemaEntry)bool{return entry!=nil&&entry.nativeProject!=nil&&entry.nativeProject.Kind()==native.OpenAPIOperationsProject}
+
+func releaseOperationContract(entry *releaseSchemaEntry)(analysis.OperationContract,error){
+    if !releaseOperationsEntry(entry){return analysis.OperationContract{},fmt.Errorf("release entry is not an OpenAPI operations project")};catalog,err:=entry.nativeProject.OpenAPIOperationIndex();if err!=nil{return analysis.OperationContract{},err};operations:=make([]analysis.OperationEntrypoint,len(catalog.Operations));for i,item:=range catalog.Operations{operation:=analysis.OperationEntrypoint{OperationID:item.OperationID,Method:item.Method,Path:item.Path,RequestRoot:item.RequestType,Responses:make([]analysis.OperationResponseEntrypoint,len(item.Responses))};for j,response:=range item.Responses{operation.Responses[j]=analysis.OperationResponseEntrypoint{Status:response.Status,ResponseRoot:response.TypeExpression,ContextRoot:response.ContextType}};operations[i]=operation};return analysis.OperationContract{Program:entry.program,Operations:operations},nil
+}
+
+func compareReleaseEntrypoints(baseline,snapshot *releaseSchemaEntry,family string,settings familyConfig)(analysis.Compatibility,string,error){
+    oldOperations,nextOperations:=releaseOperationsEntry(baseline),releaseOperationsEntry(snapshot)
+    if oldOperations!=nextOperations{finding:=analysis.Finding{Outcome:analysis.No,Code:"analysis.entrypoint_kind_changed",Explanation:"The release changed between a single payload target and an OpenAPI operation target; the prior entrypoint surface is absent."};return analysis.Compatibility{Backward:finding,Forward:finding},"entrypoint-surface",nil}
+    if oldOperations{old,err:=releaseOperationContract(baseline);if err!=nil{return analysis.Compatibility{},"",err};next,err:=releaseOperationContract(snapshot);if err!=nil{return analysis.Compatibility{},"",err};compared,err:=analysis.CompareOperations(old,next,validation.Limits{});if err!=nil{return analysis.Compatibility{},"",err};return analysis.Compatibility{Fingerprint:compared.Fingerprint,Backward:compared.Backward,Forward:compared.Forward},"operation-logical",nil}
+    oldRoot,err:=releaseEntryRoot(baseline,family,settings);if err!=nil{return analysis.Compatibility{},"",err};nextRoot,err:=releaseEntryRoot(snapshot,family,settings);if err!=nil{return analysis.Compatibility{},"",err};compared,err:=analysis.Compare(baseline.program,oldRoot,snapshot.program,nextRoot,validation.Limits{});return compared,"logical",err
+}
+
+func compareReleaseSyntax(baseline,snapshot *releaseSchemaEntry,config projectConfig)(analysis.ContractSyntaxEvidence,bool,error){
+    oldOperations,nextOperations:=releaseOperationsEntry(baseline),releaseOperationsEntry(snapshot);if oldOperations!=nextOperations{return analysis.ContractSyntaxEvidence{},false,nil}
+    if oldOperations{old,err:=releaseOperationContract(baseline);if err!=nil{return analysis.ContractSyntaxEvidence{},false,err};next,err:=releaseOperationContract(snapshot);if err!=nil{return analysis.ContractSyntaxEvidence{},false,err};evidence,err:=analysis.CompareOperationContractSyntax(old,next);return evidence,true,err}
+    settings:=config.Families[baseline.family];oldRoot,err:=releaseEntryRoot(baseline,baseline.family,settings);if err!=nil{return analysis.ContractSyntaxEvidence{},false,err};nextRoot,err:=releaseEntryRoot(snapshot,snapshot.family,settings);if err!=nil{return analysis.ContractSyntaxEvidence{},false,err};evidence,err:=analysis.CompareContractSyntax(baseline.program,oldRoot,snapshot.program,nextRoot);return evidence,true,err
+}

@@ -1,10 +1,9 @@
 # Native constraint provenance
 
-The `provenance` package implements the first exact native-constraint projection
-and recovery units. It does **not** yet implement complete native-schema
-ingestion, ordinary/Refined export, or native schema/payload validation. Those
-remain required release work; the original document is not replaced by these
-units.
+The `provenance` package implements exact native-constraint projection and
+recovery units, not complete native-schema validation. The separate `native`
+package supplies ingestion, ordinary/Refined export and schema/payload validation;
+see [NATIVE.md](NATIVE.md). The original document is not replaced by these units.
 
 ## Current API
 
@@ -95,9 +94,9 @@ breaks `multipleOf` recovery, while unrelated minimum/maximum rules stay intact.
 
 `RecoverNative` refuses to return a native token for a changed/removed unit, while
 still recovering untouched units. It does not guess an inverse for arbitrary
-new predicates. A future ordinary exporter must separately lower representable
-edits and explain unrepresentable refinements; this package never silently
-exports the old constraint in place of an edited rule.
+new predicates. The native project exporter separately lowers supported
+representable edits and explains unrepresentable refinements; this package never
+silently exports the old constraint in place of an edited rule.
 
 ## Evidence and remaining work
 
@@ -107,10 +106,12 @@ duplicate-key rejection, immutable/concurrent reuse, and fuzzed projection
 round trips. A pinned independent Draft 2020-12 validator verifies 1,000 generated
 numeric-bound cases against the executable refinement clauses.
 
-Remaining work includes full schema structure validation, additional keyword
-adapters, inferred/intersected type domains, references and bundling, scalar-
-Unicode-independent subschema-key provenance, complete editable type projection,
-single-file assembly, native output and English generation, OpenAPI/Avro adapters,
-and release/version baseline integration. Custom/older `$schema` dialects are
+Remaining provenance work includes additional keyword adapters,
+inferred/intersected type domains, scalar-Unicode-independent subschema-key
+provenance and OpenAPI/Avro per-constraint adapters. The native package already
+provides explicit-resource reference resolution, bundles, editable projection,
+native output and English generation within its documented boundaries; their
+existence does not broaden this package's numeric correspondence guarantee.
+Custom/older `$schema` dialects are
 explicitly unsupported in this discovery entry point; they are not silently
 interpreted as Draft 2020-12. No full native-ingestion gate is checked off here.

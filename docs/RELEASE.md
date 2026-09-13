@@ -247,6 +247,30 @@ proofs do not yet exist. Those dimensions are displayed separately and are
 never presented as proven by `compare-payload`; an enforced unknown needs the
 exact content-bound override shown above.
 
+An operations-only OpenAPI bundle is compared as its complete checked operation
+catalog; the workflow never invents a payload root. Backward compatibility
+means the candidate server retains every baseline method/path operation and
+accepts baseline requests, while each response the candidate can emit remains
+acceptable to a baseline consumer. Forward compatibility reverses those roles:
+the baseline server must accept candidate requests and its responses must be
+acceptable to candidate consumers. Thus widening a request is backward-safe in
+the supported logical fragment, while widening a response can break backward
+consumer compatibility. Adding an operation can break the optional forward
+guarantee; removing one breaks backward compatibility. Response matching uses
+the OpenAPI selection order exact status, status class such as `2XX`, then
+`default`, rather than comparing selector text literally.
+
+Request/response predicates use the same conservative inclusion analyzer as
+payload contracts. Changed request-response context predicates remain unknown
+unless the complete checked relation is identical; separate marginal request
+and response facts are not presented as a relational proof. Native resource,
+wire and generated-Java compatibility also remain explicit unknown dimensions,
+so an otherwise nonbreaking operation comparison still needs the existing
+exact bundle-bound override when enforced. Initial operation releases and
+byte-identical snapshots follow the ordinary initial/no-pending rules without
+an override. Method/path, operation and response-surface findings are bound to
+the exact native bundle and policy identities shown in the report.
+
 Native bundles may contain a complete private Refine import graph. If an
 embedded source resolves to another versioned family file in the release
 catalog, however, the workflow currently cannot prove that relationship as an

@@ -4,6 +4,7 @@
 package java
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +13,64 @@ import (
 
 	"goforge.dev/refine/language"
 	"goforge.dev/refine/native"
+	"goforge.dev/refine/validation"
 	"goforge.dev/refine/value"
 )
+
+func captureOperationReplay(t *testing.T, compiler, vm, classpath string, facade, properties []File, method string) string {
+	t.Helper()
+	root := t.TempDir()
+	sources := []string{}
+	for _, file := range append(append([]File{}, facade...), properties...) {
+		source := file.Source
+		if strings.HasSuffix(file.Path, "ContractGeneratedProperties.java") {
+			needle := ".withIterationCount(CASES).silent().forAll(generator,property)"
+			source = strings.Replace(source, needle, ".withIterationCount(CASES).silent().forAll(generator,value->false)", 1)
+			main := strings.LastIndex(source, "    public static void main(String[] args){")
+			if main < 0 {
+				t.Fatal("generated operation property main absent")
+			}
+			source = source[:main] + "    public static void main(String[] args){" + method + "();}\n}\n"
+		}
+		target := filepath.Join(root, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(source), 0644); err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, target)
+	}
+	harness := filepath.Join(root, "Capture.java")
+	capture := `public final class Capture {public static void main(String[] args){try{example.openapiproperties.ContractGeneratedProperties.main(args);throw new AssertionError("capture property passed");}catch(org.jetbrains.jetCheck.PropertyFalsified failure){var raw=failure.getFailure().getMinimalCounterexample().getSerializedData();System.out.println("REPLAY:"+java.util.Base64.getEncoder().encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}}}`
+	if err := os.WriteFile(harness, []byte(capture), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sources = append(sources, harness)
+	classes := filepath.Join(root, "classes")
+	args := append([]string{"--release", "25", "-encoding", "UTF-8", "-Xlint:all", "-Werror", "-cp", classpath, "-d", classes}, sources...)
+	if output, err := exec.Command(compiler, args...).CombinedOutput(); err != nil {
+		t.Fatalf("replay capture javac: %v\n%s", err, output)
+	}
+	output, err := exec.Command(vm, "-Xss256k", "-cp", classes+string(os.PathListSeparator)+classpath, "Capture").CombinedOutput()
+	if err != nil {
+		t.Fatalf("replay capture runtime: %v\n%s", err, output)
+	}
+	marker := []byte("REPLAY:")
+	index := strings.LastIndex(string(output), string(marker))
+	if index < 0 {
+		t.Fatalf("replay capture output missing marker: %s", output)
+	}
+	encoded := strings.TrimSpace(string(output[index+len(marker):]))
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("replay capture decode: %v", err)
+	}
+	if len(decoded) == 0 {
+		t.Fatal("empty replay capture")
+	}
+	return string(decoded)
+}
 
 const operationPropertiesDocument = `{
  "openapi":"3.1.2","info":{"title":"properties","version":"1"},
@@ -44,7 +101,7 @@ func operationPropertyProject(t *testing.T) *native.Project {
 	if response201 == "" || response4xx == "" {
 		t.Fatal("response bindings absent")
 	}
-	source := "responseOK :: Maybe String -> Bool\nresponseOK Nothing = True\nresponseOK (Just text) = length text < 10\nerrorOK :: Maybe Int -> Bool\nerrorOK Nothing = True\nerrorOK (Just number) = number >= -10\ncompatible :: " + operation.RequestType + " -> " + response201 + " -> Bool\ncompatible request response = case response.body of { Nothing -> True; (Just text) -> request.body.amount < length text }\n" + "type " + operation.RequestType + " = {parameters :: {id :: Int, tag :: String}, headers :: {}, body :: {amount :: Int}} where it.body.amount < 20 @code \"request.amount.max\"\n" + "type " + response201 + " = {headers :: {}, body :: Maybe String} where responseOK it.body @code \"response.body.max\"\n" + "type " + response4xx + " = {headers :: {}, body :: Maybe Int} where errorOK it.body @code \"response.error.min\"\n" + "type RequestResponseContext = {request :: " + operation.RequestType + ", response :: " + response201 + "} where compatible it.request it.response @code \"context.compatible\"\n"
+	source := "responseOK :: Maybe String -> Bool\nresponseOK Nothing = True\nresponseOK (Just text) = if text == \"éééé\" then 1 / 0 > 0.0 else length text < 10\nerrorOK :: Maybe Int -> Bool\nerrorOK Nothing = True\nerrorOK (Just number) = number >= -10\ncompatible :: " + operation.RequestType + " -> " + response201 + " -> Bool\ncompatible request response = case response.body of { Nothing -> True; (Just text) -> request.body.amount < length text }\n" + "type " + operation.RequestType + " = {parameters :: {id :: Int, tag :: String}, headers :: {}, body :: {amount :: Int}} where it.body.amount < 20 @code \"request.amount.max\" where (if it.parameters.tag == \"éé\" then 1 / 0 > 0.0 else it.body.amount < 10) @code \"request.stable\"\n" + "type " + response201 + " = {headers :: {}, body :: Maybe String} where responseOK it.body @code \"response.body.max\"\n" + "type " + response4xx + " = {headers :: {}, body :: Maybe Int} where errorOK it.body @code \"response.error.min\"\n" + "type RequestResponseContext = {request :: " + operation.RequestType + ", response :: " + response201 + "} where compatible it.request it.response @code \"context.compatible\"\n"
 	project, err = project.WithEditedSource(source)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +116,26 @@ func operationPropertyProject(t *testing.T) *native.Project {
 	if err != nil {
 		t.Fatal(err)
 	}
+	metadata = project.Metadata()
+	metadata.Examples = &native.ExampleCatalog{Version: native.ExampleCatalogVersion, Cases: []native.ExampleCase{{Name: "request-invalid", Target: operation.RequestType, Value: operationExampleText(t, operationRequestData(t, 20)), Expected: native.ExpectedInvalid, DiagnosticCodes: []string{"request.amount.max"}}, {Name: "request-native-invalid", Target: operation.RequestType, Value: operationExampleText(t, operationRequestData(t, 1)), NativeExpected: native.NativeExpectedInvalid}}}
+	project, err = project.WithMetadata(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return project
+}
+
+func operationExampleText(t *testing.T, data value.Data) string {
+	t.Helper()
+	shown, err := language.ShowDataWithoutValidation(data, validation.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := shown.UTF8()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text
 }
 
 func impossibleOperationPropertyProject(t *testing.T) *native.Project {
@@ -80,9 +156,9 @@ func impossibleOperationPropertyProject(t *testing.T) *native.Project {
 	return project
 }
 
-func operationRequestExample(t *testing.T, project *native.Project) PropertyExample {
+func operationRequestDataWithTag(t *testing.T, amount int, rawTag string) value.Data {
 	t.Helper()
-	tag, err := value.TextFromUTF8("abc")
+	tag, err := value.TextFromUTF8(rawTag)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +170,7 @@ func operationRequestExample(t *testing.T, project *native.Project) PropertyExam
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := value.Record([]value.DataField{{Name: "amount", Value: value.OfNumber(value.Integer(3))}})
+	body, err := value.Record([]value.DataField{{Name: "amount", Value: value.OfNumber(value.Integer(int64(amount)))}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +178,16 @@ func operationRequestExample(t *testing.T, project *native.Project) PropertyExam
 	if err != nil {
 		t.Fatal(err)
 	}
-	return PropertyExample{Target: project.Metadata().OpenAPI.Operations[0].RequestType, Value: request, Expected: ExampleValid, NativeExpected: ExampleNativeValid}
+	return request
+}
+
+func operationRequestData(t *testing.T, amount int) value.Data {
+	return operationRequestDataWithTag(t, amount, "abc")
+}
+
+func operationRequestExample(t *testing.T, project *native.Project) PropertyExample {
+	t.Helper()
+	return PropertyExample{Target: project.Metadata().OpenAPI.Operations[0].RequestType, Value: operationRequestData(t, 3), Expected: ExampleValid, NativeExpected: ExampleNativeValid}
 }
 
 func operationResponseExample(t *testing.T, project *native.Project) PropertyExample {
@@ -135,6 +220,64 @@ func operationResponseExample(t *testing.T, project *native.Project) PropertyExa
 	return PropertyExample{Target: target, Value: response, Expected: ExampleValid, NativeExpected: ExampleNativeValid}
 }
 
+func operationResponseData(t *testing.T, text string) value.Data {
+	t.Helper()
+	valueText, err := value.TextFromUTF8(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := value.Variant("Just", []value.Data{value.OfText(valueText)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, err := value.Record(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := value.Record([]value.DataField{{Name: "headers", Value: headers}, {Name: "body", Value: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func operationErrorData(t *testing.T, number int) value.Data {
+	t.Helper()
+	body, err := value.Variant("Just", []value.Data{value.OfNumber(value.Integer(int64(number)))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, err := value.Record(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := value.Record([]value.DataField{{Name: "headers", Value: headers}, {Name: "body", Value: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func operationContextData(t *testing.T, request, response value.Data) value.Data {
+	t.Helper()
+	context, err := value.Record([]value.DataField{{Name: "request", Value: request}, {Name: "response", Value: response}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return context
+}
+
+func operationResponseTarget(t *testing.T, project *native.Project, status string) string {
+	t.Helper()
+	for _, response := range project.Metadata().OpenAPI.Operations[0].Responses {
+		if response.Status == status {
+			return response.ResponseType
+		}
+	}
+	t.Fatalf("response %s target absent", status)
+	return ""
+}
+
 // One javac/JVM anchor covers the complete catalog, native-first request and
 // response filtering, a real request token for context, and hard exhaustion.
 func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
@@ -154,7 +297,12 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	properties, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{CaseCount: 8, AttemptBudget: 10000, Seed: 733, Examples: []PropertyExample{operationRequestExample(t, project), operationResponseExample(t, project)}})
+	requestTarget := project.Metadata().OpenAPI.Operations[0].RequestType
+	responseTarget := operationResponseTarget(t, project, "201")
+	errorTarget := operationResponseTarget(t, project, "4XX")
+	examples := []PropertyExample{operationRequestExample(t, project), operationResponseExample(t, project), {Target: requestTarget, Value: operationRequestData(t, 14), Expected: ExampleInvalid, DiagnosticCodes: []string{"request.stable"}}, {Target: requestTarget, Value: operationRequestDataWithTag(t, 3, "éé"), Expected: ExampleIndeterminate, DiagnosticCodes: []string{"request.stable"}}, {Target: responseTarget, Value: operationResponseData(t, "abcdefghij"), Expected: ExampleInvalid, DiagnosticCodes: []string{"response.body.max"}}, {Target: responseTarget, Value: operationResponseData(t, "éééé"), Expected: ExampleIndeterminate, DiagnosticCodes: []string{"response.body.max"}}, {Target: errorTarget, Value: operationErrorData(t, 10), Expected: ExampleValid, NativeExpected: ExampleNativeInvalid}, {Target: "RequestResponseContext", Value: operationContextData(t, operationRequestData(t, 5), operationResponseData(t, "xx")), Expected: ExampleInvalid, DiagnosticCodes: []string{"context.compatible"}}}
+	propertyOptions := PropertyTestOptions{CaseCount: 8, AttemptBudget: 10000, Seed: 733, Examples: examples}
+	properties, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", propertyOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,10 +310,17 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 		t.Fatalf("unexpected property output: %+v", properties)
 	}
 	text := properties[0].Source
-	for _, required := range []string{"request createItem", "response createItem 4XX", "context createItem 201", "invalid request createItem request.amount.max", "invalid response createItem 4XX response.error.min", "invalid response createItem 201 response.body.max", "invalid context createItem 201 context.compatible", "validateRequest", "validateResponse", "NativeValidationException", "property generation exhausted", "caller example 0 request boundary", "caller example 1 compatible request context"} {
+	for _, required := range []string{"request createItem", "response createItem 4XX", "context createItem 201", "invalid request createItem request.amount.max", "invalid response createItem 4XX response.error.min", "invalid response createItem 201 response.body.max", "invalid context createItem 201 context.compatible", "validateRequest", "validateResponse", "NativeValidationException", "property generation exhausted", "embedded example request-invalid request boundary", "embedded example request-native-invalid request boundary", "caller example 2 request boundary", "caller example 4 compatible request context", "caller example 7 context boundary", "matchesOutcome", "contextField"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("operation property source lacks %q", required)
 		}
+	}
+	requestReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "requestProperty0")
+	pairReplay := captureOperationReplay(t, compiler, vm, classpath, facade, properties, "responseProperty0")
+	propertyOptions.Replays = []PropertyReplay{{Target: OpenAPIRequestReplayTarget("createItem"), Kind: ReplayValid, SerializedData: requestReplay}, {Target: OpenAPIContextReplayTarget("createItem", "201"), Kind: ReplayValid, SerializedData: pairReplay}}
+	properties, err = GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", propertyOptions)
+	if err != nil {
+		t.Fatal(err)
 	}
 	all = append(all, facade...)
 	all = append(all, properties...)
@@ -183,8 +338,26 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	if files, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{Targets: []PropertyTarget{{Name: "anything"}}}); err == nil || files != nil {
 		t.Fatalf("target narrowing returned partial output: %v %#v", err, files)
 	}
+	replays := []PropertyReplay{{Target: OpenAPIRequestReplayTarget("createItem"), Kind: ReplayValid, SerializedData: "request-replay"}, {Target: OpenAPIResponseReplayTarget("createItem", "4XX"), Kind: ReplayInvalid, DiagnosticCode: "response.error.min", SerializedData: "response-pair-replay"}, {Target: OpenAPIContextReplayTarget("createItem", "201"), Kind: ReplayInvalid, DiagnosticCode: "context.compatible", SerializedData: "context-pair-replay"}}
+	replayed, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{CaseCount: 1, AttemptBudget: 3, Replays: replays})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{".rechecking(replay)", "request-replay", "response-pair-replay", "context-pair-replay"} {
+		if !strings.Contains(replayed[0].Source, fragment) {
+			t.Fatalf("operation replay source lacks %q", fragment)
+		}
+	}
 	if files, err := GenerateProjectOpenAPIPropertyTests(project, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{Replays: []PropertyReplay{{Target: "x", Kind: ReplayValid, SerializedData: "x"}}}); err == nil || files != nil {
-		t.Fatalf("unsupported operation replay returned partial output: %v %#v", err, files)
+		t.Fatalf("unmatched operation replay returned partial output: %v %#v", err, files)
+	}
+	duplicateSource := strings.Replace(project.EditableSource(), `@code "request.stable"`, `@code "request.stable" where it.body.amount /= 15 @code "request.stable"`, 1)
+	duplicate, err := project.WithEditedSource(duplicateSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, err := GenerateProjectOpenAPIPropertyTests(duplicate, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{}); err == nil || files != nil {
+		t.Fatalf("ambiguous duplicate diagnostic property returned partial output: %v %#v", err, files)
 	}
 	root := t.TempDir()
 	sources := []string{}

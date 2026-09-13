@@ -230,11 +230,15 @@ candidates are filtered against the independent native oracle before testing
 the Refine predicates; resource/enforcement failures propagate instead of being
 mistaken for ordinary rejected samples.
 
-Release planning for operations-only bundles remains deliberately unsupported in
-this slice. The CLI reports that multi-entrypoint compatibility is unknown and
-stops before invoking a single-root comparison. There is no override route for
-that guard yet; project generation support does not imply release-promotion
-support.
+Release planning treats an operations-only bundle as its checked operation
+catalog and never invents a payload root. Backward checks retain old operations,
+accept old requests, and ensure new server responses remain acceptable to old
+consumers; forward checks reverse those roles. Exact status, status-class and
+`default` response selectors use OpenAPI precedence. Changed relational context
+predicates, native wire resources and generated Java ABI remain conservative
+unknowns and use the same exact content-bound override policy as payload
+families. Promotion still copies the checked bundle verbatim and retains its
+editable snapshot.
 
 `refine project maven` emits an opt-in POM fragment; it does not edit a POM.
 The fragment invokes the real `project generate` command during `generate-sources`,

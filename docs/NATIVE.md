@@ -174,7 +174,8 @@ and `Timestamp` without an explicit offset/spelling wire policy. Other explicit
 gaps include tagged unions without declared discriminator metadata, tagged
 discriminator objects in Avro, open generic roots, OpenAPI operations
 authored from standalone language source, Avro/OpenAPI native-constraint
-provenance, OpenAPI 3.0 lowering, and Avro JSON encoding.
+provenance and OpenAPI 3.0 lowering. Native Avro JSON validation and decoding
+are implemented separately; see [AVRO-JSON.md](AVRO-JSON.md).
 The package reports these as errors and does not narrow, round, add discriminators,
 turn absence into null/default, or strip constraints silently.
 
@@ -277,8 +278,9 @@ carrier. `AvroBytesDecimal` metadata has a fixed schema scale and therefore
 cannot truthfully represent per-value-scale `big-decimal`; editing that carrier
 to `Real` fails `native.decode` instead of silently rounding or discarding the
 scale. A dedicated exact-rational wire policy remains future work.
-Generated Java Avro serde still rejects `big-decimal` until it implements the
-same nested representation; native Go acceptance does not broaden that gate.
+Generated Java Avro serde enforces the same nested representation and preserves
+the physical bytes on binary and Avro-JSON round trips. Semantic `Real` coercion
+remains unsupported; see [SERDE-AVRO.md](SERDE-AVRO.md).
 Native schema ingestion also audits every field default from the exact source
 node, closing numeric truncation, overflow, and obsolete branch-zero union
 default behavior in the ecosystem parser. Hamba receives a private structural
@@ -435,9 +437,12 @@ encodings: callers must supply semantic JSON values. Non-default parameter
 serialization styles, parameter `content`, ambiguous media types, and non-JSON
 body media are rejected during project compilation rather than guessed.
 
-Until the composed Java OpenAPI boundary consumes this immutable index, project
-Java generation fails with `native.enforcement` when Native bindings are
-configured. It does not silently emit the Refine-only facade.
+`java.GenerateProjectOpenAPIContext` consumes this immutable index and composes
+native validation, structural JSON decoding, and request/response/context
+refinements. Project generation selects this facade for checked native bindings,
+including operations-only projects; it does not substitute the Refine-only
+facade. See [OPENAPI-CONTEXT.md](OPENAPI-CONTEXT.md) and
+[GENERATED-TESTS.md](GENERATED-TESTS.md) for the execution and test boundaries.
 
 Generated language-only validators report `GeneratedEnforcement().Supported ==
 false`. `java.GenerateProjectJSONSerde` is the narrower composed path. It emits
@@ -453,8 +458,11 @@ native-sidecar claim.
 If a reachable native Schema Object uses `pattern` or `patternProperties`, the
 validator conditionally emits a GraalJS Community 25.0.1 adapter configured for
 ECMA-262 2020 Unicode regular expressions. Native ingestion's regexp2 syntax
-oracle still rejects some valid ECMA-262 Unicode-property spellings before Java
-generation; the Graal adapter does not erase that documented native limitation.
+oracle is not equivalent: it rejects valid `Script=Greek` property escapes and
+accepts some non-ECMA forms, including atomic groups and lone script names such
+as `\p{Katakana}`. Thus a schema accepted by Go ingestion can still fail Java
+generation or runtime initialization. The Graal adapter does not erase this
+documented conformance gap; see [RELEASE-READINESS.md](RELEASE-READINESS.md).
 Non-regex validators contain no Graal class
 reference and retain their smaller runtime closure. A regex validator exposes
 separate tighten-only `RegexLimits` for pattern and subject UTF-16 units,

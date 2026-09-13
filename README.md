@@ -6,6 +6,8 @@ JSON Schema, with Java 25 code generation and validated serde.
 **Under development; not ready for release.** [SPEC.md](SPEC.md) is the agreed
 product contract, not a claim that every capability exists. The implementation
 and release evidence is tracked in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+The current source audit and unfinished release work are summarized in
+[docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
 ## Development
 
@@ -21,7 +23,7 @@ the actual pinned release.
 go mod download
 go generate ./...
 go tool goplus gen --check ./...
-go test -race ./...
+go test -race -timeout=20m ./...
 go vet ./...
 ```
 
