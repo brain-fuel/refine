@@ -67,11 +67,37 @@ func generateProjectNativeJSONValidatorWithBaseResources(project *native.Project
 		return nil, &GenerationError{Message: err.Error()}
 	}
 	resources := append([]native.Resource(nil), base...)
-	if len(resources) > 128 {
-		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources and canonical aliases"}
-	}
+	additional = append([]native.Resource(nil), additional...)
 	if len(additional) > 1 {
 		return nil, &GenerationError{Message: "generated native JSON validation supports at most one trusted generated resource"}
+	}
+	if project.Format() == native.OpenAPI && !strings.HasPrefix(project.Version(), "3.0.") {
+		view, viewErr := native.NewOpenAPIValidationView(resources, project.EntryResource())
+		if viewErr != nil {
+			return nil, &GenerationError{Message: "native OpenAPI validation view failed: " + viewErr.Error()}
+		}
+		resources = view.Resources()
+		trustedSelector := false
+		for i, resource := range additional {
+			if resource.URI == selector.Resource {
+				trustedSelector = true
+			}
+			rewritten, rewriteErr := view.RewriteGeneratedResource(resource)
+			if rewriteErr != nil {
+				return nil, &GenerationError{Message: "trusted generated OpenAPI wrapper failed: " + rewriteErr.Error()}
+			}
+			additional[i] = rewritten
+		}
+		if !trustedSelector {
+			mapped, mapErr := view.Selector(selector)
+			if mapErr != nil {
+				return nil, &GenerationError{Message: "native OpenAPI validation selector failed: " + mapErr.Error()}
+			}
+			selector = mapped
+		}
+	}
+	if len(resources) > 128 {
+		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources and canonical aliases"}
 	}
 	seenResources := map[string]bool{}
 	for _, resource := range resources {

@@ -1,0 +1,49 @@
+package native
+
+import (
+    "crypto/sha256"
+    "fmt"
+    "strings"
+
+    "goforge.dev/refine/schemajson"
+)
+
+// Strict operation derivation shares the JSON resource projector but retains
+// its established requirement for a statically inferable structural domain.
+// An explicit checked operation module remains the escape hatch; a carrier is
+// not silently substituted for an existing automatic-operation failure.
+func (p *jsonResourceProjector)checkStructure(current jsonProjectionNode)error{
+    if !p.strictStructure{return nil}
+    failure:=func(message string)error{return &Error{Code:"native.projection",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer,Message:message+"; provide explicit checked OpenAPI operation metadata"}}
+    if schemajson.KindName(current.node.Kind())=="boolean"{return failure("Boolean schemas have no inferred operation structure")}
+    for _,keyword:=range []string{"allOf","anyOf","oneOf","if","then","else","dependentSchemas","$dynamicRef"}{if _,ok:=current.node.Lookup(keyword);ok{return failure("automatic operation type derivation cannot infer structure through "+keyword)}}
+    if unevaluated,ok:=current.node.Lookup("unevaluatedProperties");ok&&schemajson.KindName(unevaluated.Kind())=="object"{return failure("schema-valued unevaluatedProperties depends on applicator evaluation")}
+    if _,ref:=current.node.Lookup("$ref");ref{for _,keyword:=range []string{"type","properties","required","items","prefixItems","additionalProperties","patternProperties","nullable"}{if _,sibling:=current.node.Lookup(keyword);sibling{return failure("automatic operation type derivation cannot merge a structural $ref sibling")}}}
+    return nil
+}
+func (p *jsonResourceProjector)projectionCarrier(current jsonProjectionNode)(string,bool,error){if p.strictStructure{return "",false,nil};return p.carrier(current)}
+func (p *jsonResourceProjector)mapFallback(current jsonProjectionNode,message string)(string,bool,error){if !p.strictStructure{return "Map String JSON",true,nil};return "",false,&Error{Code:"native.projection",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer,Message:message+"; provide an explicit checked operation type"}}
+
+func newOpenAPICatalogProjector(catalog *jsonProjectionCatalog,selector ResourceSelector,strict bool)*jsonResourceProjector{return &jsonResourceProjector{catalog:catalog,selector:selector,names:map[string]string{},states:map[string]int{},used:map[string]bool{},strictStructure:strict}}
+
+// Rooted ingestion and automatic operation derivation use the same catalog
+// as annotation composition and native/generated validation.
+func projectOpenAPICatalogRoot(catalog *jsonProjectionCatalog,selector ResourceSelector)(string,error){
+    target,err:=catalog.at(selector);if err!=nil{return "",openAPIProjectionCatalogError(selector.Pointer,err)}
+    p:=newOpenAPICatalogProjector(catalog,selector,false);p.used[selector.TypeName]=true
+    if document,ok:=catalog.documents[selector.Resource];ok{if definitions,err:=document.At("/components/schemas");err==nil{for _,member:=range definitions.Members(){raw,_:=member.Key.UTF8();key:=jsonProjectionKey(selector.Resource,"/components/schemas/"+escapePointer(raw));if _,known:=catalog.locations[key];!known{continue};name:=safeTypeName(raw);if p.used[name]{sum:=sha256.Sum256([]byte(raw));name=fmt.Sprintf("%s_%x",name,sum[:4])};p.used[name]=true;p.names[key]=name}}}
+    expression,err:=p.jsonType(target);if err!=nil{return "",openAPIProjectionCatalogError(selector.Pointer,err)};if err:=p.addDeclaration("type "+selector.TypeName+" = "+expression);err!=nil{return "",err};return strings.Join(p.declarations,"\n\n")+"\n",nil
+}
+
+func projectOpenAPICatalogOperation(catalog *jsonProjectionCatalog,start openAPINode,nameParts []string,used map[string]bool)(string,[]string,error){
+    selector:=ResourceSelector{Resource:start.resource,Pointer:start.pointer};target,err:=catalog.at(selector);if err!=nil{return "",nil,openAPIProjectionCatalogError(start.pointer,err)}
+    p:=newOpenAPICatalogProjector(catalog,selector,true);occurrence:=strings.Join(nameParts,"\x00")
+    p.nameForNode=func(target jsonProjectionNode)string{label:=target.pointer;if slash:=strings.LastIndexByte(label,'/');slash>=0{label=label[slash+1:]};label=strings.ReplaceAll(strings.ReplaceAll(label,"~1","/"),"~0","~");parts:=append(append([]string(nil),nameParts...),label);return derivedOpenAPIName(occurrence+"\x00"+jsonProjectionPhysicalIdentity(target.resource,target.pointer),parts...)}
+    // Preserve existing names for local component/$defs references; aliases
+    // and external references get occurrence-scoped physical identities.
+    if document,ok:=catalog.documents[start.resource];ok{for _,pointer:=range []string{"/components/schemas","/$defs"}{definitions,err:=document.At(pointer);if err!=nil{continue};for _,member:=range definitions.Members(){raw,_:=member.Key.UTF8();path:=pointer+"/"+escapePointer(raw);key:=jsonProjectionKey(start.resource,path);if _,known:=catalog.locations[key];!known{continue};parts:=append(append([]string(nil),nameParts...),raw);name:=derivedOpenAPIName(occurrence+"\x00"+"#"+path,parts...);p.names[key]=name;p.used[name]=true}}}
+    expression,err:=p.jsonType(target);if err!=nil{return "",nil,openAPIProjectionCatalogError(start.pointer,err)}
+    declarations:=append([]string(nil),p.declarations...);pending:=map[string]bool{}
+    for _,declaration:=range declarations{name:=derivedDeclarationName(declaration);if name==""||used[name]||pending[name]{return "",nil,&Error{Code:"native.projection",Format:OpenAPI,Pointer:start.resource+"#"+start.pointer,Message:"derived declaration name collides with checked source"}};pending[name]=true}
+    for name:=range pending{used[name]=true};return expression,declarations,nil
+}

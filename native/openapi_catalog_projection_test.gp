@@ -1,0 +1,39 @@
+package native
+
+import (
+    "reflect"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+)
+
+func catalogProjectionFixture(t *testing.T,schemas string)(*jsonProjectionCatalog,openAPINode){
+    t.Helper();uri:="https://example.test/api.json";source:=`{"openapi":"3.1.2","info":{"title":"Projection","version":"1"},"paths":{},"components":{"schemas":{`+schemas+`}}}`;catalog,err:=newOpenAPIProjectionCatalog([]Resource{{URI:uri,Source:source}},uri);if err!=nil{t.Fatal(err)};target,err:=catalog.at(ResourceSelector{Resource:uri,Pointer:"/components/schemas/Root"});if err!=nil{t.Fatal(err)};return catalog,openAPINode{resource:uri,pointer:target.pointer,node:target.node}
+}
+
+func TestOpenAPICatalogProjectionPreservesLocalDomainNames(t *testing.T){
+    catalog,start:=catalogProjectionFixture(t,`"Root":{"$ref":"#/components/schemas/Node"},"Node":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"next":{"$ref":"#/components/schemas/Node"}}}`)
+    selector:=ResourceSelector{Resource:start.resource,Pointer:start.pointer,TypeName:"Payload"};source,err:=projectOpenAPICatalogRoot(catalog,selector);if err!=nil{t.Fatal(err)};legacy,err:=projectJSON(catalog.documents[start.resource],selector,true);if err!=nil{t.Fatal(err)};if source!=legacy{t.Fatalf("local rooted names changed:\n%s\nlegacy:\n%s",source,legacy)};if _,err:=language.Compile(source);err!=nil{t.Fatal(err)}
+    parts:=[]string{"create","request","body","application/json"};used:=map[string]bool{};expression,declarations,err:=projectOpenAPICatalogOperation(catalog,start,parts,used);if err!=nil{t.Fatal(err)}
+    oldExpression,oldDeclarations,err:=deriveOpenAPISchemaType(start,catalog.documents,parts,map[string]bool{},&derivedOpenAPIAnnotationContext{used:map[string]bool{},sources:map[string]bool{}},"");if err!=nil{t.Fatal(err)};if expression!=oldExpression||!reflect.DeepEqual(declarations,oldDeclarations){t.Fatalf("local operation names changed:\n%v %s\nlegacy:\n%v %s",declarations,expression,oldDeclarations,oldExpression)}
+    module:=strings.Join(declarations,"\n")+"\ntype Payload = "+expression+"\n";if _,err:=language.Compile(module);err!=nil{t.Fatal(err)};before:=len(used);if _,_,err:=projectOpenAPICatalogOperation(catalog,start,parts,used);err==nil||len(used)!=before{t.Fatal("name collision was accepted or partially reserved")}
+}
+
+func TestOpenAPICatalogProjectionUsesExternalScopesAndOccurrences(t *testing.T){
+    uri:="https://example.test/api.json";external:="https://example.test/models.json";api:=`{"openapi":"3.1.2","info":{"title":"External","version":"1"},"paths":{},"components":{"schemas":{"Root":{"type":"object","properties":{"child":{"$ref":"https://schemas.test/node#node"}}}}}}`;model:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://schemas.test/node","$anchor":"node","type":"object","required":["value"],"properties":{"value":{"type":"integer"},"next":{"$ref":"#node"}}}`
+    resources:=[]Resource{{URI:uri,Source:api},{URI:external,Source:model}};catalog,err:=newOpenAPIProjectionCatalog(resources,uri);if err!=nil{t.Fatal(err)};selector:=ResourceSelector{Resource:uri,Pointer:"/components/schemas/Root",TypeName:"Payload"};source,err:=projectOpenAPICatalogRoot(catalog,selector);if err!=nil{t.Fatal(err)};if !strings.Contains(source,"value :: Int")||!strings.Contains(source,"next :: Maybe ("){t.Fatalf("external recursive structure was lost:\n%s",source)};if _,err:=language.Compile(source);err!=nil{t.Fatal(err)}
+    target,err:=catalog.at(selector);if err!=nil{t.Fatal(err)};start:=openAPINode{resource:uri,pointer:selector.Pointer,node:target.node};used:=map[string]bool{};first,one,err:=projectOpenAPICatalogOperation(catalog,start,[]string{"first","request"},used);if err!=nil{t.Fatal(err)};second,two,err:=projectOpenAPICatalogOperation(catalog,start,[]string{"second","request"},used);if err!=nil{t.Fatal(err)};if first==second||len(one)==0||len(two)==0{t.Fatal("external declarations lost operation-occurrence identity")};module:=strings.Join(append(one,two...),"\n")+"\ntype First = "+first+"\ntype Second = "+second+"\n";if _,err:=language.Compile(module);err!=nil{t.Fatal(err)}
+    reverse,err:=newOpenAPIProjectionCatalog([]Resource{resources[1],resources[0]},uri);if err!=nil{t.Fatal(err)};again,err:=projectOpenAPICatalogRoot(reverse,selector);if err!=nil||again!=source{t.Fatalf("resource order changed projection: %v",err)}
+}
+
+func TestOpenAPICatalogOperationProjectionKeepsStrictShapeFailures(t *testing.T){
+    for _,test:=range []struct{name,root string}{
+        {"applicator",`{"allOf":[{"type":"integer"}]}`},
+        {"reference-sibling",`{"$ref":"#/components/schemas/Value","type":"integer"}`},
+        {"heterogeneous-map",`{"type":"object","additionalProperties":{"type":"integer"},"properties":{"name":{"type":"string"}}}`},
+        {"open-pattern",`{"type":"object","patternProperties":{"^x":{"type":"string"}}}`},
+        {"boolean",`false`},
+        {"dynamic",`{"$dynamicRef":"#value"}`},
+    }{t.Run(test.name,func(t *testing.T){catalog,start:=catalogProjectionFixture(t,`"Root":`+test.root+`,"Value":{"$dynamicAnchor":"value","type":"integer"}`);selector:=ResourceSelector{Resource:start.resource,Pointer:start.pointer,TypeName:"Payload"};if _,err:=projectOpenAPICatalogRoot(catalog,selector);err!=nil{t.Fatalf("rooted carrier unexpectedly rejected: %v",err)};used:=map[string]bool{"Reserved":true};if _,_,err:=projectOpenAPICatalogOperation(catalog,start,[]string{"create","request"},used);problemCode(err)!="native.projection"||len(used)!=1{t.Fatalf("strict projection accepted or mutated names: %v",err)}})}
+}

@@ -212,21 +212,46 @@ func TestOpenAPI30NumericBoundsProjectWhileOtherFamiliesRemainOpaque(t *testing.
 	entry := "https://example.test/oas30.json"
 	external := "https://example.test/value.yaml"
 	source := strings.Replace(openAPIProvenanceOperations, "3.1.2", "3.0.4", 1)
-	project, err := IngestOpenAPIOperationResources([]Resource{{URI: entry, Source: source}, {URI: external, Source: openAPIProvenanceExternalYAML}}, OpenAPIOperationIngestOptions{EntryResource: entry})
+	externalSource := openAPIProvenanceExternalYAML + "  enum: [10, 20]\n"
+	project, err := IngestOpenAPIOperationResources([]Resource{{URI: entry, Source: source}, {URI: external, Source: externalSource}}, OpenAPIOperationIngestOptions{EntryResource: entry})
 	if err != nil {
 		t.Fatal(err)
 	}
 	constraints := project.NativeConstraints()
-	if len(constraints) != 2 {
-		t.Fatalf("OpenAPI 3.0 numeric subset was not isolated: %+v", constraints)
+	if len(constraints) != 4 {
+		t.Fatalf("OpenAPI 3.0 exact subset was not isolated: %+v", constraints)
 	}
+	expected := map[string]bool{entry + "\x00minItems": false, entry + "\x00maxItems": false, external + "\x00minimum": false, external + "\x00maximum": false}
 	for _, item := range constraints {
-		if item.Resource != external || item.Constraint.Keyword != "minimum" && item.Constraint.Keyword != "maximum" || item.Constraint.PairedKeyword == "" {
+		key := item.Resource + "\x00" + item.Constraint.Keyword
+		if _, ok := expected[key]; !ok {
 			t.Fatalf("unexpected OpenAPI 3.0 unit: %+v", item)
 		}
+		expected[key] = true
+		if item.Resource == external && item.Constraint.PairedKeyword == "" {
+			t.Fatalf("OpenAPI 3.0 numeric bound lost its paired exclusivity token: %+v", item)
+		}
+		if item.Resource == entry {
+			if item.Constraint.PairedKeyword != "" {
+				t.Fatalf("collection cardinality acquired numeric-pair authority: %+v", item)
+			}
+			want, operator := "1", ">="
+			if item.Constraint.Keyword == "maxItems" {
+				want, operator = "3", "<="
+			}
+			if item.Constraint.Native != want || !strings.Contains(item.Constraint.Predicate, operator+" "+want) {
+				t.Fatalf("OpenAPI 3.0 collection cardinality was not editable: %+v", item)
+			}
+		}
 	}
-	if strings.Contains(openAPIProvenanceUnit(t, project, external), "length it") {
-		t.Fatal("unsupported OpenAPI 3.0 item-count family became editable")
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("missing OpenAPI 3.0 exact unit %s: %+v", key, constraints)
+		}
+	}
+	externalUnit := openAPIProvenanceUnit(t, project, external)
+	if strings.Contains(externalUnit, "oneOf") {
+		t.Fatalf("YAML enum acquired unsupported exact authority:\n%s", externalUnit)
 	}
 	request := OpenAPIRequestJSON{Body: &OpenAPIMediaJSON{MediaType: "application/json", Value: []byte(`[1]`)}}
 	if _, report, err := project.DecodeAndValidateOpenAPIRequest("putValue", request, OpenAPILimits{}, validation.Limits{}); err != nil || validation.StateName(report.State()) != "valid" {

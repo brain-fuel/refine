@@ -39,12 +39,12 @@ complete the remaining product scope.
   OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
   and ordered enum symbols. Paired OpenAPI 3.0 bounds and detached intrinsic-JSON
   `uniqueItems: true` array units are now implemented, as are OpenAPI 3.0
-  non-nullable collection cardinality units.
+  non-nullable collection cardinality and JSON enum units.
   Resource-scoped edits now
   rebuild effective validation/export/bundle views; exact whole-document
   retention alone does not satisfy editable, per-constraint bijection.
 - Remaining native ingestion and enforcement boundaries documented in
-  [NATIVE.md](NATIVE.md), including general OpenAPI reference projection.
+  [NATIVE.md](NATIVE.md).
   Selected Schema Objects and direct operation-part annotations are implemented
   and fail closed on unsupported reachable OpenAPI annotations. The equivalent
   JSON Schema/Avro project-boundary audit now rejects annotations outside the
@@ -54,14 +54,17 @@ complete the remaining product scope.
   validation and generated Java offline loaders. Dynamic references now use
   the intrinsic JSON carrier while retaining native authority; Go and required
   Java tests cover dynamic-scope overrides and validated serde boundaries.
-  The OpenAPI Schema-root index now covers complete secondary Documents with
-  their own version/dialect. The shared catalog and private scope-preserving
-  oracle view have focused Go tests, but are not yet connected across general
-  ingestion, operation validation, provenance and generated Java loaders.
-  The existing OpenAPI structural validator must not be bypassed by stripping
-  schemas: that would omit annotation/default/example checks it currently
-  performs. Projection and annotation auditing must switch together with
-  rooted/operation validators and generated Java resource/selector handling.
+  OpenAPI 3.1/3.2 now shares its logical-ID/static-anchor catalog across rooted
+  ingestion, operation projection/validation, annotation auditing, provenance,
+  keyword discovery and generated Java loaders. Complete secondary Documents
+  retain their own version/dialect. Validation-only containers preserve dynamic
+  scope while published selectors and original resources remain physical.
+  A separate structural view retains kin's schema/default/example checks;
+  schemas are not stripped to bypass them. Focused Go, race and required Java
+  evidence is recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md). Automatic
+  operation projection still requires a statically describable checked shape;
+  unsupported structural applicators/dynamic projections require explicit
+  checked metadata rather than a guessed type.
 
 ## Requirements audit distinctions
 

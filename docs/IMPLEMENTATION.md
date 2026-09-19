@@ -2483,3 +2483,93 @@ current implementation still performs no Maven deployment or product release.
   `go test -v ./native -run '^(TestOpenAPIOracleViewPreservesPhysicalAndLogicalScope|TestOpenAPIOracleViewPreservesDynamicScope|TestOpenAPIOracleViewChargesAggregateAliasesAndOutput|TestOpenAPIOracleViewRejectsOverlappingDataInterpretations|TestOpenAPIOracleViewRetainsFragmentDialects)$'`
   passed in 0.326s. Generation consistency and vet passed for native/provenance;
   the unchanged quote and secondary-document passes were reused.
+- Checkpoint `2b52c79` CI exposed one stale expectation on both platforms:
+  `TestOpenAPI30NumericBoundsProjectWhileOtherFamiliesRemainOpaque` still
+  expected collection cardinalities to be opaque. It now asserts the two
+  collection units plus paired numeric bounds and retains a YAML-enum opacity
+  check. No production failure was reported by that CI run; its failed test
+  gate is not represented as a green checkpoint.
+- The OpenAPI catalog projection adapter preserves local declaration names,
+  resolves external scopes, and retains strict operation-shape failures.
+  `go test -v ./native -run '^(TestOpenAPICatalogProjectionPreservesLocalDomainNames|TestOpenAPICatalogProjectionUsesExternalScopesAndOccurrences|TestOpenAPICatalogOperationProjectionKeepsStrictShapeFailures|TestJSONProjectionResolvesNestedExternalRecursiveReferences|TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains)$'`
+  passed in 0.754s. The default JSON Schema projector behavior is unchanged.
+- Catalog annotation auditing and selection were checked separately before
+  production integration: `go test ./native -run '^TestOpenAPICatalogAnnotation(SelectionMatchesRootAndOperationAuthority|AuditsDynamicInitialAndOverrideTargets|BudgetsAreAggregateAndCyclesFailClosed)$'`
+  passed in 0.313s. Dynamic override candidates are audited but never selected
+  as though their initial static target were guaranteed at runtime.
+- A separate kin structural view rewrites only static Schema Object references
+  to physical locations; it retains wrapper, default and example checks.
+  `go test -v ./native -run '^(TestOpenAPIKinOracleViewRewritesOnlyCatalogStaticReferences|TestOpenAPIKinOracleViewFailsClosedOnMissingResolvedTarget|TestOpenAPIKinOracleViewPreservesKinDefaultAndExampleValidation)$'`
+  passed in 0.393s after correcting a quote-helper scratch-variable bug found
+  during review. Exact originals remain untouched.
+- OpenAPI 3.0 JSON enum units now reuse intrinsic JSON equality with ordered
+  native token recovery. Nullable still permits only values admitted by enum;
+  YAML enum and 3.0 const remain opaque. `go test ./provenance -run '^(TestOpenAPI30JSONEnumPreservesOrderedTokenAndNullableSemantics|TestOpenAPI30EnumIgnoresReferenceSiblingsAndYAML)$'`
+  passed in 0.226s, and `go test ./native -run '^TestOpenAPI30JSONEnumEditsEffectiveResourcesAtomically$'`
+  passed in 0.362s.
+- Modern OpenAPI provenance now consumes authoritative catalog locations while
+  reading tokens from exact originals. `go test -v ./provenance -run '^TestOpenAPIIndexedProvenance(PreservesPhysicalTokensAndOrdering|RejectsInvalidAuthorityAndBounds)$'`
+  passed in 0.430s, covering JSON/YAML, stable index order, data opacity,
+  missing/scalar/conflicting locations, explicit dialect disagreement and work
+  bounds. `go test -v ./native -run '^(TestOpenAPICatalogProvenanceEditsLogicalTargetsAndRebuildsBundles|TestOpenAPICatalogKeywordLocationsFollowAnchorsWithoutReadingData|TestOpenAPIProvenanceJSONEditsValidationExportBundleAndImmutability|TestOpenAPIProvenanceYAMLExternalRootlessRebuildsOperationIndex)$'`
+  passed in 1.062s, including existing edit/bundle regressions. Keyword discovery
+  now follows static/logical anchors and dynamic candidates through actual
+  schema edges; unused component patterns and instance data are not scanned.
+- The three new Go production-ingestion/runtime anchors passed in 0.551s:
+  `go test -v ./native -run '^(TestOpenAPICatalogRootedIngestionAndRuntimeUsePhysicalValidationView|TestOpenAPICatalogStructuralValidationRetainsExternalDefaults|TestOpenAPICatalogOperationBoundaryUsesPhysicalValidationView)$'`.
+  Review caught and restored the OpenAPI 3.0 legacy projection branch before
+  this run. One coherent affected integration race selection then passed in
+  11.108s:
+  `go test -race ./native -run '^(TestOpenAPI31ExactJSONSchemaPayloadValidation|TestOpenAPI321ResourceIngestionAndNativePayload|TestOpenAPIExactYAMLNumbersAndExternalResources|TestOpenAPI30AdapterUsesOnlyExplicitExternalResources|TestOpenAPIOperationIndexAndSemanticBoundary|TestRootlessOpenAPIOperationsIngestAndBoundary|TestOpenAPICatalogProvenanceEditsLogicalTargetsAndRebuildsBundles)$'`.
+- Generated Java uses the same validation-only resources and mapped selectors,
+  including trusted generated operation wrappers. The single grouped harness
+  passed in 9.636s with
+  `REFINE_REQUIRE_JAVA=1 REFINE_JAVA_HOME=/opt/homebrew/opt/openjdk@25 REFINE_NETWORKNT_DIR=/private/tmp/refine-networknt.fPEK2h go test ./java -run '^TestGeneratedOpenAPIValidationViewPreservesLogicalStaticDynamicAndOperationBoundaries$'`.
+  It covers logical IDs/static anchors, dynamic scope, rooted serde,
+  native/refinement-invalid zero-output writes, operation wrappers, defensive
+  resources and unsafe-wrapper rejection. This invocation omitted `-v`; the
+  named test has no optional skip path after its Java/networknt checks, and
+  both checks fail rather than skip under `REFINE_REQUIRE_JAVA=1`. The result
+  is therefore an executed required-runtime pass, not an optional-runtime skip;
+  it was not repeated solely to change log verbosity. The stale OpenAPI 3.0
+  assertion also passed after test-only regeneration with
+  `go test ./native -run '^TestOpenAPI30NumericBoundsProjectWhileOtherFamiliesRemainOpaque$'`;
+  its combined generation/test wall time was 66.971s (separate package duration
+  was not retained). No unrelated Java harness or Maven lifecycle was repeated.
+- Independent review found that the new offline loader could overwrite the
+  trusted OAS dialect adapter with a caller-supplied physical resource or
+  logical-ID alias. The shared validation-view constructor now rejects that
+  identity (including empty-fragment normalization) before either runtime can
+  load it. `go test -v ./native -run '^(TestOpenAPIValidationViewRejectsTrustedDialectShadowing|TestOpenAPICatalogRootedIngestionAndRuntimeUsePhysicalValidationView)$'`
+  passed in 0.357s. The redundant pre-validation canonical-slice copy was
+  removed. Unchanged Java successes were not rerun for this constructor guard.
+- Export integration exposed two existing scope/authority bugs: generated
+  local component refs were rebased by a selected native `$id`, and refined
+  export introduced a competing top-level annotation beside a selected scoped
+  annotation. Generated refs now use the absolute physical document URI;
+  an existing selected annotation is updated with the complete checked source
+  and metadata in its existing location. The three export anchors
+  `TestOpenAPIProjectAdditionKeepsNativeReferencesAndLiteralValues`,
+  `TestOpenAPIProjectExportRecursiveCompositionRetainsNativeOracle`, and
+  `TestOpenAPIProjectExportKeepsGeneratedReferencesOutsideNativeIDScope` passed
+  in the initial four-test selection (0.418s overall, failed only on the
+  competing-annotation case). After that correction, only the failed anchor
+  was rerun: `go test -v ./native -run '^TestOpenAPICatalogAnnotationsComposeRootAndDerivedLogicalOperationAcrossExportBundle$'`
+  passed in 0.719s. The new recursive-scope anchor covers both ordinary and
+  refined export/reingestion plus original-resource immutability.
+- Operation-index review found a direct-annotation authority bypass: an
+  unrelated checked field type could previously claim the annotation had been
+  consumed. The checked part must now bind the annotation's nominal root,
+  allowing transparent aliases, refinements and the occurrence's optional
+  wrapper without requiring original predicate text to remain unchanged.
+  Aggregate audit budgets apply across each derivation/index build.
+  `go test -v ./native -run '^(TestOpenAPICatalogOperationDerivationRejectsDynamicAnnotationTargets|TestOpenAPICatalogOperationIndexAuditsUnconsumedAnnotations|TestWithDerivedOpenAPIOperationsFailsClosedAtomically|TestWithDerivedOpenAPIOperationsVersionMatrix|TestOpenAPISchemaObjectAnnotationControlsSelectedPayload|TestOpenAPISchemaObjectAnnotationControlsDerivedOperationPart|TestOpenAPISchemaObjectAnnotationAuditFailsClosed)$'`
+  passed in 0.530s after updating one old malformed-ID fixture to expect its
+  earlier catalog rejection. A separate new positive edit-authority proof,
+  `go test -v ./native -run '^TestOpenAPICatalogOperationAnnotationKeepsIntentionalEditsAcrossBundleAndExport$'`,
+  passed in 0.585s: edited named-root predicates remain enforced after bundle
+  and refined-export reconstruction, while the old project remains immutable.
+  Final `go tool goplus gen --check ./native ./provenance ./java`,
+  `go vet ./native ./provenance ./java`, and `git diff --check` passed for the
+  coherent integration state. New, unintegrated `dependentRequired` helpers
+  are kept out of this checkpoint and are not included in its support claims.

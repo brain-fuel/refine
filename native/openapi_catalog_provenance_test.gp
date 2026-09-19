@@ -1,0 +1,18 @@
+package native
+
+import (
+    "reflect"
+    "strings"
+    "testing"
+)
+
+func TestOpenAPICatalogProvenanceEditsLogicalTargetsAndRebuildsBundles(t *testing.T){
+    entry:="https://example.test/api.json";external:="https://example.test/model.json";resources:=[]Resource{{URI:entry,Source:catalogIntegratedAPI},{URI:external,Source:catalogIntegratedModel}}
+    project,err:=IngestProjectResources(OpenAPI,resources,ProjectOptions{Root:ResourceSelector{Resource:entry,Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};minimum:=openAPIProvenanceConstraint(t,project,external,"minimum");if minimum.SchemaPointer!="/properties/amount"||minimum.Native!="3"{t.Fatalf("logical target lost physical provenance: %+v",minimum)}
+    unit:=openAPIProvenanceUnit(t,project,external);edited,err:=project.WithEditedNativeConstraintSource(external,strings.Replace(unit,minimum.Predicate,"(it >= 5)",1));if err!=nil{t.Fatal(err)};if err:=edited.ValidateJSON([]byte(`{"amount":3}`));problemCode(err)!="native.payload"{t.Fatalf("logical reference used stale constraint: %v",err)};if err:=edited.ValidateJSON([]byte(`{"amount":5}`));err!=nil{t.Fatal(err)};if err:=project.ValidateJSON([]byte(`{"amount":3}`));err!=nil{t.Fatalf("prior project mutated: %v",err)};if !reflect.DeepEqual(edited.Resources(),resources){t.Fatal("edit replaced original resource bytes")};bundle,err:=edited.Bundle();if err!=nil{t.Fatal(err)};again,err:=ParseBundle(bundle);if err!=nil{t.Fatal(err)};if err:=again.ValidateJSON([]byte(`{"amount":3}`));problemCode(err)!="native.payload"{t.Fatalf("bundle lost edited logical-target authority: %v",err)}
+}
+
+func TestOpenAPICatalogKeywordLocationsFollowAnchorsWithoutReadingData(t *testing.T){
+    entry:="https://example.test/keywords";source:=`{"openapi":"3.1.2","info":{"title":"Keywords","version":"1"},"paths":{},"components":{"schemas":{"Root":{"$ref":"https://logical.test/value#v"},"Value":{"$id":"https://logical.test/value","$anchor":"v","type":"string","pattern":"^x+$","example":"xxx","x-data":{"pattern":"data"}},"Unused":{"type":"string","pattern":"unused"}}}}`
+    project,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{ResourceID:entry,Root:ResourceSelector{TypeName:"Root"}});if err!=nil{t.Fatal(err)};locations,err:=project.JSONSchemaKeywordLocations("pattern");if err!=nil{t.Fatal(err)};expected:=[]string{entry+"#/components/schemas/Value/pattern"};if !reflect.DeepEqual(locations,expected){t.Fatalf("keyword authority: got %v want %v",locations,expected)}
+}

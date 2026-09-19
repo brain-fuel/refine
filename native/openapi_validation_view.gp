@@ -1,0 +1,84 @@
+package native
+
+import (
+    "net/url"
+    "sort"
+    "strings"
+
+    "goforge.dev/refine/schemajson"
+)
+
+// OpenAPIValidationView is a read-only, validation-only projection of checked
+// OpenAPI 3.1/3.2 Schema Objects. It is not an OpenAPI document view and must
+// not be used to validate wrapper structure, operations, examples, or other
+// non-schema OpenAPI members.
+type OpenAPIValidationView struct{
+    catalog *jsonProjectionCatalog
+    oracle *openAPIOracleView
+    resources []Resource
+}
+
+// NewOpenAPIValidationView builds the same bounded logical Schema Object
+// catalog and oracle view used by native validation. canonical must be the
+// already checked canonical JSON resource closure, and entry must identify its
+// OpenAPI document. The caller retains ownership of both inputs.
+func NewOpenAPIValidationView(canonical []Resource,entry string)(*OpenAPIValidationView,error){
+    for _,resource:=range canonical{if reservedOpenAPIDialectResource(resource.URI){return nil,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource.URI,Message:"OpenAPI validation resources must not shadow the trusted base dialect"}}}
+    catalog,err:=newOpenAPIProjectionCatalog(canonical,entry);if err!=nil{return nil,err}
+    oracle,err:=newOpenAPIOracleView(catalog);if err!=nil{return nil,err}
+    resources:=make([]Resource,0,len(oracle.resources)+len(oracle.aliases));resources=append(resources,oracle.resources...);resources=append(resources,oracle.aliases...)
+    seen:=map[string]bool{};for _,resource:=range resources{if reservedOpenAPIDialectResource(resource.URI){return nil,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource.URI,Message:"OpenAPI validation resources must not shadow the trusted base dialect"}};if resource.URI==""||seen[resource.URI]{return nil,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource.URI,Message:"OpenAPI validation view produced a duplicate or empty resource identity"}};seen[resource.URI]=true}
+    return &OpenAPIValidationView{catalog:catalog,oracle:oracle,resources:resources},nil
+}
+
+func reservedOpenAPIDialectResource(identity string)bool{return strings.TrimSuffix(identity,"#")==openAPIBaseDialect}
+
+// Resources returns defensive copies of the physical validation containers
+// followed by their logical-ID aliases. The combined result is an offline
+// loader inventory; runtimes must not eagerly register aliases in a way that
+// duplicates nested $id resources already present in physical containers.
+func (v *OpenAPIValidationView)Resources()[]Resource{if v==nil{return nil};return append([]Resource(nil),v.resources...)}
+
+// Selector maps an indexed physical OpenAPI Schema Object selector into the
+// validation view while preserving the caller's checked type name.
+func (v *OpenAPIValidationView)Selector(original ResourceSelector)(ResourceSelector,error){if v==nil||v.oracle==nil{return ResourceSelector{},&Error{Code:"native.project",Format:OpenAPI,Message:"an OpenAPI validation view is required"}};return v.oracle.selector(original)}
+
+// RewriteGeneratedResource rewrites static absolute Schema Object references
+// in one trusted generated operation wrapper. It rejects resource collisions,
+// schema-position $id and $dynamicRef, and references outside the checked
+// catalog. Instance-valued members such as examples and defaults remain data.
+func (v *OpenAPIValidationView)RewriteGeneratedResource(resource Resource)(Resource,error){
+    if v==nil||v.catalog==nil||v.oracle==nil{return Resource{},&Error{Code:"native.project",Format:OpenAPI,Message:"an OpenAPI validation view is required"}}
+    identity,err:=url.Parse(resource.URI);if err!=nil||!identity.IsAbs()||identity.Fragment!=""{return Resource{},&Error{Code:"native.resource",Format:OpenAPI,Pointer:resource.URI,Message:"generated validation resource URI must be absolute without a fragment"}}
+    if _,collision:=v.catalog.documents[resource.URI];collision{return Resource{},&Error{Code:"native.resource",Format:OpenAPI,Pointer:resource.URI,Message:"generated validation resource URI collides with a physical OpenAPI resource"}}
+    if _,collision:=v.catalog.roots[resource.URI];collision{return Resource{},&Error{Code:"native.resource",Format:OpenAPI,Pointer:resource.URI,Message:"generated validation resource URI collides with a logical Schema Object resource"}}
+    wrapper,err:=newJSONProjectionCatalog([]Resource{resource});if err!=nil{return Resource{},wrap(OpenAPI,"native.enforcement",resource.URI,err)}
+    root:=wrapper.documents[resource.URI].Root();if err:=checkedGeneratedOpenAPIWrapper(root,resource.URI);err!=nil{return Resource{},err}
+    rewrite:=&openAPIKinRewriteIndex{refs:map[string]map[string]string{},needed:map[string]map[string]bool{},byteLimit:schemajson.DefaultBytes,workLimit:schemajson.DefaultNodes}
+    keys:=make([]string,0,len(wrapper.locations));for key:=range wrapper.locations{keys=append(keys,key)};sort.Strings(keys)
+    for _,key:=range keys{
+        if err:=rewrite.step();err!=nil{return Resource{},err};current:=wrapper.locations[key]
+        if _,present:=current.node.Lookup("$id");present{return Resource{},&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer+"/$id",Message:"trusted generated OpenAPI validation wrappers must not establish schema resource identities"}}
+        if _,present:=current.node.Lookup("$dynamicRef");present{return Resource{},&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer+"/$dynamicRef",Message:"trusted generated OpenAPI validation wrappers must not contain dynamic references"}}
+        ref,present:=current.node.Lookup("$ref");if !present{continue};raw,ok:=nodeString(ref);if !ok{return Resource{},&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer+"/$ref",Message:"trusted generated OpenAPI validation reference must be text"}}
+        parsed,parseErr:=url.Parse(raw);if parseErr!=nil||!parsed.IsAbs(){return Resource{},&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:current.resource+"#"+current.pointer+"/$ref",Message:"trusted generated OpenAPI validation references must be absolute"}}
+        target,resolveErr:=v.catalog.resolve(jsonProjectionNode{resource:resource.URI,base:resource.URI},raw);if resolveErr!=nil{return Resource{},wrap(OpenAPI,"native.enforcement",current.pointer+"/$ref",resolveErr)}
+        mapped,mapErr:=v.oracle.selector(ResourceSelector{Resource:target.resource,Pointer:target.pointer});if mapErr!=nil{return Resource{},mapErr};replacement,referenceErr:=validationViewReference(mapped,schemajson.DefaultBytes-rewrite.retained);if referenceErr!=nil{return Resource{},referenceErr}
+        if err:=rewrite.add(resource.URI,current.pointer+"/$ref",replacement);err!=nil{return Resource{},err}
+    }
+    var out strings.Builder;writer:=&openAPIKinWriter{index:rewrite};if err:=writer.node(&out,resource.URI,"",root);err!=nil{return Resource{},err};return Resource{URI:resource.URI,Source:out.String()},nil
+}
+
+func checkedGeneratedOpenAPIWrapper(root schemajson.Node,resource string)error{
+    if schemajson.KindName(root.Kind())!="object"{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource,Message:"trusted generated OpenAPI validation wrapper must be a JSON Schema object"}}
+    dialect,ok:=root.Lookup("$schema");if !ok{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource,Message:"trusted generated OpenAPI validation wrapper must declare Draft 2020-12"}};text,valid:=nodeString(dialect);if !valid||strings.TrimSuffix(text,"#")!="https://json-schema.org/draft/2020-12/schema"{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource+"#/$schema",Message:"trusted generated OpenAPI validation wrapper must declare Draft 2020-12"}}
+    typ,ok:=root.Lookup("type");name,valid:=nodeString(typ);if !ok||!valid||name!="object"{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource+"#/type",Message:"trusted generated OpenAPI validation wrapper must be an object schema"}}
+    properties,ok:=root.Lookup("properties");if !ok||schemajson.KindName(properties.Kind())!="object"{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource+"#/properties",Message:"trusted generated OpenAPI validation wrapper must contain an object properties catalog"}}
+    closed,ok:=root.Lookup("additionalProperties");if !ok||closed.Raw()!="false"{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:resource+"#/additionalProperties",Message:"trusted generated OpenAPI validation wrapper must reject additional properties"}}
+    return nil
+}
+
+func validationViewReference(selector ResourceSelector,remaining int)(string,error){
+    if remaining<0||len(selector.Resource)>remaining{return "",openAPIOracleLimit()};left:=remaining-len(selector.Resource);if selector.Pointer!=""{if left<1||len(selector.Pointer)>(left-1)/3{return "",openAPIOracleLimit()}}
+    identity,err:=url.Parse(selector.Resource);if err!=nil{return "",err};identity.Fragment=selector.Pointer;return identity.String(),nil
+}

@@ -5,6 +5,7 @@ package native
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"goforge.dev/refine/language"
@@ -142,6 +143,26 @@ func selectedOpenAPISchemaAnnotation(document *Document, resources map[string][]
 	if hasTop && hasScoped {
 		return Annotation{}, false, &Error{Code: "native.refinement", Format: OpenAPI, Pointer: scoped.Pointer, Message: "top-level and selected Schema Object x-refine annotations provide competing source authority"}
 	}
+	if !strings.HasPrefix(document.Version(), "3.0.") {
+		catalog, err := openAPIAnnotationCatalog(resources, selector.Resource)
+		if err != nil {
+			return Annotation{}, false, err
+		}
+		selected, present, err := resolveOpenAPICatalogSchemaAnnotation(catalog, node, openAPICatalogSelectedRoot)
+		if err != nil {
+			return Annotation{}, false, err
+		}
+		if present {
+			if hasTop {
+				return Annotation{}, false, &Error{Code: "native.refinement", Format: OpenAPI, Pointer: selected.Pointer, Message: "top-level and selected Schema Object x-refine annotations provide competing source authority"}
+			}
+			return selected, true, nil
+		}
+		if hasTop && top.Root != "" {
+			return top, true, nil
+		}
+		return Annotation{}, false, nil
+	}
 	consumed := ""
 	if hasScoped {
 		consumed = openAPISchemaNodeIdentity(node)
@@ -240,6 +261,23 @@ func openAPIAnnotationDocuments(resources map[string][]byte) (map[string]schemaj
 	return result, nil
 }
 
+func openAPIAnnotationCatalog(resources map[string][]byte, entry string) (*jsonProjectionCatalog, error) {
+	docs, err := openAPIAnnotationDocuments(resources)
+	if err != nil {
+		return nil, err
+	}
+	uris := make([]string, 0, len(docs))
+	for uri := range docs {
+		uris = append(uris, uri)
+	}
+	sort.Strings(uris)
+	canonical := make([]Resource, 0, len(uris))
+	for _, uri := range uris {
+		canonical = append(canonical, Resource{URI: uri, Source: docs[uri].Raw()})
+	}
+	return newOpenAPIProjectionCatalog(canonical, entry)
+}
+
 func openAPISchemaIDScopeError(node openAPINode) error {
 	return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: openAPISchemaNodeIdentity(node) + "/$id", Message: "Schema Object x-refine reference resolution does not guess a $id-rebased URI scope"}
 }
@@ -314,10 +352,11 @@ func auditReachableOpenAPISchemaAnnotations(start openAPINode, docs map[string]s
 }
 
 type derivedOpenAPIAnnotationContext struct {
-	used        map[string]bool
-	sources     map[string]bool
-	annotations []Annotation
-	openAPI30   bool
+	used          map[string]bool
+	sources       map[string]bool
+	annotations   []Annotation
+	openAPI30     bool
+	catalogBudget *openAPICatalogAnnotationBudget
 }
 
 func (c *derivedOpenAPIAnnotationContext) use(annotation Annotation) (string, []string, error) {

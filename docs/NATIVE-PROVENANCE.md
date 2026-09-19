@@ -92,6 +92,17 @@ Fragments are not guessed to be schemas merely because their JSON/YAML happens
 to look schema-like. Every URI must be absolute and fragment-free. Discovery
 performs no filesystem or network access.
 
+`DiscoverOpenAPIIndexed(resources, options, locations)` is the lower-level
+lexical discovery API for embedders that already have a complete, checked
+Schema Object catalog. Each location supplies its physical resource, pointer,
+and effective dialect. It does not resolve references or establish that a
+location is a Schema Object. Native OpenAPI 3.1/3.2 projects obtain those
+locations from the same logical-ID/anchor catalog used by validation, then
+discover exact tokens in the original JSON/YAML resources. This avoids a
+second, inconsistent reference resolver and preserves physical provenance
+through validation-only relocation. Missing/conflicting locations and
+aggregate work/path-limit failures reject instead of silently erasing units.
+
 OpenAPI constraints record both the resource URI and JSON Pointer. Identity is
 framed over both, so the same pointer in two resources cannot collide. Returned
 resource bytes are defensive copies. The default aggregate resource-byte,
@@ -141,6 +152,12 @@ OpenAPI 3.0 collection counts use the same exact units as Draft 2020-12.
 They require an explicit array/object type and `nullable` absent or false;
 `nullable: true` extends the instance domain beyond the collection scope and
 therefore remains opaque. Exact JSON/YAML integer spellings are retained.
+
+OpenAPI 3.0 JSON-source `enum` uses the ordered intrinsic-JSON membership unit.
+`nullable` does not weaken `enum`: null is accepted only when the explicit type
+is nullable and the enum itself contains null. The exact native enum array is
+retained. OpenAPI 3.0 `const` and YAML `enum`/`const` are not claimed by this
+adapter.
 
 `native.Project` integrates this exact subset after the complete native OpenAPI
 resource closure has already been validated. Each projected resource receives
@@ -260,10 +277,10 @@ retaining stale authority. In particular, `not (unique it)` never means
 | --- | --- | --- |
 | Numeric bounds and `multipleOf` | Implemented | Explicit singleton integer/number domains; OpenAPI 3.0 lower/upper bounds retain the paired exclusivity Boolean. |
 | `minItems`/`maxItems`, `minProperties`/`maxProperties` | Implemented | Explicit singleton collection domains. OpenAPI 3.0 additionally requires `nullable` to be absent or false. |
-| `const`/`enum` | Implemented | Draft 2020-12 and OpenAPI 3.1/3.2 JSON values representable by the bounded intrinsic JSON algebra. |
+| `const`/`enum` | Implemented subset | Draft 2020-12 and OpenAPI 3.1/3.2 JSON values support both. OpenAPI 3.0 supports JSON-source `enum` only. All values must fit the bounded intrinsic JSON algebra. |
 | `uniqueItems: true` | Implemented | Detached explicit singleton array domain over intrinsic JSON equality. |
 | Avro fixed size and enum symbols | Implemented | Atomic exact size and ordered-symbol units; remaining Avro defaults, aliases, order and logical-type parameters are structural/wire metadata, not interchangeable `where` clauses. |
-| `dependentRequired`; OpenAPI 3.0 `enum`; JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Each needs its own bounded canonical syntax, lexical recovery and native inverse. They are not inferred by the current implementation. |
+| `dependentRequired`; JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Each needs its own bounded canonical syntax, lexical recovery and native inverse. They are not inferred by the current implementation. |
 | `required` | Structurally representable, no detached unit yet | Projected record presence is already checked. A separate editable unit would require atomic coordination with that structural source so removal cannot leave stale requiredness. |
 | `minLength`/`maxLength`, `pattern`, `patternProperties`, `format` | No equivalence to current refinement builtins | Native string length counts Unicode code points rather than UTF-16 units; native regular expressions are ECMA-262 rather than the DSL's RE2 syntax; format assertion depends on dialect/runtime configuration. |
 | `contains` families, `propertyNames`, `dependentSchemas`, `unevaluated*`, references and schema applicators | Native/structural preservation | General exactness requires subschema evaluation and, for unevaluated keywords, annotation state. JSON Schema `oneOf` is not the DSL membership function of the same name. |

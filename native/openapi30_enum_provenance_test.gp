@@ -1,0 +1,14 @@
+package native
+
+import (
+    "strings"
+    "testing"
+)
+
+func TestOpenAPI30JSONEnumEditsEffectiveResourcesAtomically(t *testing.T){
+    resource:="https://example.test/oas30-enum";original:=`{"openapi":"3.0.4","info":{"title":"Enum","version":"1"},"paths":{},"components":{"schemas":{"Value":{"type":"string","nullable":true,"enum":["RED",null]}}}}`
+    project,err:=IngestProject(OpenAPI,[]byte(original),ProjectOptions{ResourceID:resource,Root:ResourceSelector{Resource:resource,Pointer:"/components/schemas/Value",TypeName:"Value"}});if err!=nil{t.Fatal(err)};constraint:=constraintByKeyword(t,project,"enum");if constraint.Scope!="JSON"||constraint.Native!=`["RED",null]`{t.Fatalf("enum origin: %+v",constraint)};source:=project.ResourceConstraintSource(resource);editedPredicate:=strings.Replace(constraint.Predicate,"RED","BLUE",1);editedSource:=strings.Replace(source,constraint.Predicate,editedPredicate,1);edited,err:=project.WithEditedNativeConstraintSource(resource,editedSource);if err!=nil{t.Fatal(err)}
+    for _,raw:=range []string{`"BLUE"`,`null`}{if err:=edited.ValidateJSON([]byte(raw));err!=nil{t.Fatalf("edited valid %s: %v",raw,err)}};if err:=edited.ValidateJSON([]byte(`"RED"`));problemCode(err)!="native.payload"{t.Fatalf("stale enum value accepted: %v",err)};if err:=project.ValidateJSON([]byte(`"RED"`));err!=nil{t.Fatalf("edit mutated original project: %v",err)}
+    effective,err:=edited.EffectiveResources();if err!=nil{t.Fatal(err)};if len(effective)!=1||!strings.Contains(effective[0].Source,`"enum":["BLUE",null]`)||!strings.Contains(effective[0].Source,`"nullable":true`){t.Fatalf("effective enum is wrong: %+v",effective)};exported,err:=edited.Export(LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};if !strings.Contains(exported.Resources()[0].Source,`"BLUE"`){t.Fatalf("export omitted enum edit: %s",exported.Resources()[0].Source)};bundle,err:=edited.Bundle();if err!=nil{t.Fatal(err)};again,err:=ParseBundle(bundle);if err!=nil{t.Fatal(err)};if err:=again.ValidateJSON([]byte(`"RED"`));problemCode(err)!="native.payload"{t.Fatalf("bundle lost enum edit: %v",err)};if project.Resources()[0].Source!=original{t.Fatal("effective edit mutated immutable OpenAPI origin")}
+    wrongKeyword:=strings.Replace(source,constraint.Predicate,`it == JSONString "BLUE"`,1);if changed,err:=project.WithEditedNativeConstraintSource(resource,wrongKeyword);changed!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("enum changed keyword authority: %v",err)};shadowed:=source+"\noneOf :: JSON -> [JSON] -> Bool\noneOf _ _ = True\n";if changed,err:=project.WithEditedNativeConstraintSource(resource,shadowed);changed!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("shadowed oneOf acquired enum authority: %v",err)}
+}

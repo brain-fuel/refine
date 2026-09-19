@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	yaml "github.com/oasdiff/yaml3"
-	"goforge.dev/refine/language"
 	"goforge.dev/refine/schemajson"
 )
 
@@ -850,7 +849,10 @@ func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanc
 		return err
 	}
 	if w.openAPI30 {
-		return w.discoverOpenAPI30NumericAssertions(node, dialect)
+		if err := w.discoverOpenAPI30NumericAssertions(node, dialect); err != nil {
+			return err
+		}
+		return w.discoverOpenAPIJSONExactAssertions(node, dialect, []string{"enum"})
 	}
 	scope := openAPINumericScope(node.node)
 	for _, pair := range []struct {
@@ -882,55 +884,7 @@ func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanc
 			}
 		}
 	}
-	if !node.doc.isJSON {
-		return nil
-	}
-	jsonNode, err := node.doc.json.At(node.pointer)
-	if err != nil {
-		return err
-	}
-	builder := &JSONSchema{maxValueNodes: 1000000, maxValueDepth: 508}
-	for _, keyword := range []string{"const", "enum"} {
-		value, ok := jsonNode.Lookup(keyword)
-		if !ok {
-			continue
-		}
-		values := []schemajson.Node{value}
-		if keyword == "enum" {
-			if schemajson.KindName(value.Kind()) != "array" {
-				return &Error{Code: "openapi.assertion", Pointer: node.doc.resource.URI + "#" + node.pointer + "/enum", Message: "enum must be an array"}
-			}
-			values = value.Elements()
-		}
-		expressions := make([]*language.Expr, len(values))
-		projectable := true
-		for i, item := range values {
-			expression, buildErr := builder.canonicalJSONValue(item, 2)
-			if valueLimit(buildErr) {
-				projectable = false
-				break
-			}
-			if buildErr != nil {
-				return buildErr
-			}
-			expressions[i] = expression
-		}
-		if !projectable {
-			continue
-		}
-		var predicate *language.Expr
-		builtins := []string{}
-		if keyword == "const" {
-			predicate = &language.Expr{Form: language.Binary{Operator: "==", Left: &language.Expr{Form: language.Variable{Name: "it"}}, Right: expressions[0]}}
-		} else {
-			predicate = &language.Expr{Form: language.Apply{Function: &language.Expr{Form: language.Apply{Function: &language.Expr{Form: language.Variable{Name: "oneOf"}}, Argument: &language.Expr{Form: language.Variable{Name: "it"}}}}, Argument: &language.Expr{Form: language.ListLiteral{Elements: expressions}}}}
-			builtins = []string{"oneOf"}
-		}
-		if err := w.add(node, keyword, "JSON", language.FormatExpression(predicate), value.Raw(), dialect, builtins); err != nil {
-			return err
-		}
-	}
-	return nil
+	return w.discoverOpenAPIJSONExactAssertions(node, dialect, []string{"const", "enum"})
 }
 
 func openAPINumericScope(node *yaml.Node) string {

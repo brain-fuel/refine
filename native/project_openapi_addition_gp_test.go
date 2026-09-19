@@ -14,14 +14,14 @@ func TestOpenAPIProjectAdditionKeepsNativeReferencesAndLiteralValues(t *testing.
 	original := map[string]any{"$ref": "#/components/schemas/Node"}
 	schemas := map[string]any{"Node": original}
 	document := map[string]any{"components": map[string]any{"schemas": schemas}}
-	if err := projectOpenAPIAddition(document, addition); err != nil {
+	if err := projectOpenAPIAddition(document, addition, "https://example.test/api"); err != nil {
 		t.Fatal(err)
 	}
 	reference := addition["$ref"].(string)
-	if !strings.HasPrefix(reference, "#/components/schemas/RefineSnapshot_") {
+	if !strings.HasPrefix(reference, "https://example.test/api#/components/schemas/RefineSnapshot_") {
 		t.Fatal(reference)
 	}
-	name := strings.TrimPrefix(reference, "#/components/schemas/")
+	name := strings.TrimPrefix(reference, "https://example.test/api#/components/schemas/")
 	definition := schemas[name].(map[string]any)
 	if definition["properties"].(map[string]any)["next"].(map[string]any)["$ref"] != reference {
 		t.Fatal("recursive generated reference lost")
@@ -58,5 +58,37 @@ func TestOpenAPIProjectExportRecursiveCompositionRetainsNativeOracle(t *testing.
 	}
 	if p.Resources()[0].Source != source {
 		t.Fatal("original source mutated")
+	}
+}
+
+func TestOpenAPIProjectExportKeepsGeneratedReferencesOutsideNativeIDScope(t *testing.T) {
+	source := `{"openapi":"3.1.2","info":{"title":"Scoped tree","version":"1"},"paths":{},"components":{"schemas":{"Root":{"$id":"https://logical.test/tree","type":"object","required":["value"],"properties":{"value":{"type":"integer","minimum":0},"children":{"type":"array","items":{"$ref":"#"}}}}}}}`
+	project, err := IngestProject(OpenAPI, []byte(source), ProjectOptions{ResourceID: "https://physical.test/api", Root: ResourceSelector{TypeName: "Root"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []ExportMode{Refined, Ordinary} {
+		t.Run(string(mode), func(t *testing.T) {
+			exported, err := project.Export(LowerOptions{Mode: mode, AllowDocumentedLoss: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(exported.Resources()[0].Source, "https://physical.test/api#/components/schemas/RefineSnapshot_") {
+				t.Fatal("generated reference did not retain physical scope")
+			}
+			again, err := IngestProjectResources(OpenAPI, exported.Resources(), ProjectOptions{Root: exported.Root(), Metadata: exported.Metadata()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := again.ValidateJSON([]byte(`{"value":1,"children":[{"value":2}]}`)); err != nil {
+				t.Fatal(err)
+			}
+			if err := again.ValidateJSON([]byte(`{"value":1,"children":[{"value":-1}]}`)); problemCode(err) != "native.payload" {
+				t.Fatalf("native nested scope lost: %v", err)
+			}
+		})
+	}
+	if project.Resources()[0].Source != source {
+		t.Fatal("export mutated original logical scope")
 	}
 }

@@ -4,21 +4,23 @@ import (
     "crypto/sha256"
     "encoding/json"
     "fmt"
+    "net/url"
     "strings"
 )
 
 // Flatten generated definitions into collision-free OpenAPI components. The
-// native OpenAPI oracle resolves component pointers, not a nested JSON $id's
-// local definition scope. Only generated schema references are rewritten;
+// generated references use the physical document's absolute URI so an
+// enclosing native $id cannot rebase them. Only generated refs are rewritten;
 // native schemas and literal example/const/default payloads remain untouched.
-func projectOpenAPIAddition(document any,addition map[string]any)error{
+func projectOpenAPIAddition(document any,addition map[string]any,resource string)error{
+    physical,err:=url.Parse(resource);if err!=nil||!physical.IsAbs()||physical.Fragment!=""{return fmt.Errorf("native.export: OpenAPI resource URI must be absolute without a fragment")}
     root,ok:=document.(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI root must be an object")}
     components,ok:=root["components"].(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI components must be an object")}
     schemas,ok:=components["schemas"].(map[string]any);if !ok{return fmt.Errorf("native.export: OpenAPI component schemas must be an object")}
     definitions,ok:=addition["$defs"].(map[string]any);if !ok&&addition["$defs"]!=nil{return fmt.Errorf("native.export: generated definitions must be an object")}
     raw,err:=json.Marshal(addition);if err!=nil{return err};digest:=sha256.Sum256(raw);prefix:=fmt.Sprintf("RefineSnapshot_%x_",digest[:8])
     for{collision:=false;for name:=range definitions{if _,exists:=schemas[prefix+name];exists{collision=true;break}};if !collision{break};prefix+="_"}
-    names:=map[string]string{};for name:=range definitions{names["#/$defs/"+escapePointer(name)]="#/components/schemas/"+escapePointer(prefix+name)}
+    names:=map[string]string{};for name:=range definitions{reference:=*physical;reference.Fragment="/components/schemas/"+escapePointer(prefix+name);names["#/$defs/"+escapePointer(name)]=reference.String()}
     // Definitions are visited before removal, through schema positions only.
     work:=0;if err:=rewriteProjectSchemaRefs(addition,names,0,&work);err!=nil{return err}
     for name,definition:=range definitions{schemas[prefix+name]=definition};delete(addition,"$defs");delete(addition,"$schema");delete(addition,"$id");return nil

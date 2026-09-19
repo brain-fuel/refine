@@ -188,6 +188,13 @@ func buildOpenAPIOperationIndex(p *Project) (*openAPIOperationIndex, error) {
 	if err != nil {
 		return nil, err
 	}
+	var catalog *jsonProjectionCatalog
+	if !strings.HasPrefix(p.Version(), "3.0.") {
+		catalog, err = newOpenAPIProjectionCatalog(rawResources, p.EntryResource())
+		if err != nil {
+			return nil, err
+		}
+	}
 	refined := map[string]refineopenapi.OperationBinding{}
 	for _, operation := range p.metadata.OpenAPI.Operations {
 		refined[operation.OperationID] = operation
@@ -197,6 +204,10 @@ func buildOpenAPIOperationIndex(p *Project) (*openAPIOperationIndex, error) {
 	}
 	index := &openAPIOperationIndex{operations: map[string]*indexedOpenAPIOperation{}}
 	seen := map[string]bool{}
+	var annotationBudget *openAPICatalogAnnotationBudget
+	if catalog != nil {
+		annotationBudget = newOpenAPICatalogAnnotationBudget()
+	}
 	for _, binding := range nativeBindings.Operations {
 		if seen[binding.OperationID] {
 			return nil, &Error{Code: "native.metadata", Format: OpenAPI, Pointer: binding.OperationID, Message: "duplicate native operation binding"}
@@ -213,7 +224,7 @@ func buildOpenAPIOperationIndex(p *Project) (*openAPIOperationIndex, error) {
 		if !strings.EqualFold(refinedBinding.Method, documentMethod(documentOperation.pointer)) || refinedBinding.Path != documentPath(documentOperation.pointer) {
 			return nil, &Error{Code: "native.metadata", Format: OpenAPI, Pointer: binding.OperationID, Message: "Refine method/path does not match the authoritative OpenAPI operation"}
 		}
-		operation, compileErr := compileOpenAPIOperation(p, refinedBinding, binding, documentOperation, docs)
+		operation, compileErr := compileOpenAPIOperation(p, refinedBinding, binding, documentOperation, docs, catalog, annotationBudget)
 		if compileErr != nil {
 			return nil, compileErr
 		}
@@ -426,7 +437,7 @@ func mergeOpenAPIParameters(pathItems, operationItems []openAPINode, docs map[st
 	return out
 }
 
-func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding, binding refineopenapi.NativeOperationBinding, document openAPIDocumentOperation, docs map[string]schemajson.Document) (*indexedOpenAPIOperation, error) {
+func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding, binding refineopenapi.NativeOperationBinding, document openAPIDocumentOperation, docs map[string]schemajson.Document, catalog *jsonProjectionCatalog, annotationBudget *openAPICatalogAnnotationBudget) (*indexedOpenAPIOperation, error) {
 	requestType, err := p.program.PayloadType(refined.RequestType)
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.metadata", refined.OperationID, err)
@@ -473,6 +484,8 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 			if err := checkOpenAPIDirectionalType(p.program, typ, parameter.schema, docs, OpenAPIRequest); err != nil {
 				return nil, err
 			}
+		} else if err := checkOpenAPIOperationSchemaAnnotation(p, catalog, parameter.schema, typ, !parameter.required, annotationBudget); err != nil {
+			return nil, err
 		}
 		target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "request", parameter.location, parameter.name, ""), Resource: parameter.schema.resource, Pointer: parameter.schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: append([]string{top}, path...), Required: parameter.required, In: parameter.location, Name: parameter.name}
 		result.requestParts = append(result.requestParts, indexedOpenAPIPart{descriptor: target, typ: typ, top: top})
@@ -504,6 +517,8 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 			if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIRequest); err != nil {
 				return nil, err
 			}
+		} else if err := checkOpenAPIOperationSchemaAnnotation(p, catalog, schema, typ, !required, annotationBudget); err != nil {
+			return nil, err
 		}
 		target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "request", "body", "", media), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: []string{"body"}, Required: required, MediaType: media, In: "body"}
 		result.requestParts = append(result.requestParts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "body"})
@@ -594,6 +609,8 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 					if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIResponse); err != nil {
 						return nil, err
 					}
+				} else if err := checkOpenAPIOperationSchemaAnnotation(p, catalog, schema, typ, true, annotationBudget); err != nil {
+					return nil, err
 				}
 				target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "response", responseBinding.Status, "header", name), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: append([]string{"headers"}, path...), Required: false, In: "header", Name: name, Status: responseBinding.Status}
 				indexed.parts = append(indexed.parts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "headers"})
@@ -618,6 +635,8 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 				if err := checkOpenAPIDirectionalType(p.program, typ, schema, docs, OpenAPIResponse); err != nil {
 					return nil, err
 				}
+			} else if err := checkOpenAPIOperationSchemaAnnotation(p, catalog, schema, typ, true, annotationBudget); err != nil {
+				return nil, err
 			}
 			target := OpenAPISchemaTarget{ID: openAPIPartID(refined.OperationID, "response", responseBinding.Status, "body", media), Resource: schema.resource, Pointer: schema.pointer, TypeExpression: language.FormatType(typ), FieldPath: []string{"body"}, Required: false, MediaType: media, In: "body", Status: responseBinding.Status}
 			indexed.parts = append(indexed.parts, indexedOpenAPIPart{descriptor: target, typ: typ, top: "body"})
@@ -629,6 +648,101 @@ func compileOpenAPIOperation(p *Project, refined refineopenapi.OperationBinding,
 		result.descriptor.Responses = append(result.descriptor.Responses, indexed.descriptor)
 	}
 	return result, nil
+}
+
+func checkOpenAPIOperationSchemaAnnotation(p *Project, catalog *jsonProjectionCatalog, schema openAPINode, typ *language.Type, optional bool, budget *openAPICatalogAnnotationBudget) error {
+	annotation, present, err := resolveOpenAPICatalogSchemaAnnotationWithBudget(catalog, schema, openAPICatalogDirectOperation, budget)
+	if err != nil || !present {
+		return err
+	}
+	base, _, hasPolicy, err := language.SplitReleasePolicyFooter(annotation.Source)
+	if err != nil {
+		return wrap(OpenAPI, "native.refinement", annotation.Pointer, err)
+	}
+	if hasPolicy {
+		return &Error{Code: "native.refinement", Format: OpenAPI, Pointer: annotation.Pointer, Message: "direct operation Schema Object annotation cannot carry independent release-policy authority"}
+	}
+	module, err := language.Compile(base)
+	if err != nil {
+		return wrap(OpenAPI, "native.refinement", annotation.Pointer, err)
+	}
+	expected, err := module.PayloadType(annotation.Root)
+	if err != nil {
+		return wrap(OpenAPI, "native.refinement", annotation.Pointer, err)
+	}
+	if !openAPIOperationTypeBindsAnnotationRoot(p.program, typ, expected.Formatted(), optional) {
+		return &Error{Code: "native.refinement", Format: OpenAPI, Pointer: annotation.Pointer, Message: "operation part checked type does not bind the direct Schema Object annotation root"}
+	}
+	return nil
+}
+
+// The nominal root is the authority boundary: derivation initially installs
+// the annotation module and binds the part to that root, while later checked
+// source edits may intentionally change the root declaration's predicates.
+// Only Maybe at an optional wire occurrence and transparent aliases may sit
+// between the checked field and the declared annotation root.
+func openAPIOperationTypeBindsAnnotationRoot(program *language.Program, typ *language.Type, expected string, optional bool) bool {
+	declarations := map[string]language.TypeDecl{}
+	for _, decl := range program.Syntax().Types {
+		declarations[decl.Name] = decl
+	}
+	current := typ
+	if optional {
+		wrapped, inner := openAPIDirectionalMaybe(typ, declarations, map[string]bool{}, 0)
+		if !wrapped {
+			return false
+		}
+		current = inner
+	}
+	seen := map[string]bool{}
+	for depth := 0; depth < 128 && current != nil; depth++ {
+		formatted := language.FormatType(current)
+		if formatted == expected {
+			return true
+		}
+		switch __gp_m0 := any(current.Form).(type) {
+		case language.RefinedType:
+			base := __gp_m0.Base
+			current = base
+		case language.NamedType:
+			name := __gp_m0.Name
+			if seen[name] {
+				return false
+			}
+			seen[name] = true
+			decl, ok := declarations[name]
+			if !ok || len(decl.Parameters) != 0 || decl.Body == nil {
+				return false
+			}
+			current = decl.Body
+		case language.AppliedType:
+			name, args, ok := jsonApplied(current)
+			if !ok {
+				return false
+			}
+			key := name + "\x00" + formatted
+			if seen[key] {
+				return false
+			}
+			seen[key] = true
+			decl, ok := declarations[name]
+			if !ok || len(decl.Parameters) != len(args) || decl.Body == nil {
+				return false
+			}
+			bindings := map[string]*language.Type{}
+			for i, param := range decl.Parameters {
+				bindings[param] = args[i]
+			}
+			closed, err := language.SubstituteType(decl.Body, bindings)
+			if err != nil {
+				return false
+			}
+			current = closed
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func compileOpenAPIParameter(raw openAPINode, docs map[string]schemajson.Document) (openAPIParameter, error) {
@@ -767,19 +881,19 @@ func checkedRecordFieldsIn(typ *language.Type, declarations map[string]language.
 	if typ == nil || depth > 128 {
 		return nil, fmt.Errorf("field path type resolution limit exceeded")
 	}
-	switch __gp_m0 := any(typ.Form).(type) {
+	switch __gp_m1 := any(typ.Form).(type) {
 	case language.RefinedType:
-		base := __gp_m0.Base
+		base := __gp_m1.Base
 		return checkedRecordFieldsIn(base, declarations, seen, depth+1)
 	case language.RecordType:
-		fields := __gp_m0.Fields
+		fields := __gp_m1.Fields
 		out := map[string]*language.Type{}
 		for _, field := range fields {
 			out[field.Name] = field.Type
 		}
 		return out, nil
 	case language.NamedType:
-		name := __gp_m0.Name
+		name := __gp_m1.Name
 		key := name
 		if seen[key] {
 			return nil, fmt.Errorf("cyclic record alias")

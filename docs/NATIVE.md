@@ -241,11 +241,14 @@ pattern maps and non-identifier field names also have carrier projections.
 Schema-valued `additionalProperties` and closed `patternProperties` retain a
 more precise homogeneous map when possible. Explicit scalar kinds remain
 precise even through applicators, whose native constraints are not hoisted into
-unconditional refinements. OpenAPI anchor-based roots and nested external
-references that its named projector cannot express still fail explicitly with
-`native.projection`; no resources are fetched to resolve them. JSON Schema
-`$dynamicRef` occurrences use the intrinsic `JSON` carrier, not a guessed static
-type. The original dynamic references, anchors, and sibling assertions remain
+unconditional refinements. OpenAPI 3.1/3.2 selected roots and unambiguous
+operation parts use the same bounded logical-resource catalog for nested
+external references, canonical `$id` identities, static anchors, and recursive
+occurrences; no resources are fetched. Automatic operation derivation remains
+intentionally strict and rejects dynamic references and structural applicators
+without one statically describable checked type. JSON Schema `$dynamicRef`
+occurrences use the intrinsic `JSON` carrier, not a guessed static type. The
+original dynamic references, anchors, and sibling assertions remain
 authoritative in native validation and export. Go and generated Java test both
 ordinary dynamic-anchor resolution and dynamic-scope overrides across nested
 canonical resource identities.
@@ -417,8 +420,13 @@ Schema Object location, and checked field path against the validated OpenAPI
 document. `Project.OpenAPIOperationIndex` returns immutable stable part IDs,
 their proven resource/pointer selectors and the canonical offline resource
 closure. Operation Schema Objects are explicit seeds for OpenAPI 3.0 adaptation,
-dialect checks, and regex keyword discovery. Examples and defaults are never
-scanned as schemas.
+dialect checks, and regex keyword discovery. Published selectors remain the
+physical OpenAPI resource/pointer locations; OpenAPI 3.1/3.2 validation maps
+them privately through the checked logical-resource view. Executable Schema
+Object annotations are consumed only at a selected root or along a directly
+bound leading static `$ref` chain. Reachable nested, competing, or potentially
+dynamic-target annotations reject instead of being ignored. Examples and
+defaults are never scanned as schemas.
 
 `Project.WithDerivedOpenAPIOperations` is an explicit, immutable convenience for
 ordinary `/paths` operations whose semantic JSON shape is unambiguous. It
@@ -434,11 +442,11 @@ invented.
 The helper fails closed for missing operation IDs when deriving all operations,
 ambiguous or non-JSON media, non-default parameter serialization, parameter
 `content`, field-name collisions, and structural schema applicators that lack a
-single safe language type. Structural projection follows inline schemas and
-local named definitions in the Schema Object's containing explicit resource;
-cross-resource Schema Object `$ref` projection remains an authored-source case,
-even though the native validator continues to resolve and enforce such bundled
-references. An explicit operation-ID selection may intentionally bind a subset.
+single safe language type. For OpenAPI 3.1/3.2, structural projection follows
+inline schemas, local named definitions, canonical logical IDs, static anchors,
+and external references within the explicit resource closure. OpenAPI 3.0 keeps
+its established document-relative pointer projector and directional adapter.
+An explicit operation-ID selection may intentionally bind a subset.
 Callback operations and webhooks remain outside this helper. Operations-only
 OpenAPI projects need no `/components/schemas/...` payload root: direct ingest
 derives checked source and authoritative bindings, while annotation/configured

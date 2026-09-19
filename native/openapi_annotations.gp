@@ -2,6 +2,7 @@ package native
 
 import (
     "fmt"
+    "sort"
     "strings"
 
     "goforge.dev/refine/language"
@@ -44,6 +45,7 @@ func selectedOpenAPISchemaAnnotation(document *Document,resources map[string][]b
     node,err:=selectedOpenAPISchemaNode(resources,selector);if err!=nil{return Annotation{},false,err};scoped,hasScoped,err:=openAPISchemaAnnotation(node);if err!=nil{return Annotation{},false,err}
     if hasScoped&&strings.HasPrefix(document.Version(),"3.0."){return Annotation{},false,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:scoped.Pointer,Message:"Schema Object x-refine annotations are supported for OpenAPI 3.1 and 3.2; OpenAPI 3.0 retains only the established document-level annotation"}}
     top,hasTop:=openAPIOperationsAnnotation(document);if hasTop&&hasScoped{return Annotation{},false,&Error{Code:"native.refinement",Format:OpenAPI,Pointer:scoped.Pointer,Message:"top-level and selected Schema Object x-refine annotations provide competing source authority"}}
+    if !strings.HasPrefix(document.Version(),"3.0."){catalog,err:=openAPIAnnotationCatalog(resources,selector.Resource);if err!=nil{return Annotation{},false,err};selected,present,err:=resolveOpenAPICatalogSchemaAnnotation(catalog,node,openAPICatalogSelectedRoot);if err!=nil{return Annotation{},false,err};if present{if hasTop{return Annotation{},false,&Error{Code:"native.refinement",Format:OpenAPI,Pointer:selected.Pointer,Message:"top-level and selected Schema Object x-refine annotations provide competing source authority"}};return selected,true,nil};if hasTop&&top.Root!=""{return top,true,nil};return Annotation{},false,nil}
     consumed:="";if hasScoped{consumed=openAPISchemaNodeIdentity(node)};docs,err:=openAPIAnnotationDocuments(resources);if err!=nil{return Annotation{},false,err};if err:=auditReachableOpenAPISchemaAnnotations(node,docs,consumed);err!=nil{return Annotation{},false,err}
     if hasScoped{return scoped,true,nil};if hasTop&&top.Root!=""{return top,true,nil};return Annotation{},false,nil
 }
@@ -58,6 +60,10 @@ func openAPISchemaNodeIdentity(node openAPINode)string{return node.resource+"#"+
 
 func openAPIAnnotationDocuments(resources map[string][]byte)(map[string]schemajson.Document,error){
     result:=map[string]schemajson.Document{};limits,_:=limits(Options{});for resource,input:=range resources{root,err:=parseYAML(input,limits);if err!=nil{return nil,wrap(OpenAPI,"native.syntax",resource,err)};document,err:=yamlToJSONDocument(root);if err!=nil{return nil,wrap(OpenAPI,"native.structure",resource,err)};result[resource]=document};return result,nil
+}
+
+func openAPIAnnotationCatalog(resources map[string][]byte,entry string)(*jsonProjectionCatalog,error){
+    docs,err:=openAPIAnnotationDocuments(resources);if err!=nil{return nil,err};uris:=make([]string,0,len(docs));for uri:=range docs{uris=append(uris,uri)};sort.Strings(uris);canonical:=make([]Resource,0,len(uris));for _,uri:=range uris{canonical=append(canonical,Resource{URI:uri,Source:docs[uri].Raw()})};return newOpenAPIProjectionCatalog(canonical,entry)
 }
 
 func openAPISchemaIDScopeError(node openAPINode)error{return &Error{Code:"native.enforcement",Format:OpenAPI,Pointer:openAPISchemaNodeIdentity(node)+"/$id",Message:"Schema Object x-refine reference resolution does not guess a $id-rebased URI scope"}}
@@ -77,7 +83,7 @@ func auditReachableOpenAPISchemaAnnotations(start openAPINode,docs map[string]sc
     return audit(start)
 }
 
-type derivedOpenAPIAnnotationContext struct{used map[string]bool;sources map[string]bool;annotations []Annotation;openAPI30 bool}
+type derivedOpenAPIAnnotationContext struct{used map[string]bool;sources map[string]bool;annotations []Annotation;openAPI30 bool;catalogBudget *openAPICatalogAnnotationBudget}
 
 func (c *derivedOpenAPIAnnotationContext)use(annotation Annotation)(string,[]string,error){
     if c.openAPI30{return "",nil,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:annotation.Pointer,Message:"operation Schema Object x-refine annotations are supported for OpenAPI 3.1 and 3.2, not OpenAPI 3.0"}}

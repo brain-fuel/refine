@@ -77,14 +77,23 @@ func (p *Project) WithDerivedOpenAPIOperations(options OpenAPIDerivationOptions)
 		used[decl.Name] = true
 	}
 	openAPI30 := strings.HasPrefix(p.Version(), "3.0.")
+	var catalog *jsonProjectionCatalog
+	var annotationBudget *openAPICatalogAnnotationBudget
+	if !openAPI30 {
+		catalog, err = newOpenAPIProjectionCatalog(resources, p.EntryResource())
+		if err != nil {
+			return nil, err
+		}
+		annotationBudget = newOpenAPICatalogAnnotationBudget()
+	}
 	annotationSources := map[string]bool{}
 	annotationSources[p.program.Formatted()] = true
-	annotations := &derivedOpenAPIAnnotationContext{used: used, sources: annotationSources, openAPI30: openAPI30}
+	annotations := &derivedOpenAPIAnnotationContext{used: used, sources: annotationSources, openAPI30: openAPI30, catalogBudget: annotationBudget}
 	declarations := []string{}
 	refined := []refineopenapi.OperationBinding{}
 	nativeBindings := []refineopenapi.NativeOperationBinding{}
 	for _, id := range selected {
-		derived, deriveErr := deriveOpenAPIOperation(operations[id], docs, used, annotations, openAPI30)
+		derived, deriveErr := deriveOpenAPIOperation(operations[id], docs, catalog, used, annotations, openAPI30)
 		if deriveErr != nil {
 			return nil, deriveErr
 		}
@@ -193,7 +202,7 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 	return &copy, nil
 }
 
-func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]schemajson.Document, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, openAPI30 bool) (derivedOpenAPIOperation, error) {
+func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]schemajson.Document, catalog *jsonProjectionCatalog, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, openAPI30 bool) (derivedOpenAPIOperation, error) {
 	requestName, err := reserveDerivedOpenAPIName(used, document.operationID, "request")
 	if err != nil {
 		return derivedOpenAPIOperation{}, err
@@ -237,7 +246,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		if openAPI30 {
 			direction = OpenAPIRequest
 		}
-		expr, decls, projectErr := deriveOpenAPISchemaType(parameter.schema, docs, nameParts, used, annotations, direction)
+		expr, decls, projectErr := deriveOpenAPISchemaTypeCatalog(parameter.schema, docs, catalog, nameParts, used, annotations, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -271,7 +280,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		if openAPI30 {
 			direction = OpenAPIRequest
 		}
-		expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "request", "body", media}, used, annotations, direction)
+		expr, decls, projectErr := deriveOpenAPISchemaTypeCatalog(schema, docs, catalog, []string{document.operationID, "request", "body", media}, used, annotations, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -342,7 +351,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if openAPI30 {
 				direction = OpenAPIResponse
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "header", item.name}, used, annotations, direction)
+			expr, decls, projectErr := deriveOpenAPISchemaTypeCatalog(schema, docs, catalog, []string{document.operationID, "response", status, "header", item.name}, used, annotations, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -361,7 +370,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if openAPI30 {
 				direction = OpenAPIResponse
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "body", media}, used, annotations, direction)
+			expr, decls, projectErr := deriveOpenAPISchemaTypeCatalog(schema, docs, catalog, []string{document.operationID, "response", status, "body", media}, used, annotations, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -376,6 +385,18 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 	refined := refineopenapi.OperationBinding{OperationID: document.operationID, Method: strings.ToUpper(documentMethod(document.pointer)), Path: documentPath(document.pointer), RequestType: requestName, Responses: responses}
 	native := refineopenapi.NativeOperationBinding{OperationID: document.operationID, Parameters: nativeParameters, RequestBody: nativeBody, Responses: nativeResponses}
 	return derivedOpenAPIOperation{declarations: declarations, refined: refined, native: native}, nil
+}
+
+func deriveOpenAPISchemaTypeCatalog(schema openAPINode, docs map[string]schemajson.Document, catalog *jsonProjectionCatalog, nameParts []string, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, direction OpenAPIDirection) (string, []string, error) {
+	if catalog != nil {
+		if annotation, ok, err := resolveOpenAPICatalogSchemaAnnotationWithBudget(catalog, schema, openAPICatalogDirectOperation, annotations.catalogBudget); err != nil {
+			return "", nil, err
+		} else if ok {
+			return annotations.use(annotation)
+		}
+		return projectOpenAPICatalogOperation(catalog, schema, nameParts, used)
+	}
+	return deriveOpenAPISchemaType(schema, docs, nameParts, used, annotations, direction)
 }
 
 func deriveOpenAPISchemaType(schema openAPINode, docs map[string]schemajson.Document, nameParts []string, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, direction OpenAPIDirection) (string, []string, error) {

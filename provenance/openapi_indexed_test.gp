@@ -1,0 +1,23 @@
+package provenance
+
+import (
+    "reflect"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/schemajson"
+)
+
+func TestOpenAPIIndexedProvenancePreservesPhysicalTokensAndOrdering(t *testing.T){
+    entry:="https://example.test/api";external:="https://example.test/model";dialect:="https://json-schema.org/draft/2020-12/schema"
+    resources:=[]OpenAPIResource{{URI:entry,Syntax:OpenAPIJSON,Role:OpenAPIDocument,Source:[]byte(`{"openapi":"3.1.2","components":{"schemas":{"Root":{"$ref":"https://logical.test/value#v"}}},"x-data":{"type":"integer","minimum":99}}`)},{URI:external,Syntax:OpenAPIYAML,Role:OpenAPISchema,Source:[]byte("$schema: https://json-schema.org/draft/2020-12/schema\n$id: https://logical.test/value\n$anchor: v\ntype: array\nminItems: 2\nprefixItems:\n  - {type: integer, minimum: 1.0}\n  - {type: integer, maximum: 9}\nexample: {type: integer, minimum: 88}\n")}}
+    locations:=[]OpenAPISchemaRoot{{Resource:external,Pointer:"/prefixItems/1",Dialect:dialect},{Resource:external,Pointer:"",Dialect:dialect},{Resource:entry,Pointer:"/components/schemas/Root",Dialect:dialect},{Resource:external,Pointer:"/prefixItems/0",Dialect:dialect}}
+    origin,err:=DiscoverOpenAPIIndexed(resources,OpenAPIOptions{EntryResource:entry},locations);if err!=nil{t.Fatal(err)};constraints:=origin.Constraints();if len(constraints)!=3{t.Fatalf("indexed constraints: %+v",constraints)}
+    for _,constraint:=range constraints{if constraint.Resource!=external||strings.Contains(constraint.Pointer,"example"){t.Fatalf("instance data acquired authority: %+v",constraint)};recovered,err:=origin.RecoverResourceNative(external,constraint.Name,origin.ResourceConstraintSource(external));if err!=nil||recovered!=constraint.Native{t.Fatalf("token recovery: %q %v",recovered,err)};if constraint.Keyword=="minimum"&&constraint.Native!="1.0"{t.Fatalf("YAML numeric lexeme normalized: %+v",constraint)}}
+    for left,right:=0,len(locations)-1;left<right;left,right=left+1,right-1{locations[left],locations[right]=locations[right],locations[left]};again,err:=DiscoverOpenAPIIndexed(resources,OpenAPIOptions{EntryResource:entry},locations);if err!=nil{t.Fatal(err)};if !reflect.DeepEqual(constraints,again.Constraints()){t.Fatal("input index order changed provenance")}
+}
+
+func TestOpenAPIIndexedProvenanceRejectsInvalidAuthorityAndBounds(t *testing.T){
+    uri:="https://example.test/api";dialect:="https://json-schema.org/draft/2020-12/schema";resources:=[]OpenAPIResource{{URI:uri,Syntax:OpenAPIJSON,Role:OpenAPIDocument,Source:[]byte(`{"openapi":"3.1.2","components":{"schemas":{"Root":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":1}}}}`)}};base:=OpenAPISchemaRoot{Resource:uri,Pointer:"/components/schemas/Root",Dialect:dialect}
+    for _,test:=range []struct{name string;locations []OpenAPISchemaRoot;limits schemajson.Limits}{{name:"missing",locations:[]OpenAPISchemaRoot{{Resource:uri,Pointer:"/missing",Dialect:dialect}}},{name:"scalar",locations:[]OpenAPISchemaRoot{{Resource:uri,Pointer:"/openapi",Dialect:dialect}}},{name:"conflicting",locations:[]OpenAPISchemaRoot{base,{Resource:uri,Pointer:base.Pointer,Dialect:"https://spec.openapis.org/oas/3.1/dialect/base"}}},{name:"declared dialect",locations:[]OpenAPISchemaRoot{{Resource:uri,Pointer:base.Pointer,Dialect:"https://spec.openapis.org/oas/3.1/dialect/base"}}},{name:"work",locations:[]OpenAPISchemaRoot{base,base,base,base,base},limits:schemajson.Limits{Nodes:20}}}{t.Run(test.name,func(t *testing.T){if origin,err:=DiscoverOpenAPIIndexed(resources,OpenAPIOptions{EntryResource:uri,Limits:test.limits},test.locations);err==nil||origin!=nil{t.Fatalf("invalid indexed authority accepted: %+v %v",origin,err)}})}
+}

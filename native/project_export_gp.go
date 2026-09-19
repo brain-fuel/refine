@@ -203,7 +203,7 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	}
 	if addition != nil {
 		if p.Format() == OpenAPI {
-			if err := projectOpenAPIAddition(document, addition); err != nil {
+			if err := projectOpenAPIAddition(document, addition, p.root.Resource); err != nil {
 				return nil, err
 			}
 		}
@@ -222,7 +222,11 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 			if !ok {
 				return nil, &Error{Code: "native.export", Format: OpenAPI, Message: "OpenAPI root is not an object"}
 			}
-			top["x-refine"] = annotation
+			if _, scoped := target["x-refine"]; scoped {
+				target["x-refine"] = annotation
+			} else {
+				top["x-refine"] = annotation
+			}
 		} else {
 			target["x-refine"] = annotation
 		}

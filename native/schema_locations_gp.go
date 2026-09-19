@@ -41,6 +41,22 @@ func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(strin
 	if p.Format() == JSONSchema {
 		return walkCatalogJSONSchemaLocations(resources, visit)
 	}
+	if p.Format() == OpenAPI {
+		for _, resource := range resources {
+			if resource.URI == p.EntryResource() {
+				doc, err := schemajson.Parse([]byte(resource.Source), schemajson.Limits{})
+				if err != nil {
+					return err
+				}
+				versionNode, _ := doc.Root().Lookup("openapi")
+				version, _ := nodeString(versionNode)
+				if strings.HasPrefix(version, "3.1.") || strings.HasPrefix(version, "3.2.") {
+					return p.walkOpenAPICatalogLocations(resources, visit)
+				}
+				break
+			}
+		}
+	}
 	docs := map[string]schemajson.Document{}
 	for _, resource := range resources {
 		doc, err := schemajson.Parse([]byte(resource.Source), schemajson.Limits{})

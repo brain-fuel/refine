@@ -7,14 +7,19 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
 // Flatten generated definitions into collision-free OpenAPI components. The
-// native OpenAPI oracle resolves component pointers, not a nested JSON $id's
-// local definition scope. Only generated schema references are rewritten;
+// generated references use the physical document's absolute URI so an
+// enclosing native $id cannot rebase them. Only generated refs are rewritten;
 // native schemas and literal example/const/default payloads remain untouched.
-func projectOpenAPIAddition(document any, addition map[string]any) error {
+func projectOpenAPIAddition(document any, addition map[string]any, resource string) error {
+	physical, err := url.Parse(resource)
+	if err != nil || !physical.IsAbs() || physical.Fragment != "" {
+		return fmt.Errorf("native.export: OpenAPI resource URI must be absolute without a fragment")
+	}
 	root, ok := document.(map[string]any)
 	if !ok {
 		return fmt.Errorf("native.export: OpenAPI root must be an object")
@@ -52,7 +57,9 @@ func projectOpenAPIAddition(document any, addition map[string]any) error {
 	}
 	names := map[string]string{}
 	for name := range definitions {
-		names["#/$defs/"+escapePointer(name)] = "#/components/schemas/" + escapePointer(prefix+name)
+		reference := *physical
+		reference.Fragment = "/components/schemas/" + escapePointer(prefix+name)
+		names["#/$defs/"+escapePointer(name)] = reference.String()
 	}
 	// Definitions are visited before removal, through schema positions only.
 	work := 0

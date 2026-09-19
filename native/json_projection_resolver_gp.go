@@ -376,15 +376,17 @@ func (p *Project) JSONSchemaResourceAliases() ([]Resource, error) {
 }
 
 type jsonResourceProjector struct {
-	catalog      *jsonProjectionCatalog
-	selector     ResourceSelector
-	declarations []string
-	names        map[string]string
-	states       map[string]int
-	used         map[string]bool
-	work         int
-	depth        int
-	sourceBytes  int
+	catalog         *jsonProjectionCatalog
+	selector        ResourceSelector
+	declarations    []string
+	names           map[string]string
+	states          map[string]int
+	used            map[string]bool
+	work            int
+	depth           int
+	sourceBytes     int
+	strictStructure bool
+	nameForNode     func(jsonProjectionNode) string
 }
 
 func projectJSONResources(resources []Resource, selector ResourceSelector) (string, error) {
@@ -446,6 +448,9 @@ func (p *jsonResourceProjector) name(target jsonProjectionNode) string {
 	base := safeTypeName(label)
 	sum := sha256.Sum256([]byte(jsonProjectionPhysicalIdentity(target.resource, target.pointer)))
 	name := fmt.Sprintf("%s_%x", base, sum[:4])
+	if p.nameForNode != nil {
+		name = p.nameForNode(target)
+	}
 	for p.used[name] {
 		name += "_"
 	}
@@ -529,6 +534,9 @@ func (p *jsonResourceProjector) selectedType(current jsonProjectionNode) (string
 }
 
 func (p *jsonResourceProjector) jsonType(current jsonProjectionNode) (string, error) {
+	if err := p.checkStructure(current); err != nil {
+		return "", err
+	}
 	p.work++
 	if p.work > schemajson.DefaultNodes {
 		return "", &Error{Code: "native.limit", Format: JSONSchema, Message: "JSON Schema projection work exceeds the deterministic aggregate limit"}
@@ -552,7 +560,7 @@ func (p *jsonResourceProjector) jsonType(current jsonProjectionNode) (string, er
 	if _, dynamic := node.Lookup("$dynamicRef"); dynamic {
 		return "JSON", nil
 	}
-	if carrier, handled, err := p.carrier(current); err != nil {
+	if carrier, handled, err := p.projectionCarrier(current); err != nil {
 		return "", err
 	} else if handled {
 		return carrier, nil
@@ -694,7 +702,7 @@ func (p *jsonResourceProjector) jsonMapType(current jsonProjectionNode) (string,
 	if additionalSchema {
 		candidates = append(candidates, "/additionalProperties")
 	} else if patterned && (!hasAdditional || additional.Raw() != "false") {
-		return "Map String JSON", true, nil
+		return p.mapFallback(current, "patternProperties leaves unmatched keys with an untyped value domain")
 	}
 	if patterned {
 		for _, member := range patterns.Members() {
@@ -724,7 +732,7 @@ func (p *jsonResourceProjector) jsonMapType(current jsonProjectionNode) (string,
 		if valueType == "" {
 			valueType = projected
 		} else if projected != valueType {
-			return "Map String JSON", true, nil
+			return p.mapFallback(current, "JSON map value schemas project to heterogeneous language types")
 		}
 	}
 	if valueType == "" {

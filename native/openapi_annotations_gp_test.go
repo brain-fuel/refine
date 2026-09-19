@@ -83,11 +83,7 @@ func TestOpenAPISchemaObjectAnnotationAuditFailsClosed(t *testing.T) {
 	}
 
 	rebased := `{"openapi":"3.2.1","info":{"title":"Rebased","version":"1"},"paths":{"/values":{"post":{"operationId":"putValue","requestBody":{"required":true,"content":{"application/json":{"schema":{"$id":"https://example.test/scoped/","$ref":"#/components/schemas/Positive"}}}},"responses":{"200":{"description":"ok"}}}}},"components":{"schemas":{"Root":{"type":"object"},"Positive":{"type":"integer","x-refine":{"source":"type Positive = Int where it > 0","root":"Positive"}}}}}`
-	base, err := IngestProject(OpenAPI, []byte(rebased), ProjectOptions{ResourceID: "https://example.test/rebased.json", Root: ResourceSelector{Pointer: "/components/schemas/Root", TypeName: "Root"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = base.WithDerivedOpenAPIOperations(OpenAPIDerivationOptions{}); problemCode(err) != "native.enforcement" || !strings.Contains(err.Error(), "$id-rebased") {
+	if _, err := IngestProject(OpenAPI, []byte(rebased), ProjectOptions{ResourceID: "https://example.test/rebased.json", Root: ResourceSelector{Pointer: "/components/schemas/Root", TypeName: "Root"}}); problemCode(err) != "native.projection" || !strings.Contains(err.Error(), "JSON Pointer does not identify a schema position") {
 		t.Fatalf("$id scope was resolved as a physical URI: %v", err)
 	}
 }

@@ -297,26 +297,7 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 		if !strings.HasPrefix(options.Root.Pointer, "/components/schemas/") {
 			return nil, &Error{Code: "native.root", Format: OpenAPI, Pointer: options.Root.Pointer, Message: "selected OpenAPI root must be a Schema Object under /components/schemas"}
 		}
-		document, err = ParseOpenAPI(input, Options{})
-		if err == nil {
-			selectedAnnotation, hasSelectedAnnotation, err = selectedOpenAPISchemaAnnotation(document, map[string][]byte{options.ResourceID: input}, options.Root)
-			if err == nil && hasSelectedAnnotation {
-				source = selectedAnnotation.Source
-			} else if err == nil {
-				l, _ := limits(Options{})
-				rootNode, parseErr := parseYAML(input, l)
-				if parseErr != nil {
-					err = parseErr
-				} else {
-					jsonDoc, convertErr := yamlToJSONDocument(rootNode)
-					if convertErr != nil {
-						err = convertErr
-					} else {
-						source, err = projectJSON(jsonDoc, options.Root, true)
-					}
-				}
-			}
-		}
+		return IngestProjectResources(OpenAPI, []Resource{{URI: options.ResourceID, Source: string(input)}}, options)
 	default:
 		return nil, &Error{Code: "native.format", Format: format, Message: "unsupported project format"}
 	}
@@ -381,7 +362,9 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 	}
 	project := &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: resourceSet, jsonOrigins: origins, nativeOrigins: nativeOrigins, nativeUnitSources: units, nativeUnitsInEditable: linked}
 	if format == OpenAPI {
-		installOpenAPIConstraintOrigins(project, options.ResourceID)
+		if err := installOpenAPIConstraintOrigins(project, options.ResourceID); err != nil {
+			return nil, err
+		}
 	}
 	return validateProject(project)
 }

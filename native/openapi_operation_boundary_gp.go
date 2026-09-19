@@ -472,12 +472,35 @@ func (p *Project) compileOpenAPISchemaTargets() error {
 			responses = append(responses, response.Parts...)
 		}
 	}
-	p.openAPIOperations.requestSchemas, p.openAPIOperations.requestRegex, err = compileOpenAPIDirectionalSchemas(requestResources, requests)
+	if strings.HasPrefix(p.Version(), "3.0.") {
+		p.openAPIOperations.requestSchemas, p.openAPIOperations.requestRegex, err = compileOpenAPIDirectionalSchemas(requestResources, requests)
+		if err != nil {
+			return err
+		}
+		p.openAPIOperations.responseSchemas, p.openAPIOperations.responseRegex, err = compileOpenAPIDirectionalSchemas(responseResources, responses)
+		return err
+	}
+	p.openAPIOperations.requestSchemas, p.openAPIOperations.requestRegex, err = compileOpenAPICatalogDirectionalSchemas(requestResources, p.EntryResource(), requests)
 	if err != nil {
 		return err
 	}
-	p.openAPIOperations.responseSchemas, p.openAPIOperations.responseRegex, err = compileOpenAPIDirectionalSchemas(responseResources, responses)
+	p.openAPIOperations.responseSchemas, p.openAPIOperations.responseRegex, err = compileOpenAPICatalogDirectionalSchemas(responseResources, p.EntryResource(), responses)
 	return err
+}
+func compileOpenAPICatalogDirectionalSchemas(resources []Resource, entry string, targets []OpenAPISchemaTarget) (map[string]*jsonoracle.Schema, *regexScope, error) {
+	view, err := NewOpenAPIValidationView(resources, entry)
+	if err != nil {
+		return nil, nil, err
+	}
+	mapped := make([]openAPIValidationCompileTarget, 0, len(targets))
+	for _, target := range targets {
+		selector, err := view.Selector(ResourceSelector{Resource: target.Resource, Pointer: target.Pointer})
+		if err != nil {
+			return nil, nil, &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation Schema Object is absent from its validation view", Cause: err}
+		}
+		mapped = append(mapped, openAPIValidationCompileTarget{id: target.ID, selector: selector})
+	}
+	return compileOpenAPIValidationView(view, mapped)
 }
 func compileOpenAPIDirectionalSchemas(resources []Resource, targets []OpenAPISchemaTarget) (map[string]*jsonoracle.Schema, *regexScope, error) {
 	scope := newRegexScope()

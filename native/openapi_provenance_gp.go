@@ -5,6 +5,7 @@ package native
 
 import (
 	"errors"
+	"sort"
 	"strings"
 
 	"goforge.dev/refine/provenance"
@@ -57,26 +58,65 @@ func (o *openAPIConstraintOrigin) RecoverNative(name, source string) (string, er
 	return o.projection.RecoverResourceNative(o.resource, name, source)
 }
 
-// discoverOpenAPIConstraintOrigins is deliberately best-effort. Native
-// ingestion has already validated the complete OpenAPI resource closure.
-// Provenance's smaller exact subset (3.1/3.2, supported dialects/references and
-// lexical forms) must never make another valid native project unimportable.
-func discoverOpenAPIConstraintOrigins(resources []Resource, entry string) (map[string]nativeConstraintOrigin, map[string]string) {
+// Modern OpenAPI provenance consumes the same physical Schema Object catalog
+// as validation. Unsupported lexical constraints stay opaque; catalog and
+// resource-limit failures must not silently erase supported correspondence.
+func discoverOpenAPIConstraintOrigins(resources []Resource, entry string) (map[string]nativeConstraintOrigin, map[string]string, error) {
 	inputs := make([]provenance.OpenAPIResource, len(resources))
+	canonical := make([]Resource, len(resources))
+	modern := false
 	for i, resource := range resources {
 		syntax := provenance.OpenAPIYAML
 		if _, err := schemajson.Parse([]byte(resource.Source), schemajson.Limits{}); err == nil {
 			syntax = provenance.OpenAPIJSON
 		}
+		encoded, err := openAPIResourceJSON([]byte(resource.Source))
+		if err != nil {
+			return nil, nil, err
+		}
+		canonical[i] = Resource{URI: resource.URI, Source: string(encoded)}
+		doc, err := schemajson.Parse(encoded, schemajson.Limits{})
+		if err != nil {
+			return nil, nil, err
+		}
 		role := provenance.OpenAPIFragment
-		if resource.URI == entry {
+		if versionNode, ok := doc.Root().Lookup("openapi"); ok {
 			role = provenance.OpenAPIDocument
+			if resource.URI == entry {
+				version, _ := nodeString(versionNode)
+				modern = strings.HasPrefix(version, "3.1.") || strings.HasPrefix(version, "3.2.")
+			}
+		} else if _, ok := doc.Root().Lookup("$schema"); ok {
+			role = provenance.OpenAPISchema
 		}
 		inputs[i] = provenance.OpenAPIResource{URI: resource.URI, Source: []byte(resource.Source), Syntax: syntax, Role: role}
 	}
-	projection, err := provenance.DiscoverOpenAPI(inputs, provenance.OpenAPIOptions{EntryResource: entry})
-	if err != nil {
-		return map[string]nativeConstraintOrigin{}, map[string]string{}
+	var projection *provenance.OpenAPI
+	var err error
+	if modern {
+		catalog, problem := newOpenAPIProjectionCatalog(canonical, entry)
+		if problem != nil {
+			return nil, nil, problem
+		}
+		keys := make([]string, 0, len(catalog.locations))
+		for key := range catalog.locations {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		locations := make([]provenance.OpenAPISchemaRoot, 0, len(keys))
+		for _, key := range keys {
+			node := catalog.locations[key]
+			locations = append(locations, provenance.OpenAPISchemaRoot{Resource: node.resource, Pointer: node.pointer, Dialect: node.dialect})
+		}
+		projection, err = provenance.DiscoverOpenAPIIndexed(inputs, provenance.OpenAPIOptions{EntryResource: entry}, locations)
+		if err != nil {
+			return nil, nil, wrap(OpenAPI, "native.provenance", entry, err)
+		}
+	} else {
+		projection, err = provenance.DiscoverOpenAPI(inputs, provenance.OpenAPIOptions{EntryResource: entry})
+		if err != nil {
+			return map[string]nativeConstraintOrigin{}, map[string]string{}, nil
+		}
 	}
 	grouped := map[string][]provenance.Constraint{}
 	for _, constraint := range projection.Constraints() {
@@ -93,14 +133,17 @@ func discoverOpenAPIConstraintOrigins(resources []Resource, entry string) (map[s
 		origins[resource.URI] = origin
 		units[resource.URI] = origin.ConstraintSource()
 	}
-	return origins, units
+	return origins, units, nil
 }
 
-func installOpenAPIConstraintOrigins(project *Project, entry string) {
+func installOpenAPIConstraintOrigins(project *Project, entry string) error {
 	if project == nil || project.Format() != OpenAPI {
-		return
+		return nil
 	}
-	origins, units := discoverOpenAPIConstraintOrigins(project.resources, entry)
+	origins, units, err := discoverOpenAPIConstraintOrigins(project.resources, entry)
+	if err != nil {
+		return err
+	}
 	project.nativeOrigins = origins
 	if project.nativeUnitSources == nil {
 		project.nativeUnitSources = map[string]string{}
@@ -112,4 +155,5 @@ func installOpenAPIConstraintOrigins(project *Project, entry string) {
 		project.nativeUnitSources[resource] = source
 		project.nativeUnitsInEditable[resource] = false
 	}
+	return nil
 }

@@ -77,7 +77,16 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 			if err == nil && hasSelectedAnnotation {
 				source = selectedAnnotation.Source
 			} else if err == nil {
-				source, err = projectJSONResourceRoot(byURI, options.Root, true)
+				if strings.HasPrefix(document.Version(), "3.0.") { source, err = projectJSONResourceRoot(byURI, options.Root, true)
+				} else {
+					var canonical []Resource
+					canonical, err = canonicalOpenAPIResourceMap(byURI)
+					if err == nil {
+						var catalog *jsonProjectionCatalog
+						catalog, err = newOpenAPIProjectionCatalog(canonical, options.Root.Resource)
+						if err == nil { source, err = projectOpenAPICatalogRoot(catalog, options.Root) }
+					}
+				}
 			}
 		}
 	case Avro:
@@ -149,7 +158,7 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	}
 	_ = mainBytes
 	project:=&Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeOrigins: nativeOrigins, nativeUnitSources: units, nativeUnitsInEditable: linked}
-	if format==OpenAPI{installOpenAPIConstraintOrigins(project,options.Root.Resource)}
+	if format==OpenAPI{if err:=installOpenAPIConstraintOrigins(project,options.Root.Resource);err!=nil{return nil,err}}
 	return validateProject(project)
 }
 
@@ -217,8 +226,14 @@ func validateOpenAPIResources(resources map[string][]byte, root ResourceSelector
 	if !strings.HasPrefix(root.Pointer, "/components/schemas/") {
 		return nil, &Error{Code: "native.root", Format: OpenAPI, Pointer: root.Pointer, Message: "selected OpenAPI root must be a Schema Object under /components/schemas"}
 	}
-	return validateOpenAPIDocumentResources(resources,root.Resource)
+	document,err:=validateOpenAPIDocumentResources(resources,root.Resource);if err!=nil{return nil,err}
+	if strings.HasPrefix(document.Version(),"3.0."){return document,nil}
+	canonical,err:=canonicalOpenAPIResourceMap(resources);if err!=nil{return nil,err};view,err:=NewOpenAPIValidationView(canonical,root.Resource);if err!=nil{return nil,err};mapped,err:=view.Selector(root);if err!=nil{return nil,err};if err:=compileOpenAPIValidationRoot(view,mapped);err!=nil{return nil,err};return document,nil
 }
+
+func canonicalOpenAPIResourceMap(resources map[string][]byte)([]Resource,error){uris:=sortedResourceURIs(resources);out:=make([]Resource,0,len(uris));for _,uri:=range uris{encoded,err:=openAPIResourceJSON(resources[uri]);if err!=nil{return nil,wrap(OpenAPI,"native.structure",uri,err)};out=append(out,Resource{URI:uri,Source:string(encoded)})};return out,nil}
+
+func normalizeOpenAPIKinResources(resources []Resource)([]Resource,error){out:=make([]Resource,len(resources));for i,resource:=range resources{out[i]=resource;doc,err:=schemajson.Parse([]byte(resource.Source),schemajson.Limits{});if err!=nil{return nil,wrap(OpenAPI,"native.structure",resource.URI,err)};versionNode,document:=doc.Root().Lookup("openapi");version,valid:=nodeString(versionNode);if !document||!valid||version!="3.2.1"{continue};doc,err=doc.Replace("/openapi",[]byte(`"3.2.0"`));if err!=nil{return nil,wrap(OpenAPI,"native.structure",resource.URI,err)};out[i].Source=doc.Raw()};return out,nil}
 
 // validateOpenAPIDocumentResources validates a complete OpenAPI entry document
 // and its explicit offline closure without inventing or requiring a payload
@@ -255,16 +270,16 @@ func validateOpenAPIDocumentResources(resources map[string][]byte,entryResource 
 	if !ok || !openAPIVersion.MatchString(version) || !supportedOpenAPI(version) {
 		return nil, &Error{Code: "native.version", Format: OpenAPI, Pointer: "/openapi", Message: "supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0-3.2.1"}
 	}
-	oracleInput, err := openAPIOracleInput(main, yamlRoot, version)
-	if err != nil {
-		return nil, wrap(OpenAPI, "native.structure", "", err)
-	}
+	oracleResources:=resources;oracleInput:=main
+	if strings.HasPrefix(version,"3.1.")||strings.HasPrefix(version,"3.2."){
+		canonical,err:=canonicalOpenAPIResourceMap(resources);if err!=nil{return nil,err};catalog,err:=newOpenAPIProjectionCatalog(canonical,entryResource);if err!=nil{return nil,err};kinResources,err:=openAPIKinOracleResources(catalog);if err!=nil{return nil,err};kinResources,err=normalizeOpenAPIKinResources(kinResources);if err!=nil{return nil,err};oracleResources=map[string][]byte{};for _,resource:=range kinResources{oracleResources[resource.URI]=[]byte(resource.Source)};oracleInput=oracleResources[entryResource]
+	}else{var err error;oracleInput,err=openAPIOracleInput(main,yamlRoot,version);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}}
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = true
 	loader.ReadFromURIFunc = func(_ *openapi3.Loader, target *url.URL) ([]byte, error) {
 		copy := *target
 		copy.Fragment = ""
-		if data, ok := resources[copy.String()]; ok {
+		if data, ok := oracleResources[copy.String()]; ok {
 			return append([]byte(nil), data...), nil
 		}
 		return nil, fmt.Errorf("resource %s is not in the explicit bundle", copy.String())
