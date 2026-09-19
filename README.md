@@ -78,5 +78,7 @@ their current limits.
 
 The module is `goforge.dev/refine`, hosted at
 [brain-fuel/refine](https://github.com/brain-fuel/refine). MIT licensed.
-The Maven group ID remains undecided. Maven deployment is explicitly outside the
-current implementation goal; preparing and testing Java artifacts is in scope.
+The Java runtime and Maven plugin are configured for publication as `dev.goforge:refine` and
+`dev.goforge:refine-maven-plugin`; see [Maven Central publication](docs/MAVEN-PUBLISHING.md)
+for the signed release procedure. Generated schema artifacts remain owned by
+the consuming Maven or Gradle project.
