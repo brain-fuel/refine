@@ -842,6 +842,9 @@ func (w *openAPIProvenanceWalker) walkSchema(node openAPIProvenanceNode, dialect
 }
 
 func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanceNode, dialect string) error {
+	if err := w.discoverDependentRequiredAssertion(node, dialect); err != nil {
+		return err
+	}
 	if err := w.discoverUniqueItemsAssertion(node, dialect); err != nil {
 		return err
 	}

@@ -273,6 +273,26 @@ retaining stale authority. In particular, `not (unique it)` never means
 
 ## Adapter inventory boundary
 
+`dependentRequired` is one atomic exact unit over the detached
+`Map String JSON` domain for explicit singleton object schemas. Its canonical
+predicate is a balanced conjunction of `if member "trigger" it then ... else
+True` presence tests; names are ordered by decoded UTF-16 units. A property
+whose value is null is present. Empty dependency lists remain explicit so their
+native token can be recovered independently of logical simplification. Typed
+records are not given this clause: discarding unknown fields would change its
+meaning. Discovery covers Draft 2020-12 and OpenAPI 3.1/3.2 JSON resources;
+OpenAPI YAML and 3.0 retain native validation without this editable unit.
+
+`LowerDependentRequiredConstraint` recognizes only that bounded canonical form
+with an unshadowed `member`. Changes replace the complete keyword; removal
+deletes only it, preserving adjacent bounds and exact recovery of other units.
+Ordinary lowering also recognizes the same clause on `Map String JSON`.
+Native project edits rebuild effective validation, export and bundle views.
+Discovery bounds source expansion before copies, uses a fixed aggregate
+UTF-16 comparison-work ceiling for sorting, and leaves unrepresentable domains
+opaque. It never converts an arbitrary user-defined presence function into
+native schema authority.
+
 | Category | Status | Exact boundary |
 | --- | --- | --- |
 | Numeric bounds and `multipleOf` | Implemented | Explicit singleton integer/number domains; OpenAPI 3.0 lower/upper bounds retain the paired exclusivity Boolean. |
@@ -280,7 +300,8 @@ retaining stale authority. In particular, `not (unique it)` never means
 | `const`/`enum` | Implemented subset | Draft 2020-12 and OpenAPI 3.1/3.2 JSON values support both. OpenAPI 3.0 supports JSON-source `enum` only. All values must fit the bounded intrinsic JSON algebra. |
 | `uniqueItems: true` | Implemented | Detached explicit singleton array domain over intrinsic JSON equality. |
 | Avro fixed size and enum symbols | Implemented | Atomic exact size and ordered-symbol units; remaining Avro defaults, aliases, order and logical-type parameters are structural/wire metadata, not interchangeable `where` clauses. |
-| `dependentRequired`; JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Each needs its own bounded canonical syntax, lexical recovery and native inverse. They are not inferred by the current implementation. |
+| `dependentRequired` | Implemented subset | Detached explicit singleton object domain; Draft 2020-12 and OpenAPI 3.1/3.2 JSON only; whole-keyword token recovery and canonical presence inverse. |
+| JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Exact subtree lexical recovery is not yet implemented. These remain natively enforced without editable canonical units. |
 | `required` | Structurally representable, no detached unit yet | Projected record presence is already checked. A separate editable unit would require atomic coordination with that structural source so removal cannot leave stale requiredness. |
 | `minLength`/`maxLength`, `pattern`, `patternProperties`, `format` | No equivalence to current refinement builtins | Native string length counts Unicode code points rather than UTF-16 units; native regular expressions are ECMA-262 rather than the DSL's RE2 syntax; format assertion depends on dialect/runtime configuration. |
 | `contains` families, `propertyNames`, `dependentSchemas`, `unevaluated*`, references and schema applicators | Native/structural preservation | General exactness requires subschema evaluation and, for unevaluated keywords, annotation state. JSON Schema `oneOf` is not the DSL membership function of the same name. |

@@ -71,7 +71,8 @@ package. Editing one canonical constraint does not invalidate an untouched
 constraint. The `Document` provenance methods remain JSON-Schema-only; Avro and
 OpenAPI use resource-scoped `Project` methods. Those project adapters support
 Avro fixed sizes and ordered enum symbols, OpenAPI 3.0 paired numeric bounds,
-and OpenAPI 3.1/3.2 numeric, `const`/`enum`, and collection-count constraints within their documented exact
+and OpenAPI 3.1/3.2 numeric, `const`/`enum`, collection-count, uniqueness and
+JSON-source `dependentRequired` constraints within their documented exact
 subsets. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md).
 
 ## Refined annotations

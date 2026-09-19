@@ -40,6 +40,8 @@ complete the remaining product scope.
   and ordered enum symbols. Paired OpenAPI 3.0 bounds and detached intrinsic-JSON
   `uniqueItems: true` array units are now implemented, as are OpenAPI 3.0
   non-nullable collection cardinality and JSON enum units.
+  JSON-source `dependentRequired` now has detached exact object-presence units
+  with checked edits and inverse lowering for Draft 2020-12/OpenAPI 3.1/3.2.
   Resource-scoped edits now
   rebuild effective validation/export/bundle views; exact whole-document
   retention alone does not satisfy editable, per-constraint bijection.

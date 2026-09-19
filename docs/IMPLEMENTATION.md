@@ -2563,7 +2563,7 @@ current implementation still performs no Maven deployment or product release.
   allowing transparent aliases, refinements and the occurrence's optional
   wrapper without requiring original predicate text to remain unchanged.
   Aggregate audit budgets apply across each derivation/index build.
-  `go test -v ./native -run '^(TestOpenAPICatalogOperationDerivationRejectsDynamicAnnotationTargets|TestOpenAPICatalogOperationIndexAuditsUnconsumedAnnotations|TestWithDerivedOpenAPIOperationsFailsClosedAtomically|TestWithDerivedOpenAPIOperationsVersionMatrix|TestOpenAPISchemaObjectAnnotationControlsSelectedPayload|TestOpenAPISchemaObjectAnnotationControlsDerivedOperationPart|TestOpenAPISchemaObjectAnnotationAuditFailsClosed)$'`
+  `go test ./native -run '^(TestOpenAPICatalogOperationDerivationRejectsDynamicAnnotationTargets|TestOpenAPICatalogOperationIndexAuditsUnconsumedAnnotations|TestWithDerivedOpenAPIOperationsFailsClosedAtomically|TestWithDerivedOpenAPIOperationsVersionMatrix|TestOpenAPISchemaObjectAnnotationControlsSelectedPayload|TestOpenAPISchemaObjectAnnotationControlsDerivedOperationPart|TestOpenAPISchemaObjectAnnotationAuditFailsClosed)$'`
   passed in 0.530s after updating one old malformed-ID fixture to expect its
   earlier catalog rejection. A separate new positive edit-authority proof,
   `go test -v ./native -run '^TestOpenAPICatalogOperationAnnotationKeepsIntentionalEditsAcrossBundleAndExport$'`,
@@ -2573,3 +2573,41 @@ current implementation still performs no Maven deployment or product release.
   `go vet ./native ./provenance ./java`, and `git diff --check` passed for the
   coherent integration state. New, unintegrated `dependentRequired` helpers
   are kept out of this checkpoint and are not included in its support claims.
+- OpenAPI integration checkpoint `06c6d6c294932533e5c1757f0c666e5e313ff0cd`
+  was pushed. Its full cross-platform
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/35457997287) is
+  tracked separately from the focused development evidence above.
+- The next bounded correspondence batch adds atomic JSON `dependentRequired`
+  units over detached `Map String JSON`. Pure discovery/inverse/oracle tests
+  initially passed in 0.260s. Independent review then tightened source-size
+  admission before defensive copies, exact escaped-text accounting, singleton
+  type-array admission, aggregate UTF-16 sort work and canonical inverse order.
+  Public JSON Schema and OpenAPI 3.1/3.2 JSON discovery hooks were integrated
+  before one combined rerun:
+  `go test ./provenance -run '^(TestDependentRequiredPureDiscoveryInverseAndOracle|TestDependentRequiredIsolationShadowingAndBounds|TestDependentRequiredPublicJSONSchemaDiscoveryMatchesOracle|TestDependentRequiredOpenAPIJSONActualPositionsAndRecovery)$'`
+  passed in 0.294s. YAML and OpenAPI 3.0 keywords remain opaque/native-enforced.
+- The native lowerer reuses the checked structural inverse and refuses typed
+  maps/records or shadowed `member`. Effective edits replace only the original
+  keyword family and preserve independent constraints. The three new lowering,
+  edit/export/bundle and OpenAPI logical-target anchors passed in 0.437s:
+  `go test -v ./native -run '^(TestDependentRequiredLoweringKeepsOnlyCanonicalLosslessObjectAuthority|TestDependentRequiredNativeEditsAreAtomicIsolatedAndRetainOriginals|TestDependentRequiredOpenAPIEditsUseCatalogPhysicalPositions)$'`.
+  The coherent affected race selection, including existing cardinality and
+  uniqueness lowering, passed in 1.837s:
+  `go test -race ./native -run '^(TestDependentRequiredLoweringKeepsOnlyCanonicalLosslessObjectAuthority|TestDependentRequiredNativeEditsAreAtomicIsolatedAndRetainOriginals|TestDependentRequiredOpenAPIEditsUseCatalogPhysicalPositions|TestCollectionCardinalityLoweringAndScopedEdits|TestCollectionCardinalityDoesNotLowerStringLengthOrShadowedBuiltins|TestUniqueItemsLowersOnlyDetachedIntrinsicJSON)$'`.
+- One required Java 25 harness checks absent/null triggers, missing/partial/all
+  dependencies, extra properties, empty dependency lists and escaped Unicode
+  keys against generated `Contract.validate`:
+  `REFINE_REQUIRE_JAVA=1 JAVA_HOME=/opt/homebrew/opt/openjdk@25 go test -v ./java -run '^TestGeneratedDependentRequiredDetachedUnitMatchesPresenceSemantics$'`
+  passed (test 2.16s, package 2.594s). Public discovery and the canonical inverse
+  are checked before compilation. No Java runtime production code, dependency
+  or Maven lifecycle changed, so their unrelated prior checks were not repeated.
+- The OpenAPI checkpoint's macOS CI found one more old failure-timing assertion:
+  unsupported document/Schema Object dialects now reject atomically during
+  ingestion, not later at payload validation. `TestOpenAPIPayloadDialectGates`
+  was updated to require `native.projection`, no returned project, and both
+  dialect-specific diagnostics. Its focused pass took 0.396s. Because modern
+  ingestion changes affected more callers than the earlier narrow selection
+  captured, the local selection was expanded once to `go test ./native`;
+  the entire native package passed in 16.680s. No unchanged Java/Maven suite was
+  repeated. Generation checks, vet and diff checks passed for the dependency
+  batch; independent review found no further inverse/lowering authority issue.

@@ -1,0 +1,23 @@
+package native
+
+import (
+    "encoding/json"
+    "strings"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+    "goforge.dev/refine/schemajson"
+)
+
+// Only the detached lossless Map String JSON domain can carry this native
+// presence assertion. A typed record may discard the very keys being tested.
+// Use the shared checked inverse rather than a second implication recognizer.
+func (l *lowerer)dependentRequiredRule(schema any,rule language.Where,base *language.Type)bool{
+    object,ok:=schema.(map[string]any);if !ok||object["type"]!="object"||language.FormatType(base)!="((Map String) JSON)"||lowererHasFunction(l,"member"){return false}
+    predicate:=language.FormatExpression(rule.Predicate);prefix:="type NativeDependentRequired = Map String JSON where ";if len(predicate)>schemajson.DefaultBytes-len(prefix){return false}
+    // This isolated module cannot hide a user function: member was checked
+    // against the original module above, and the inverse accepts only literal
+    // presence implications over it, with no other callable symbols.
+    program,err:=language.Compile(prefix+predicate);if err!=nil{return false};raw,err:=provenance.LowerDependentRequiredConstraint(program,provenance.Constraint{Name:"NativeDependentRequired",Keyword:"dependentRequired"});if err!=nil{return false}
+    decoder:=json.NewDecoder(strings.NewReader(raw));var assertion map[string][]string;if err:=decoder.Decode(&assertion);err!=nil{return false};putConstraint(object,"dependentRequired",assertion);return true
+}

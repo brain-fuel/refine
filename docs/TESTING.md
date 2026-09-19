@@ -416,6 +416,20 @@ the first build also supplies the actual JAR to the offline inventory verifier.
 No fifth build is added. Unchanged model/evaluator/Avro harnesses and the
 independent artifact unit selection retain their prior evidence.
 
+The detached `dependentRequired` batch uses the following selections. Public
+discovery includes exact token recovery and an independent native-schema oracle;
+the Java command executes only the new presence-semantics harness.
+
+```sh
+go test ./provenance -run '^(TestDependentRequiredPureDiscoveryInverseAndOracle|TestDependentRequiredIsolationShadowingAndBounds|TestDependentRequiredPublicJSONSchemaDiscoveryMatchesOracle|TestDependentRequiredOpenAPIJSONActualPositionsAndRecovery)$'
+go test -race ./native -run '^(TestDependentRequiredLoweringKeepsOnlyCanonicalLosslessObjectAuthority|TestDependentRequiredNativeEditsAreAtomicIsolatedAndRetainOriginals|TestDependentRequiredOpenAPIEditsUseCatalogPhysicalPositions|TestCollectionCardinalityLoweringAndScopedEdits|TestCollectionCardinalityDoesNotLowerStringLengthOrShadowedBuiltins|TestUniqueItemsLowersOnlyDetachedIntrinsicJSON)$'
+REFINE_REQUIRE_JAVA=1 JAVA_HOME=/opt/homebrew/opt/openjdk@25 go test -v ./java -run '^TestGeneratedDependentRequiredDetachedUnitMatchesPresenceSemantics$'
+```
+
+Use the installed Java 25 path on the host. This batch changes provenance and
+native lowering, not generated-runtime implementation, dependency coordinates,
+or Maven lifecycle behavior; prior unrelated JVM/Maven evidence is reused.
+
 For each completed batch record: source revision (or exact dirty-file scope),
 command, result, environment, and any skipped coverage. A later relevant edit
 invalidates that evidence; an unrelated edit does not. Keep checkpoint results

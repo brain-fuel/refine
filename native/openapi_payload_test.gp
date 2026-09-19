@@ -2,6 +2,7 @@ package native
 
 import (
     "fmt"
+    "strings"
     "testing"
     "testing/quick"
 )
@@ -21,8 +22,9 @@ func TestOpenAPIExactYAMLNumbersAndExternalResources(t *testing.T){
 }
 
 func TestOpenAPIPayloadDialectGates(t *testing.T){
-    custom:="openapi: 3.1.2\njsonSchemaDialect: https://example.test/custom-dialect\ninfo: {title: Custom, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {type: string}\n";project,err:=IngestProject(OpenAPI,[]byte(custom),ProjectOptions{Root:ResourceSelector{Pointer:"/components/schemas/Text",TypeName:"Text"}});if err!=nil{t.Fatal(err)};if err:=project.ValidateJSON([]byte(`"x"`));problemCode(err)!="native.enforcement"{t.Fatalf("custom dialect silently ignored: %v",err)}
-    nested:="openapi: 3.1.2\ninfo: {title: Nested, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {$schema: 'https://example.test/custom-dialect', type: string}\n";project,err=IngestProject(OpenAPI,[]byte(nested),ProjectOptions{Root:ResourceSelector{Pointer:"/components/schemas/Text",TypeName:"Text"}});if err!=nil{t.Fatal(err)};if err:=project.ValidateJSON([]byte(`"x"`));problemCode(err)!="native.enforcement"{t.Fatalf("Schema Object custom dialect silently ignored: %v",err)}
+    unsupported:=func(source,message string){t.Helper();project,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{Root:ResourceSelector{Pointer:"/components/schemas/Text",TypeName:"Text"}});if project!=nil||problemCode(err)!="native.projection"||!strings.Contains(err.Error(),message){t.Fatalf("unsupported dialect did not fail closed at ingestion: project=%v error=%v",project,err)}}
+    unsupported("openapi: 3.1.2\njsonSchemaDialect: https://example.test/custom-dialect\ninfo: {title: Custom, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {type: string}\n","openapi.dialect")
+    unsupported("openapi: 3.1.2\ninfo: {title: Nested, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {$schema: 'https://example.test/custom-dialect', type: string}\n","unsupported Schema Object dialect")
 }
 
 func TestOpenAPI30ExactAdapterNullableExclusiveAndRefs(t *testing.T){

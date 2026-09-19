@@ -316,6 +316,12 @@ func (s *JSONSchema) walk(node schemajson.Node, path string) error {
 			continue
 		} // retained native unknown key
 		where := pointer(path, key)
+		if handled, err := s.dependentRequiredConstraint(node, path, key, member.Value); handled {
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if handled, err := s.uniqueItemsConstraint(node, path, key, member.Value); handled {
 			if err != nil {
 				return err

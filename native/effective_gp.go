@@ -17,7 +17,8 @@ import (
 // resource-scoped canonical JSON Schema/OpenAPI provenance units. Opaque and
 // untouched constraints remain in the immutable baseline. A changed unit must
 // remain one exactly lowerable numeric, exact const/enum, item-count, or
-// property-count or intrinsic-JSON uniqueness constraint at the same scoped Schema Object; otherwise the
+// property-count, intrinsic-JSON uniqueness, or object dependency constraint
+// at the same scoped Schema Object; otherwise the
 // current runtime cannot enforce it and fails closed.
 func (p *Project) effectiveJSONSchemaResources(resources []Resource) ([]Resource, error) {
 	if p.Format() != JSONSchema && p.Format() != OpenAPI || len(p.nativeUnitSources) == 0 {
@@ -221,7 +222,7 @@ func effectiveConstraintAssertion(input []byte, origin string) (string, any, err
 	}
 	found := ""
 	var value any
-	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "const", "enum", "minItems", "maxItems", "minProperties", "maxProperties", "uniqueItems"} {
+	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "const", "enum", "minItems", "maxItems", "minProperties", "maxProperties", "uniqueItems", "dependentRequired"} {
 		if item, ok := root[keyword]; ok {
 			if found != "" {
 				return "", nil, fmt.Errorf("edited native unit lowers to more than one supported assertion")
@@ -246,7 +247,7 @@ func effectiveConstraintFamily(keyword string) string {
 	switch keyword {
 	case "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf":
 		return "numeric"
-	case "const", "enum", "uniqueItems":
+	case "const", "enum", "uniqueItems", "dependentRequired":
 		return "exact"
 	case "minItems", "maxItems":
 		return "item-count"

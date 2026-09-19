@@ -1,0 +1,49 @@
+package java
+
+import (
+    "context"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strconv"
+    "strings"
+    "testing"
+    "time"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+    "goforge.dev/refine/schemajson"
+)
+
+func TestGeneratedDependentRequiredDetachedUnitMatchesPresenceSemantics(t *testing.T){
+    schema:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","dependentRequired":{"credit_card":["postal","billing_address"],"\u0065mpty":[],"\u03a9":["\u4f9d\u5b58"]}}`;origin,err:=provenance.DiscoverJSONSchema([]byte(schema),schemajson.Limits{});if err!=nil{t.Fatal(err)};constraints:=origin.Constraints();if len(constraints)!=1||constraints[0].Keyword!="dependentRequired"||constraints[0].Scope!="((Map String) JSON)"{t.Fatalf("unexpected detached constraint: %+v",constraints)};constraint:=constraints[0]
+    source:=origin.ConstraintSource();program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};lowered,err:=provenance.LowerDependentRequiredConstraint(program,constraint);if err!=nil{t.Fatal(err)};if lowered!=`{"credit_card":["billing_address","postal"],"empty":[],"Ω":["依存"]}`{t.Fatalf("noncanonical dependentRequired inverse: %s",lowered)}
+    files,err:=GenerateModels(program,"example.dependent","Contract");if err!=nil{t.Fatal(err)};dir:=t.TempDir();sources:=[]string{};for _,file:=range files{target:=filepath.Join(dir,filepath.FromSlash(file.Path));if err:=os.MkdirAll(filepath.Dir(target),0755);err!=nil{t.Fatal(err)};if err:=os.WriteFile(target,[]byte(file.Source),0644);err!=nil{t.Fatal(err)};sources=append(sources,target)}
+    harnessSource:=strings.ReplaceAll(dependentRequiredHarnessJava,"ROOT_NAME",strconv.Quote(constraint.Name));harness:=filepath.Join(dir,"DependentRequiredHarness.java");if err:=os.WriteFile(harness,[]byte(harnessSource),0644);err!=nil{t.Fatal(err)};sources=append(sources,harness);classes:=filepath.Join(dir,"classes");args:=append([]string{"--release","25","-encoding","UTF-8","-Xlint:all","-Werror","-d",classes},sources...);compiler,vm:=javaTools(t)
+    compileContext,stopCompile:=context.WithTimeout(context.Background(),time.Minute);defer stopCompile();if output,err:=exec.CommandContext(compileContext,compiler,args...).CombinedOutput();err!=nil{if compileContext.Err()!=nil{t.Fatalf("dependentRequired javac exceeded the process deadline: %v",compileContext.Err())};t.Fatalf("dependentRequired javac: %v\n%s",err,output)}
+    runContext,stopRun:=context.WithTimeout(context.Background(),time.Minute);defer stopRun();if output,err:=exec.CommandContext(runContext,vm,"-Xss256k","-Xmx64m","-cp",classes,"DependentRequiredHarness").CombinedOutput();err!=nil{if runContext.Err()!=nil{t.Fatalf("dependentRequired runtime exceeded the process deadline: %v",runContext.Err())};t.Fatalf("dependentRequired runtime: %v\n%s",err,output)}
+}
+
+const dependentRequiredHarnessJava=`
+import example.dependent.Contract;
+import example.dependent.Data;
+import example.dependent.Validation;
+import java.util.LinkedHashMap;
+import java.util.List;
+public final class DependentRequiredHarness {
+  private static final String ROOT=ROOT_NAME;
+  static Data jsonNull(){return new Data.Variant("JSONNull",List.of());}
+  static Data mapping(String... keys){var values=new LinkedHashMap<String,Data>();for(String key:keys)values.put(key,jsonNull());return new Data.Mapping(values);}
+  static void check(boolean valid,String... keys){var outcome=Contract.validate(ROOT,mapping(keys));var expected=valid?Validation.State.VALID:Validation.State.INVALID;if(outcome.state()!=expected||outcome.incomplete())throw new AssertionError(List.of(keys)+" => "+outcome);}
+  public static void main(String[] args){
+    check(true);
+    check(true,"unrelated");
+    check(false,"credit_card");
+    check(false,"credit_card","postal");
+    check(true,"credit_card","postal","billing_address","extra");
+    check(true,"empty");
+    check(false,"\u03a9");
+    check(true,"\u03a9","\u4f9d\u5b58");
+  }
+}
+`
