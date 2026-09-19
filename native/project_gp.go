@@ -438,7 +438,7 @@ func rootAnnotation(document *Document, root ResourceSelector) (string, string, 
 		wanted = "/x-refine"
 	}
 	for _, annotation := range document.Annotations() {
-		if annotation.Pointer == wanted && annotation.Root != "" && checkedTypeName(annotation.Root) {
+		if annotation.Pointer == wanted && annotation.Root != "" {
 			return annotation.Source, annotation.Root, true
 		}
 	}
@@ -453,7 +453,7 @@ func selectedRootAnnotation(document *Document, root ResourceSelector) (Annotati
 		wanted = "/x-refine"
 	}
 	for _, annotation := range document.Annotations() {
-		if annotation.Pointer == wanted && annotation.Root != "" && checkedTypeName(annotation.Root) {
+		if annotation.Pointer == wanted && annotation.Root != "" {
 			return annotation, true
 		}
 	}

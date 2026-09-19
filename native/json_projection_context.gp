@@ -1,0 +1,19 @@
+package native
+
+import (
+    "net/url"
+    "strings"
+)
+
+// One physical schema location has one effective URI and dialect context.
+// Reaching it through another schema root must not silently keep whichever
+// inherited context happened to be indexed first. Local declarations may make
+// different incoming contexts converge; otherwise fail closed.
+func checkIndexedJSONProjectionContext(incoming,prior jsonProjectionNode)error{
+    effectiveBase:=incoming.base;effectiveDialect:=incoming.dialect
+    if id,exists:=incoming.node.Lookup("$id");exists{raw,ok:=nodeString(id);if !ok{return &Error{Code:"native.projection",Format:JSONSchema,Message:"schema $id must be text"}};base,err:=url.Parse(effectiveBase);if err!=nil{return err};relative,err:=url.Parse(raw);if err!=nil{return err};effectiveBase=base.ResolveReference(relative).String()}
+    if dialect,exists:=incoming.node.Lookup("$schema");exists{raw,ok:=nodeString(dialect);if !ok{return &Error{Code:"native.projection",Format:JSONSchema,Message:"schema $schema must be text"}};effectiveDialect=raw}
+    if effectiveDialect==""{effectiveDialect="https://json-schema.org/draft/2020-12/schema"};priorDialect:=prior.dialect;if priorDialect==""{priorDialect="https://json-schema.org/draft/2020-12/schema"}
+    if effectiveBase!=prior.base||strings.TrimSuffix(effectiveDialect,"#")!=strings.TrimSuffix(priorDialect,"#"){return &Error{Code:"native.projection",Format:JSONSchema,Message:"one physical Schema Object was reached with conflicting effective base URI or dialect"}}
+    return nil
+}

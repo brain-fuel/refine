@@ -21,6 +21,7 @@ type jsonProjectionNode struct {
 	pointer  string
 	node     schemajson.Node
 	base     string
+	dialect  string
 }
 type jsonProjectionCatalog struct {
 	locations     map[string]jsonProjectionNode
@@ -58,6 +59,27 @@ func (c *jsonProjectionCatalog) registerAnchor(identity string, node jsonProject
 }
 
 func newJSONProjectionCatalog(resources []Resource) (*jsonProjectionCatalog, error) {
+	c, err := newJSONProjectionDocuments(resources)
+	if err != nil {
+		return nil, err
+	}
+	for _, resource := range resources {
+		doc := c.documents[resource.URI]
+		root := jsonProjectionNode{resource: resource.URI, node: doc.Root(), base: resource.URI}
+		if err := c.index(root, 0); err != nil {
+			return nil, err
+		}
+		if err := c.registerRoot(resource.URI, c.locations[jsonProjectionKey(resource.URI, "")]); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
+}
+
+// newJSONProjectionDocuments admits physical resources without interpreting
+// their document roots as Schema Objects. OpenAPI supplies role-aware schema
+// roots before sharing the same bounded JSON Schema index and resolver.
+func newJSONProjectionDocuments(resources []Resource) (*jsonProjectionCatalog, error) {
 	c := &jsonProjectionCatalog{locations: map[string]jsonProjectionNode{}, roots: map[string]jsonProjectionNode{}, anchors: map[string]jsonProjectionNode{}, documents: map[string]schemajson.Document{}}
 	if len(resources) == 0 {
 		return nil, &Error{Code: "native.resource", Format: JSONSchema, Message: "at least one resource is required"}
@@ -84,16 +106,6 @@ func newJSONProjectionCatalog(resources []Resource) (*jsonProjectionCatalog, err
 		}
 		c.documents[resource.URI] = doc
 	}
-	for _, resource := range resources {
-		doc := c.documents[resource.URI]
-		root := jsonProjectionNode{resource: resource.URI, node: doc.Root(), base: resource.URI}
-		if err := c.index(root, 0); err != nil {
-			return nil, err
-		}
-		if err := c.registerRoot(resource.URI, c.locations[jsonProjectionKey(resource.URI, "")]); err != nil {
-			return nil, err
-		}
-	}
 	return c, nil
 }
 
@@ -113,14 +125,21 @@ func (c *jsonProjectionCatalog) index(current jsonProjectionNode, depth int) err
 		return err
 	}
 	key := jsonProjectionKey(current.resource, current.pointer)
-	if _, exists := c.locations[key]; exists {
-		return nil
+	if prior, exists := c.locations[key]; exists {
+		return checkIndexedJSONProjectionContext(current, prior)
 	}
 	kind := schemajson.KindName(current.node.Kind())
 	if kind != "object" && kind != "boolean" {
 		return &Error{Code: "native.projection", Format: JSONSchema, Pointer: key, Message: "schema position must be an object or Boolean"}
 	}
 	if kind == "object" {
+		if declared, ok := current.node.Lookup("$schema"); ok {
+			dialect, valid := nodeString(declared)
+			if !valid {
+				return &Error{Code: "native.projection", Format: JSONSchema, Pointer: key + "/$schema", Message: "$schema must be text"}
+			}
+			current.dialect = dialect
+		}
 		if idNode, ok := current.node.Lookup("$id"); ok {
 			raw, ok := nodeString(idNode)
 			if !ok {
@@ -146,17 +165,19 @@ func (c *jsonProjectionCatalog) index(current jsonProjectionNode, depth int) err
 				return err
 			}
 		}
-		if anchorNode, ok := current.node.Lookup("$anchor"); ok {
-			anchor, ok := nodeString(anchorNode)
-			if !ok || !jsonProjectionAnchor(anchor) {
-				return &Error{Code: "native.projection", Format: JSONSchema, Pointer: key + "/$anchor", Message: "$anchor must be a valid static anchor name"}
-			}
-			identity := current.base + "#" + anchor
-			if err := c.chargeIdentifier(identity); err != nil {
-				return err
-			}
-			if err := c.registerAnchor(identity, current); err != nil {
-				return err
+		for _, anchorKeyword := range []string{"$anchor", "$dynamicAnchor"} {
+			if anchorNode, ok := current.node.Lookup(anchorKeyword); ok {
+				anchor, ok := nodeString(anchorNode)
+				if !ok || !jsonProjectionAnchor(anchor) {
+					return &Error{Code: "native.projection", Format: JSONSchema, Pointer: key + "/" + anchorKeyword, Message: "schema anchor must be a valid anchor name"}
+				}
+				identity := current.base + "#" + anchor
+				if err := c.chargeIdentifier(identity); err != nil {
+					return err
+				}
+				if err := c.registerAnchor(identity, current); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -165,7 +186,7 @@ func (c *jsonProjectionCatalog) index(current jsonProjectionNode, depth int) err
 		return nil
 	}
 	visit := func(name string, node schemajson.Node) error {
-		return c.index(jsonProjectionNode{resource: current.resource, pointer: current.pointer + "/" + escapePointer(name), node: node, base: current.base}, depth+1)
+		return c.index(jsonProjectionNode{resource: current.resource, pointer: current.pointer + "/" + escapePointer(name), node: node, base: current.base, dialect: current.dialect}, depth+1)
 	}
 	for _, name := range []string{"additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "items", "additionalItems", "unevaluatedItems", "if", "then", "else", "not", "contentSchema"} {
 		if child, ok := current.node.Lookup(name); ok {
@@ -178,7 +199,7 @@ func (c *jsonProjectionCatalog) index(current jsonProjectionNode, depth int) err
 		if children, ok := current.node.Lookup(name); ok && schemajson.KindName(children.Kind()) == "object" {
 			for _, member := range children.Members() {
 				memberName, _ := member.Key.UTF8()
-				if err := c.index(jsonProjectionNode{resource: current.resource, pointer: current.pointer + "/" + name + "/" + escapePointer(memberName), node: member.Value, base: current.base}, depth+1); err != nil {
+				if err := c.index(jsonProjectionNode{resource: current.resource, pointer: current.pointer + "/" + name + "/" + escapePointer(memberName), node: member.Value, base: current.base, dialect: current.dialect}, depth+1); err != nil {
 					return err
 				}
 			}
@@ -187,7 +208,7 @@ func (c *jsonProjectionCatalog) index(current jsonProjectionNode, depth int) err
 	for _, name := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
 		if children, ok := current.node.Lookup(name); ok && schemajson.KindName(children.Kind()) == "array" {
 			for i, child := range children.Elements() {
-				if err := c.index(jsonProjectionNode{resource: current.resource, pointer: fmt.Sprintf("%s/%s/%d", current.pointer, name, i), node: child, base: current.base}, depth+1); err != nil {
+				if err := c.index(jsonProjectionNode{resource: current.resource, pointer: fmt.Sprintf("%s/%s/%d", current.pointer, name, i), node: child, base: current.base, dialect: current.dialect}, depth+1); err != nil {
 					return err
 				}
 			}
@@ -280,7 +301,11 @@ func normalizedJSONProjectionRoot(root jsonProjectionNode, identity string) (str
 	}
 	object["$id"] = encodedIdentity
 	if _, explicit := object["$schema"]; !explicit {
-		encodedDraft, _ := json.Marshal("https://json-schema.org/draft/2020-12/schema")
+		dialect := root.dialect
+		if dialect == "" {
+			dialect = "https://json-schema.org/draft/2020-12/schema"
+		}
+		encodedDraft, _ := json.Marshal(dialect)
 		object["$schema"] = encodedDraft
 	}
 	normalized, err := json.Marshal(object)

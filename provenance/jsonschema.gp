@@ -45,7 +45,8 @@ func (s *JSONSchema) Original()string{return s.document.Raw()}
 func copyConstraint(c Constraint)Constraint{c.Builtins=append([]string(nil),c.Builtins...);return c}
 func (s *JSONSchema) Constraints()[]Constraint{result:=make([]Constraint,len(s.constraints));for i,c:=range s.constraints{result[i]=copyConstraint(c)};return result}
 
-// DiscoverJSONSchema identifies exact numeric-bound, collection-count and const/enum correspondences in
+// DiscoverJSONSchema identifies exact numeric-bound, collection-count,
+// uniqueness and const/enum correspondences in
 // Draft 2020-12 schema positions. It deliberately does not interpret arbitrary
 // objects in annotations/examples as subschemas, infer types from constraints,
 // resolve references, or substitute UTF-16 length/RE2 for native semantics.
@@ -156,6 +157,7 @@ func (s *JSONSchema) walk(node schemajson.Node,path string)error{
     for _,member:=range node.Members(){
         key,err:=member.Key.UTF8();if err!=nil{continue} // retained native unknown key
         where:=pointer(path,key)
+        if handled,err:=s.uniqueItemsConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
         if handled,err:=s.cardinalityConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
         if key=="const"||key=="enum"{
             priorNodes,priorExpansion:=s.valueNodes,s.numericExpansion

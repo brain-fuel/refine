@@ -32,22 +32,18 @@ requires that operation.
   authoring anchor are implemented. Repeated/inherited clause identities and
   the affected operation-property replay contracts passed their required-Java
   anchors and the Java integration package. The unsigned Maven lifecycle passed
-  all four phases in 72.26s. Pushed-checkpoint Java and Maven packages passed on
-  both CI platforms, but Go regex initialization failed; the next checkpoint
-  must verify its focused-tested backend correction in CI.
+  all four phases in 72.26s. Java, Maven and the corrected Go regex backend pass
+  on both CI platforms. The latest run exposed a recursive generic Avro
+  annotation-selection bug. Its correction accepts checked closed applied roots
+  such as `Node Int32`, with four focused regressions passing; the corrected
+  checkpoint still needs the CI gate.
 - Per-constraint native correspondence beyond the documented JSON Schema and
   OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
-  and ordered enum symbols. Paired OpenAPI 3.0 bounds are now implemented.
+  and ordered enum symbols. Paired OpenAPI 3.0 bounds and detached intrinsic-JSON
+  `uniqueItems: true` array units are now implemented.
   Resource-scoped edits now
   rebuild effective validation/export/bundle views; exact whole-document
   retention alone does not satisfy editable, per-constraint bijection.
-- Complete the shared native ECMA-262 regex integration gate. Go and generated
-  Java now use the same pinned guest artifact, syntax and Unicode data through
-  Wazero and Chicory respectively. Go race, Java lifecycle/adversarial,
-  native-consumer, resource, serde and operation-catalog checks pass. The final
-  Maven lifecycle and both CI Java packages pass. CI exposed forced-interpreter
-  initialization failures in Go; the corrected auto-selected Wazero backend and
-  affected native callers pass locally, with the next CI gate outstanding.
 - Remaining native ingestion and enforcement boundaries documented in
   [NATIVE.md](NATIVE.md), including general OpenAPI reference projection.
   Selected Schema Objects and direct operation-part annotations are implemented
@@ -59,6 +55,9 @@ requires that operation.
   validation and generated Java offline loaders. Dynamic references now use
   the intrinsic JSON carrier while retaining native authority; Go and required
   Java tests cover dynamic-scope overrides and validated serde boundaries.
+  The OpenAPI Schema-root index and shared catalog foundation have focused
+  tests, but are not yet connected across general ingestion, operation
+  validation, provenance and generated Java loaders.
 
 ## Requirements audit distinctions
 

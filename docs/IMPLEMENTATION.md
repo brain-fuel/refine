@@ -2380,3 +2380,64 @@ current implementation still performs no Maven deployment or product release.
   `go test ./native -run '^(TestProjectRejectsUnconsumedJSONSchemaAnnotationsAcrossResources|TestProjectRejectsUnconsumedAvroAnnotationsAcrossResources|TestProjectAnnotationAuditBoundsRetainedPathAmplification)$'`
   passed in 0.327s. The unchanged aggregate/ordinary tests' passes were reused.
   Edited packages' generation consistency, vet and diff checks passed.
+- Checkpoint `44d8e0a2d64d167900bb93e6cadc4f72796711eb` was pushed. CI run
+  [35452304602](https://github.com/brain-fuel/refine/actions/runs/35452304602)
+  confirms the changed Go regex backend passes on both platforms (65.656s
+  macOS, 86.566s Linux). Java and required Maven also pass on both platforms.
+  Its sole reported failing test is
+  `TestLowerRecursiveGenericAvroDefinesBeforeReference`: the annotation selector
+  incorrectly excludes a checked closed expression such as `Node Int32` because
+  it expects a simple name. This is not a source-only annotation and must not be
+  fixed by weakening unconsumed-annotation rejection. The selector correction
+  now accepts the already type-checked closed root expression. The exact
+  `go test ./native -run '^(TestGenericAnnotationRootExpressionsComposeAndEnforceAcrossFormats|TestGenericAnnotationRootExpressionsMustBeClosed|TestLowerRecursiveGenericAvroDefinesBeforeReference|TestNativeAnnotationRootAliasesPreserveReleaseFooter)$'`
+  selection passed in 0.432s. It covers JSON Schema, Avro and OpenAPI, single and
+  bundled resources, native-first rejection and open-generic rejection. No
+  Java/Maven rerun was needed locally for this selector correction.
+- Additional existing annotation callers passed in 0.398s:
+  `go test ./native -run '^(TestNativeAnnotationRootAliasesPreserveReleaseFooter|TestRootAnnotationSeedsEditableSourceWithoutChangingSelector|TestProjectRefinedExportSupportsOpenAPI30AndAvroWithoutReplacingNative)$'`.
+  These cover ordinary named roots; they did not cover the closed generic root
+  expression subsequently exposed by CI.
+- Exact `uniqueItems: true` correspondence is implemented for explicit singleton
+  array domains as a detached `[JSON] where unique it` unit. It is deliberately
+  not imposed on arbitrary projected typed arrays whose decoding can discard
+  information. The original keyword remains native authority. Exact token
+  recovery, builtin shadowing, constrained inverse/removal, and unaffected
+  sibling units are covered by
+  `go test ./provenance -run '^(TestUniqueItemsIntrinsicJSONMatchesNativeEquality|TestUniqueItemsProjectionIsExplicitDetachedAndShadowAware|TestOpenAPIUniqueItemsPreservesExactTrueAndNullableBoundary)$'`
+  (0.196s) and
+  `go test ./native -run '^(TestUniqueItemsLowersOnlyDetachedIntrinsicJSON|TestUniqueItemsDetachedEditRemovalIsAtomicAndIsolated)$'`
+  (0.270s). The required-Java
+  `TestGeneratedIntrinsicJSONUniqueMatchesJSONSchemaEquality` anchor passed in
+  2.540s after correcting a test-only assertion about detached source units.
+- OpenAPI graph foundation, not yet general end-to-end ingestion support:
+  `provenance.IndexOpenAPISchemaRoots` reuses the wrapper walker to identify
+  physical Schema Object roots and inherited dialects without interpreting
+  schema references or examples as wrapper structure. Its four exact
+  `TestOpenAPISchemaRootIndex{CoversWrapperRoles,ResolvesOnlyWrapperReferences,LeavesSchemaReferencesOpaque,KeepsWrapperFailuresAndBounds}`
+  tests passed in 0.170s. The native OpenAPI catalog shares JSON indexing and
+  resolution, adds physical-fragment closure before logical-ID resolution, and
+  preserves inherited dialects in normalized loader copies. Both static and
+  dynamic anchors can be ordinary static reference targets.
+- Four new native catalog/anchor tests passed in the first focused selection:
+  `TestOpenAPICatalogIndexesPhysicalClosureBeforeLogicalReferences`,
+  `TestOpenAPICatalogKeepsSchemaAnchorsSeparateFromExamples`,
+  `TestOpenAPICatalogRejectsAmbiguousMissingAndNonSchemaTargets`, and
+  `TestJSONCatalogResolvesDynamicAnchorsAsStaticReferenceTargets`.
+  The fifth fixture initially hit upstream YAML key and syntax-depth limits
+  before the intended retained-path guard. After replacing it with a shallow,
+  wide schema, only
+  `go test -v ./native -run '^TestOpenAPICatalogRetainedPathFailureCannotBecomePartialSuccess$'`
+  was rerun and passed in 0.324s. No production correction was needed for those
+  fixture failures. The six existing JSON external-reference/catalog anchors
+  passed in 0.549s after the shared catalog extraction.
+- Catalog review found that repeated physical schema positions could silently
+  retain the first inherited base URI or dialect. Repeated indexing now compares
+  effective contexts after applying the node's own `$id` and `$schema`: local
+  convergence is accepted and ambiguity fails closed. The four affected
+  catalog/anchor tests above plus
+  `TestOpenAPICatalogRejectsConflictingContextsButAcceptsLocalConvergence`
+  passed in 0.360s. The unchanged retained-path fixture was not repeated.
+  Final `go tool goplus gen --check ./provenance ./native ./java`,
+  `go vet ./provenance ./native ./java`, and `git diff --check` passed for this
+  checkpoint. No unrelated JVM or Maven lifecycle was rerun.

@@ -147,6 +147,10 @@ type openAPIProvenanceWalker struct {
 	refs                 int
 	maxSteps             int
 	maxDepth             int
+	maxRefs              int
+	retainedBytes        int
+	maxRetainedBytes     int
+	schemaRoot           func(openAPIProvenanceNode, string) error
 	sourceBytes          int
 	cardinalityExpansion int
 	openAPI30            bool
@@ -435,6 +439,17 @@ func supportedOpenAPIDialect(dialect, pointer string) error {
 	return nil
 }
 
+func (w *openAPIProvenanceWalker) chargeRetainedLocation(kind string, node openAPIProvenanceNode) error {
+	if w.maxRetainedBytes == 0 {
+		return nil
+	}
+	size := len(kind) + 1 + len(node.doc.resource.URI) + 1 + len(node.pointer)
+	if size < 0 || size > w.maxRetainedBytes-w.retainedBytes {
+		return &Error{Code: "openapi.limit", Message: "OpenAPI wrapper traversal retained paths exceed the deterministic byte limit"}
+	}
+	w.retainedBytes += size
+	return nil
+}
 func (w *openAPIProvenanceWalker) enter(node openAPIProvenanceNode, kind string, depth int) error {
 	if depth > w.maxDepth {
 		return &Error{Code: "openapi.limit", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "provenance traversal depth limit exceeded"}
@@ -442,6 +457,9 @@ func (w *openAPIProvenanceWalker) enter(node openAPIProvenanceNode, kind string,
 	w.steps++
 	if w.steps > w.maxSteps {
 		return &Error{Code: "openapi.limit", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "provenance traversal work limit exceeded"}
+	}
+	if err := w.chargeRetainedLocation(kind, node); err != nil {
+		return err
 	}
 	key := kind + "\x00" + node.doc.resource.URI + "\x00" + node.pointer
 	if w.seen[key] {

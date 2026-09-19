@@ -45,7 +45,7 @@ func selectedOpenAPISchemaAnnotation(document *Document,resources map[string][]b
     if hasScoped&&strings.HasPrefix(document.Version(),"3.0."){return Annotation{},false,&Error{Code:"native.enforcement",Format:OpenAPI,Pointer:scoped.Pointer,Message:"Schema Object x-refine annotations are supported for OpenAPI 3.1 and 3.2; OpenAPI 3.0 retains only the established document-level annotation"}}
     top,hasTop:=openAPIOperationsAnnotation(document);if hasTop&&hasScoped{return Annotation{},false,&Error{Code:"native.refinement",Format:OpenAPI,Pointer:scoped.Pointer,Message:"top-level and selected Schema Object x-refine annotations provide competing source authority"}}
     consumed:="";if hasScoped{consumed=openAPISchemaNodeIdentity(node)};docs,err:=openAPIAnnotationDocuments(resources);if err!=nil{return Annotation{},false,err};if err:=auditReachableOpenAPISchemaAnnotations(node,docs,consumed);err!=nil{return Annotation{},false,err}
-    if hasScoped{return scoped,true,nil};if hasTop&&top.Root!=""&&checkedTypeName(top.Root){return top,true,nil};return Annotation{},false,nil
+    if hasScoped{return scoped,true,nil};if hasTop&&top.Root!=""{return top,true,nil};return Annotation{},false,nil
 }
 
 func resolveOpenAPISchemaAnnotation(start openAPINode,docs map[string]schemajson.Document)(Annotation,bool,error){

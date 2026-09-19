@@ -230,6 +230,25 @@ root payload. Full contract assembly must preserve those applicator semantics.
 Generated `Native_<hash>` declaration names are stable internal unit identities,
 not final user-facing Java names or a complete schema type model.
 
+## Exact array uniqueness
+
+An explicit singleton array domain with `uniqueItems: true` has the canonical
+detached unit `[JSON] where unique it`. Intrinsic JSON equality preserves exact
+numeric value, array order, order-independent object members, and exact strings
+without normalization. Go and generated Java are checked against native schema
+validation for those equality cases. The original Boolean token is preserved,
+including accepted YAML spelling. `uniqueItems: false`, untyped or mixed-kind
+domains, and OpenAPI 3.0 nullable arrays remain opaque for this adapter.
+
+The unit is not applied to a generally projected typed array: record decoding
+can discard extra fields, and other wire policies can make different JSON
+values become equal after decoding. The original native keyword still validates
+the wire payload. The inverse recognizes only intrinsic `[JSON]` with the
+unshadowed canonical `unique it` predicate. Removing the unit removes only
+`uniqueItems`; arbitrary replacement predicates reject rather than silently
+retaining stale authority. In particular, `not (unique it)` never means
+`uniqueItems: false`.
+
 ## Granularity and edits
 
 Each unit has a stable path-derived name and a fingerprint of its dialect,

@@ -156,7 +156,7 @@ func selectedOpenAPISchemaAnnotation(document *Document, resources map[string][]
 	if hasScoped {
 		return scoped, true, nil
 	}
-	if hasTop && top.Root != "" && checkedTypeName(top.Root) {
+	if hasTop && top.Root != "" {
 		return top, true, nil
 	}
 	return Annotation{}, false, nil

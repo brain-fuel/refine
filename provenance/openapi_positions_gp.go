@@ -486,6 +486,9 @@ func (w *openAPIProvenanceWalker) resolveWrapper(node openAPIProvenanceNode, dep
 			}
 			return node, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "structural siblings of a wrapper $ref require merge semantics and are not projected"}
 		}
+		if err := w.chargeRetainedLocation("wrapper-ref", node); err != nil {
+			return node, err
+		}
 		key := node.doc.resource.URI + "#" + node.pointer
 		if seen[key] {
 			return node, &Error{Code: "openapi.reference", Pointer: key, Message: "cyclic wrapper reference"}
@@ -508,7 +511,11 @@ func (w *openAPIProvenanceWalker) resolve(node openAPIProvenanceNode, raw, base 
 }
 func (w *openAPIProvenanceWalker) resolveSchema(node openAPIProvenanceNode, raw, base string, baseRoot openAPIProvenanceNode, depth int) (openAPIProvenanceNode, string, openAPIProvenanceNode, error) {
 	w.refs++
-	if w.refs > openAPIProvenanceRefs {
+	refLimit := openAPIProvenanceRefs
+	if w.maxRefs > 0 && w.maxRefs < refLimit {
+		refLimit = w.maxRefs
+	}
+	if w.refs > refLimit {
 		return node, base, baseRoot, &Error{Code: "openapi.limit", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "reference traversal limit exceeded"}
 	}
 	baseURI, err := url.Parse(base)
@@ -607,6 +614,21 @@ func openAPIPointerTokens(pointer string) ([]string, error) {
 }
 
 func (w *openAPIProvenanceWalker) walkSchema(node openAPIProvenanceNode, dialect, base string, baseRoot openAPIProvenanceNode, depth int) error {
+	if w.schemaRoot != nil {
+		if err := w.enter(node, "schema-root\x00"+dialect, depth); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if node.node.Kind == yaml.ScalarNode && node.node.ShortTag() == "!!bool" {
+			return w.schemaRoot(node, dialect)
+		}
+		if node.node.Kind != yaml.MappingNode {
+			return &Error{Code: "openapi.position", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "Schema Object must be an object or Boolean"}
+		}
+		return w.schemaRoot(node, dialect)
+	}
 	if err := w.enter(node, "schema\x00"+base, depth); err != nil {
 		if err == io.EOF {
 			return nil
@@ -726,6 +748,9 @@ func (w *openAPIProvenanceWalker) walkSchema(node openAPIProvenanceNode, dialect
 }
 
 func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanceNode, dialect string) error {
+	if err := w.discoverUniqueItemsAssertion(node, dialect); err != nil {
+		return err
+	}
 	if w.openAPI30 {
 		return w.discoverOpenAPI30NumericAssertions(node, dialect)
 	}

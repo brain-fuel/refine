@@ -1,0 +1,54 @@
+package provenance
+
+import (
+    "strings"
+
+    yaml "github.com/oasdiff/yaml3"
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/schemajson"
+)
+
+// uniqueItems has the same equality relation as the intrinsic JSON algebra:
+// exact rational numbers, ordered arrays, and order-independent objects. The
+// correspondence is deliberately detached from any projected item type,
+// because decoding a typed item can discard native fields or otherwise change
+// JSON equality before the refinement executes.
+func (s *JSONSchema) uniqueItemsConstraint(node schemajson.Node,path,key string,value schemajson.Node)(bool,error){
+    if key!="uniqueItems"{return false,nil}
+    where:=pointer(path,key)
+    if schemajson.KindName(value.Kind())!="boolean"{return true,&Error{Code:"native.unique_items",Pointer:where,Message:"uniqueItems must be a Boolean"}}
+    if value.Raw()!="true"||!jsonSchemaExplicitArray(node){return true,nil}
+    predicate,err:=canonicalUniqueItemsPredicate();if err!=nil{return true,err}
+    return true,s.addConstraint(path,where,key,"[JSON]",predicate,value.Raw(),[]string{"unique"})
+}
+
+func jsonSchemaExplicitArray(node schemajson.Node)bool{
+    typ,ok:=node.Lookup("type");if !ok{return false}
+    if schemajson.KindName(typ.Kind())=="array"{items:=typ.Elements();if len(items)!=1{return false};typ=items[0]}
+    name,ok:=scalar(typ);return ok&&name=="array"
+}
+
+func (w *openAPIProvenanceWalker) discoverUniqueItemsAssertion(node openAPIProvenanceNode,dialect string)error{
+    value,ok:=openAPIChild(node,"uniqueItems");if !ok{return nil}
+    enabled,valid:=openAPIExactBoolean(value);if !valid{return nil};if !enabled||!openAPIExplicitArray(node.node){return nil}
+    // OpenAPI 3.0 nullable extends the instance domain beyond arrays. A
+    // refinement scoped to [JSON] cannot represent that union exactly.
+    if w.openAPI30{if nullable,present:=openAPIChild(node,"nullable");present{isNullable,exact:=openAPIExactBoolean(nullable);if !exact||isNullable{return nil}}}
+    raw,exact:=yamlExactScalar(value.doc,value.node);if !exact{return nil}
+    predicate,err:=canonicalUniqueItemsPredicate();if err!=nil{return err}
+    return w.add(node,"uniqueItems","[JSON]",predicate,raw,dialect,[]string{"unique"})
+}
+
+func canonicalUniqueItemsPredicate()(string,error){expression,err:=language.ParseExpression("unique it");if err!=nil{return "",err};return language.FormatExpression(expression),nil}
+
+func openAPIExplicitArray(node *yaml.Node)bool{
+    typ,ok:=yamlMappingValue(node,"type");if !ok{return false}
+    if typ.Kind==yaml.SequenceNode{if len(typ.Content)!=1{return false};typ=typ.Content[0]}
+    name,err:=yamlScalarString(typ);return err==nil&&name=="array"
+}
+
+func openAPIExactBoolean(node openAPIProvenanceNode)(bool,bool){
+    if node.node==nil||node.node.Kind!=yaml.ScalarNode||node.node.ShortTag()!="!!bool"||node.node.Anchor!=""{return false,false}
+    raw,ok:=yamlExactScalar(node.doc,node.node);if !ok{return false,false}
+    switch strings.ToLower(raw){case "true":return true,true;case "false":return false,true};return false,false
+}
