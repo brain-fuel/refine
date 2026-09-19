@@ -2665,3 +2665,39 @@ current implementation still performs no Maven deployment or product release.
   excludes tag-only pushes so annotation of unchanged source does not launch
   another full JVM/Maven/race/fuzz campaign. Public module installation and tag
   identity remain separate required publication checks.
+- Candidate `962f6fc5dc1409a347763454b782b9dbff86574e` was committed and
+  pushed with a clean worktree. Its
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/35459713608)
+  includes the new artifact checks. While it ran, the previous `6057f76`
+  checkpoint finished: Linux passed; macOS failed only the regex harness's
+  full-fixture post-timeout call under a deliberately tightened 500ms limit.
+  Earlier default-budget full-fixture calls had succeeded. Production deadline
+  enforcement was correct and remains unchanged.
+- The test-only correction preserves the 500ms attack and its 10ms–2s elapsed
+  assertions, then checks recovery on the same validator with one real regex
+  match and expected native-invalid missing fields. Initialization and
+  compilation counters must increase, proving discarded-session replacement
+  and execution without requiring seven evaluations under half the normal
+  deadline. There is no retry or production-limit relaxation.
+  `REFINE_REQUIRE_JAVA=1 JAVA_HOME=/opt/homebrew/opt/openjdk@25 REFINE_NETWORKNT_DIR=/private/tmp/refine-networknt.fPEK2h REFINE_CHICORY_DIR=/tmp/refine-chicory.7dCrmx go test ./java -run '^TestGeneratedNativeRegexECMA262AndBudgets$' -v`
+  passed (test 24.09s, package 24.604s). GoPlus generation/check and diff-check
+  passed. Only a rationale comment was added after that successful execution;
+  the unchanged harness behavior was not rerun for the comment.
+- Both `962f6fc` CI platforms completed with the same three stale string-length
+  test fixtures and no other test failures. Their real unsigned Maven lifecycle,
+  including exact packaged license/guest bytes and unshaded inventory checks,
+  passed. The prior flaky regex recovery fixture also passed on both platforms,
+  but its independently diagnosed correction is retained rather than relying
+  on another favorable timing result.
+- The collection/traversal fixtures now expect the new exact `minLength` unit
+  and assert its schema position, while preserving their opaque/traversal
+  boundaries. Because the initial narrow selection missed these existing
+  callers, the affected scope was expanded once to `go test ./provenance`;
+  the entire package passed in 0.358s. The Java property-strategy fixture had
+  replaced all editable source, intentionally deleting the newly detached
+  length units. It now edits only the `Code` declaration and asserts canonical
+  native resources remain unchanged. No production strategy change was needed.
+  `go test ./java -run '^TestGeneratedNativeRootStringPropertyStrategyPreservesValidation$' -v`
+  passed (test 0.40s, package 0.805s). The unchanged JVM boundary harness was
+  not rerun locally. Generation checks, vet and diff checks passed for these
+  test-only corrections; the next pushed candidate retains the full CI gate.

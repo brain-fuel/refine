@@ -86,11 +86,12 @@ func TestSchemaPositionTraversalAndNativeRetention(t *testing.T){
       "x-extension":{"type":"integer","minimum":1000}
     }`
     s:=discover(t,raw)
-    if len(s.Constraints())!=7{t.Fatalf("wrong schema traversal: %+v",s.Constraints())}
+    if len(s.Constraints())!=8{t.Fatalf("wrong schema traversal: %+v",s.Constraints())}
     if find(t,s,"/const").Native!=`{"type":"integer","minimum":900}`{t.Fatal("const value was not retained as one opaque value")}
     for _,constraint:=range s.Constraints(){if strings.HasPrefix(constraint.Pointer,"/const/"){t.Fatal("const payload was traversed as a schema")}}
     c:=find(t,s,"/$defs/a~1b~0c/minimum");if c.SchemaPointer!="/$defs/a~1b~0c"{t.Fatal("lost escaped schema context")}
     if find(t,s,"/not/exclusiveMaximum").SchemaPointer!="/not"{t.Fatal("lost negated applicator context")}
+    if find(t,s,"/properties/text/minLength").SchemaPointer!="/properties/text"{t.Fatal("lost string length schema context")}
     if s.Original()!=raw{t.Fatal("untranslated native clauses were changed")}
     for _,raw:=range []string{`true`,`false`,`{"minimum":0}`,`{"type":["integer","null"],"minimum":0}`,`{"type":"string","minimum":0}`,`{"$ref":"external.json"}`} {
         if s:=discover(t,raw);len(s.Constraints())!=0||s.Original()!=raw{t.Fatal("invented numeric type or resolved external reference")}

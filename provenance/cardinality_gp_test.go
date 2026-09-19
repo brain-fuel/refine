@@ -102,7 +102,11 @@ func TestCollectionCardinalityIsolationShadowingAndBounds(t *testing.T) {
 			t.Fatalf("builtin authority: %+v", finding)
 		}
 	}
-	for _, raw := range []string{`{"minItems":2}`, `{"type":["array","null"],"minItems":2}`, `{"type":"string","minLength":2}`, `{"type":"array","minItems":1e1000000000}`} {
+	stringLength := discover(t, `{"type":"string","minLength":2}`)
+	if constraints := stringLength.Constraints(); len(constraints) != 1 || constraints[0].Keyword != "minLength" || stringLength.Original() != `{"type":"string","minLength":2}` {
+		t.Fatalf("string length was not isolated from collection cardinality: %+v", constraints)
+	}
+	for _, raw := range []string{`{"minItems":2}`, `{"type":["array","null"],"minItems":2}`, `{"type":"array","minItems":1e1000000000}`} {
 		origin := discover(t, raw)
 		if len(origin.Constraints()) != 0 || origin.Original() != raw {
 			t.Fatalf("nonprojectable count not retained: %s", raw)

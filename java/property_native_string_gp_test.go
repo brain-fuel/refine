@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -93,9 +94,25 @@ func nativeStringPropertyProject(t *testing.T, maximum int) *native.Project {
 
 func TestGeneratedNativeRootStringPropertyStrategyPreservesValidation(t *testing.T) {
 	project := nativeStringPropertyProject(t, 2)
-	edited, err := project.WithEditedSource("type Identity a = a\ntype Code = Identity String where length it >= 2 @code \"code.minimum\"\ntype Other = String\n")
+	base := project.EditableSource()
+	editedSource := strings.Replace(base, "type Code = String", "type Identity a = a\ntype Code = Identity String where length it >= 2 @code \"code.minimum\"\ntype Other = String", 1)
+	if editedSource == base {
+		t.Fatal("native root fixture type was not found")
+	}
+	edited, err := project.WithEditedSource(editedSource)
 	if err != nil {
 		t.Fatal(err)
+	}
+	beforeNative, err := project.CanonicalJSONResources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterNative, err := edited.CanonicalJSONResources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeNative, afterNative) {
+		t.Fatal("targeted source edit changed effective native length constraints")
 	}
 	program, err := language.Compile(edited.EditableSource())
 	if err != nil {

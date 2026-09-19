@@ -6,6 +6,7 @@ import (
     "os"
     "os/exec"
     "path/filepath"
+    "reflect"
     "strings"
     "testing"
     "time"
@@ -50,7 +51,7 @@ func TestNativeRootStringPropertyStrategyIsExactAndBounded(t *testing.T){
 func nativeStringPropertyProject(t *testing.T,maximum int)*native.Project{t.Helper();schema:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string","pattern":"^[a-z]+$","minLength":1,"maxLength":`+fmt.Sprint(maximum)+`}`;project,err:=native.IngestProject(native.JSONSchema,[]byte(schema),native.ProjectOptions{Root:native.ResourceSelector{TypeName:"Code"},Metadata:native.WireMetadata{PublicationNamespace:"example.nativepattern"}});if err!=nil{t.Fatal(err)};return project}
 
 func TestGeneratedNativeRootStringPropertyStrategyPreservesValidation(t *testing.T){
-    project:=nativeStringPropertyProject(t,2);edited,err:=project.WithEditedSource("type Identity a = a\ntype Code = Identity String where length it >= 2 @code \"code.minimum\"\ntype Other = String\n");if err!=nil{t.Fatal(err)};program,err:=language.Compile(edited.EditableSource());if err!=nil{t.Fatal(err)}
+    project:=nativeStringPropertyProject(t,2);base:=project.EditableSource();editedSource:=strings.Replace(base,"type Code = String","type Identity a = a\ntype Code = Identity String where length it >= 2 @code \"code.minimum\"\ntype Other = String",1);if editedSource==base{t.Fatal("native root fixture type was not found")};edited,err:=project.WithEditedSource(editedSource);if err!=nil{t.Fatal(err)};beforeNative,err:=project.CanonicalJSONResources();if err!=nil{t.Fatal(err)};afterNative,err:=edited.CanonicalJSONResources();if err!=nil{t.Fatal(err)};if !reflect.DeepEqual(beforeNative,afterNative){t.Fatal("targeted source edit changed effective native length constraints")};program,err:=language.Compile(edited.EditableSource());if err!=nil{t.Fatal(err)}
     generated,err:=GenerateProjectPropertyTests(edited,"example.nativepattern","Contract",PropertyTestOptions{Targets:[]PropertyTarget{{Name:"Code"},{Name:"Other"}},CaseCount:8,AttemptBudget:8,Seed:887});if err!=nil{t.Fatal(err)};source:=generated[0].Source
     if !strings.Contains(source,"IntDistribution.uniform(1,2)")||!strings.Contains(source,"Generator.<Character>sampledFrom((char)97")||strings.Count(source,"asciiPrintableChars()")!=1{t.Fatal("native root strategy was not isolated from the unrelated target")}
     validator,err:=JSONNativeValidatorName(program,"Contract","ValueModule");if err!=nil{t.Fatal(err)};options:=PropertyTestOptions{Targets:[]PropertyTarget{{Name:"Code"}},CaseCount:8,AttemptBudget:8,Seed:887,JSONModule:"ValueModule",NativeJSONValidator:validator};generated,err=GenerateProjectPropertyTests(edited,"example.nativepattern","Contract",options);if err!=nil{t.Fatal(err)};source=generated[0].Source

@@ -163,7 +163,7 @@ func TestSchemaPositionTraversalAndNativeRetention(t *testing.T) {
       "x-extension":{"type":"integer","minimum":1000}
     }`
 	s := discover(t, raw)
-	if len(s.Constraints()) != 7 {
+	if len(s.Constraints()) != 8 {
 		t.Fatalf("wrong schema traversal: %+v", s.Constraints())
 	}
 	if find(t, s, "/const").Native != `{"type":"integer","minimum":900}` {
@@ -180,6 +180,9 @@ func TestSchemaPositionTraversalAndNativeRetention(t *testing.T) {
 	}
 	if find(t, s, "/not/exclusiveMaximum").SchemaPointer != "/not" {
 		t.Fatal("lost negated applicator context")
+	}
+	if find(t, s, "/properties/text/minLength").SchemaPointer != "/properties/text" {
+		t.Fatal("lost string length schema context")
 	}
 	if s.Original() != raw {
 		t.Fatal("untranslated native clauses were changed")
