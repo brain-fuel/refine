@@ -340,6 +340,9 @@ func IngestProject(format Format, input []byte, options ProjectOptions) (*Projec
 		}
 	}
 	resourceSet := []Resource{{URI: options.ResourceID, Source: document.Original()}}
+	if err := auditProjectExecutableAnnotations(format, resourceSet, options.Root, hasSelectedAnnotation); err != nil {
+		return nil, err
+	}
 	nativeOrigins := map[string]nativeConstraintOrigin{}
 	avroUnits := map[string]string{}
 	if format == Avro {

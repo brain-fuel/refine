@@ -32,7 +32,9 @@ requires that operation.
   authoring anchor are implemented. Repeated/inherited clause identities and
   the affected operation-property replay contracts passed their required-Java
   anchors and the Java integration package. The unsigned Maven lifecycle passed
-  all four phases in 72.26s; pushed-checkpoint CI remains pending.
+  all four phases in 72.26s. Pushed-checkpoint Java and Maven packages passed on
+  both CI platforms, but Go regex initialization failed; the next checkpoint
+  must verify its focused-tested backend correction in CI.
 - Per-constraint native correspondence beyond the documented JSON Schema and
   OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
   and ordered enum symbols. Paired OpenAPI 3.0 bounds are now implemented.
@@ -43,16 +45,40 @@ requires that operation.
   Java now use the same pinned guest artifact, syntax and Unicode data through
   Wazero and Chicory respectively. Go race, Java lifecycle/adversarial,
   native-consumer, resource, serde and operation-catalog checks pass. The final
-  Maven lifecycle passes; pushed-checkpoint CI remains pending.
-- Remaining native projection/annotation and scoped-edit boundaries documented
-  in [NATIVE.md](NATIVE.md), including general OpenAPI reference projection, per-OpenAPI-
-  object annotation composition beneath nested fields/applicators, and
-  unsupported scoped changes beneath applicators. Selected Schema Objects and
-  direct operation-part annotations are implemented and fail closed on
-  unsupported reachable annotations. JSON Schema external recursive references,
+  Maven lifecycle and both CI Java packages pass. CI exposed forced-interpreter
+  initialization failures in Go; the corrected auto-selected Wazero backend and
+  affected native callers pass locally, with the next CI gate outstanding.
+- Remaining native ingestion and enforcement boundaries documented in
+  [NATIVE.md](NATIVE.md), including general OpenAPI reference projection.
+  Selected Schema Objects and direct operation-part annotations are implemented
+  and fail closed on unsupported reachable OpenAPI annotations. The equivalent
+  JSON Schema/Avro project-boundary audit now rejects annotations outside the
+  selected explicit root rather than accepting source it would not enforce.
+  JSON Schema external recursive references,
   canonical IDs and static anchors are implemented across Go projection,
-  validation and generated Java offline loaders; dynamic-reference projection
-  remains explicitly unsupported.
+  validation and generated Java offline loaders. Dynamic references now use
+  the intrinsic JSON carrier while retaining native authority; Go and required
+  Java tests cover dynamic-scope overrides and validated serde boundaries.
+
+## Requirements audit distinctions
+
+The native-translatable subset needs an explicit exactness inventory, not an
+assumption that every similarly named builtin is equivalent. For example,
+native regex validation now shares an ECMA-262 engine across Go and Java, but
+the refinement language's regex syntax still uses its separate RE2-based
+parser. That integration does not establish an exact native `pattern` to
+language-regex correspondence. Native string length and Refine UTF-16 length
+also have different semantics.
+
+Per-object embedded annotation composition and arbitrary replacement of a
+scoped provenance unit are not separately agreed first-release APIs. The
+required authoring forms can express field and whole-structure refinements in
+the selected embedded module or standalone source. Arbitrary additional rules
+must remain enforced and explained, and untouched native constraint units must
+retain their correspondence. Unsupported annotation placements must reject;
+unsupported scoped rewrites must not retain a stale assertion as though the
+edit succeeded. These safety obligations remain release requirements even when
+the more convenient composition or scoped-rewrite APIs are deferred.
 
 General satisfiability and compatibility may correctly remain `unknown` under
 the agreed contract. A sound unknown result, enforced through the existing

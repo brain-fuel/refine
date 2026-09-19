@@ -10,7 +10,7 @@ import (
 )
 
 func TestOrdinaryProjectExportErasesOnlyRefineSchemaAnnotations(t *testing.T) {
-	source := `{"type":"integer","examples":[{"x-refine":"literal, not code"}],"x-refine":{"source":"type Root = Int where it > 0\n","root":"Root"},"$defs":{"Other":{"type":"string","x-refine":"type Other = String"}}}`
+	source := `{"type":"integer","examples":[{"x-refine":"literal, not code"}],"x-refine":{"source":"type Root = Int where it > 0\n","root":"Root"},"$defs":{"Other":{"type":"string"}}}`
 	p, err := IngestProject(JSONSchema, []byte(source), ProjectOptions{Root: ResourceSelector{TypeName: "Root"}})
 	if err != nil {
 		t.Fatal(err)
@@ -23,10 +23,8 @@ func TestOrdinaryProjectExportErasesOnlyRefineSchemaAnnotations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, pointer := range []string{"/x-refine", "/$defs/Other/x-refine"} {
-		if _, err := doc.At(pointer); err == nil {
-			t.Fatal("ordinary schema retained executable refinement", pointer)
-		}
+	if _, err := doc.At("/x-refine"); err == nil {
+		t.Fatal("ordinary schema retained selected executable refinement")
 	}
 	literal, err := doc.At("/examples/0/x-refine")
 	if err != nil || literal.Raw() != `"literal, not code"` {

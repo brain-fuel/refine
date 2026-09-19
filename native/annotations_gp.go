@@ -87,14 +87,14 @@ func jsonSchemaAnnotations(root schemajson.Node) ([]Annotation, error) {
 			}
 			result = append(result, annotation)
 		}
-		for _, key := range []string{"additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "items", "unevaluatedItems", "if", "then", "else", "not", "contentSchema"} {
+		for _, key := range []string{"additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "items", "additionalItems", "unevaluatedItems", "if", "then", "else", "not", "contentSchema"} {
 			if child, ok := node.Lookup(key); ok {
 				if err := walk(child, path+"/"+key); err != nil {
 					return err
 				}
 			}
 		}
-		for _, key := range []string{"$defs", "properties", "patternProperties", "dependentSchemas"} {
+		for _, key := range []string{"$defs", "definitions", "properties", "patternProperties", "dependentSchemas"} {
 			if children, ok := node.Lookup(key); ok && schemajson.KindName(children.Kind()) == "object" {
 				for _, member := range children.Members() {
 					name, _ := member.Key.UTF8()

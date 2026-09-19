@@ -33,8 +33,8 @@ func jsonSchemaAnnotations(root schemajson.Node)([]Annotation,error){
     walk=func(node schemajson.Node,path string)error{
         if schemajson.KindName(node.Kind())!="object"{return nil}
         if ext,ok:=node.Lookup("x-refine");ok{annotation,err:=jsonAnnotation(JSONSchema,path+"/x-refine",ext);if err!=nil{return err};result=append(result,annotation)}
-        for _,key:=range []string{"additionalProperties","unevaluatedProperties","propertyNames","contains","items","unevaluatedItems","if","then","else","not","contentSchema"}{if child,ok:=node.Lookup(key);ok{if err:=walk(child,path+"/"+key);err!=nil{return err}}}
-        for _,key:=range []string{"$defs","properties","patternProperties","dependentSchemas"}{if children,ok:=node.Lookup(key);ok&&schemajson.KindName(children.Kind())=="object"{for _,member:=range children.Members(){name,_:=member.Key.UTF8();if err:=walk(member.Value,path+"/"+key+"/"+escapePointer(name));err!=nil{return err}}}}
+        for _,key:=range []string{"additionalProperties","unevaluatedProperties","propertyNames","contains","items","additionalItems","unevaluatedItems","if","then","else","not","contentSchema"}{if child,ok:=node.Lookup(key);ok{if err:=walk(child,path+"/"+key);err!=nil{return err}}}
+        for _,key:=range []string{"$defs","definitions","properties","patternProperties","dependentSchemas"}{if children,ok:=node.Lookup(key);ok&&schemajson.KindName(children.Kind())=="object"{for _,member:=range children.Members(){name,_:=member.Key.UTF8();if err:=walk(member.Value,path+"/"+key+"/"+escapePointer(name));err!=nil{return err}}}}
         for _,key:=range []string{"allOf","anyOf","oneOf","prefixItems"}{if children,ok:=node.Lookup(key);ok&&schemajson.KindName(children.Kind())=="array"{for i,child:=range children.Elements(){if err:=walk(child,fmt.Sprintf("%s/%s/%d",path,key,i));err!=nil{return err}}}}
         return nil
     }

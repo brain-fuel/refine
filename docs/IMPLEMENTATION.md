@@ -2321,3 +2321,62 @@ current implementation still performs no Maven deployment or product release.
   automatic regeneration after an edit, and expected failure on exhausted
   generated properties. It retained the default 100 cases and all validation
   boundaries. No previously green broad Java or native campaign was repeated.
+
+## Checkpoint CI and native ingestion follow-up (2026-09-19)
+
+- Checkpoint `954567975f664ceac4571c34ddba4521470dba4b` was pushed. CI run
+  [35451073697](https://github.com/brain-fuel/refine/actions/runs/35451073697)
+  passed source generation on Linux and macOS. Java passed in 599.705s and
+  608.302s respectively; the project package, including required Maven, passed
+  in 249.353s and 276.989s. The run was **not green**: Go regex session reuse
+  failed on both platforms, Ubuntu also hit two trusted-initialization
+  failures, and four native tests hit initialization failures on macOS.
+  Subsequent vet/CLI/fuzz steps were skipped, not passed.
+- The Go host forced Wazero's instruction-by-instruction interpreter, exposing
+  trusted guest initialization to race-instrumented overhead. It now uses the
+  pinned runtime's auto-selected compiler with interpreter fallback. The guest
+  bytes, imports, memory ceiling, wall-clock and polling limits, request
+  accounting, cancellation and disposal rules are unchanged. No ceiling was
+  raised and no failure was retried automatically. Compiler host-code memory
+  and the scope of race instrumentation are documented in NATIVE.md.
+- The changed backend's exact regression selection passed in 21.622s:
+  `go test -v -race -timeout=3m ./internal/ecmaregex -run '^(TestCheckedArtifactInventoryAndLimits|TestUTF16ECMA262SyntaxHandlesAndTypedFailures|TestRequestBudgetsBoundCompilationMatchingAndHandles|TestSessionsReuseOnlyAfterCleanBoundedReset|TestTrustedInitializationAndTrapFailuresFailClosed|TestStringConveniencesPreflightUTF16Units|TestFirstMatchDeadlineIsSerializedAndNilSafe)$'`.
+  This covers all seven current backend tests, including the previously failing
+  initialization/reuse paths. It does not newly exercise interpreter fallback
+  on a compiler-capable host or cancellation during an active native-code call.
+- The affected native caller selection, including all four macOS failures and
+  shared singleton initialization, passed in 4.416s:
+  `go test -v -race -timeout=3m ./native -run '^(TestExplicitScalarWireEncodings|TestCheckedECMA262GuestSupportsUnicodeLookaroundAndBackreferences|TestJSONSchemaKeywordLocationsUseCanonicalReferencesAndStablePhysicalLocations|TestJSONSchemaKeywordLocationsResolveNestedResourcePointerScopes|TestRegexpTimeoutNeverBecomesBooleanResult|TestRegexScopeQueueAcquisitionIsBoundedAndRecovers|TestNativeECMAPatternSyntax)$'`.
+  Java's Chicory backend and the Maven generator were unchanged by this fix;
+  their successful checkpoint evidence was reused, not rerun locally.
+- JSON Schema dynamic references now project to the intrinsic JSON carrier at
+  the affected occurrence. Native dynamic and sibling assertions remain
+  authoritative; no static target is invented. The exact selection
+  `go test ./native -run '^(TestJSONProjectionCatalogRejectsAmbiguousAndNonSchemaTargets|TestJSONDynamicReferenceCarrierPreservesNativeFirstValidationAndExport|TestJSONDynamicReferenceCanonicalScopesRemainNativeAuthority)$'`
+  passed in 0.545s, covering ordinary/refined export/reingestion and canonical
+  nested-ID dynamic-scope overrides. This no-regex fixture evidence preceded the
+  Go backend correction and remains applicable to the projection contract.
+- Required Java 25 regression
+  `REFINE_REQUIRE_JAVA=1 go test -v ./java -run '^TestGeneratedDynamicJSONCarrierPreservesNativeFirstBoundaries$'`
+  passed in 2.022s with the existing pinned NetworkNT dependencies. One grouped
+  compilation/execution checked native and refinement rejection on reads,
+  staged writes with zero output on failure, and a canonical nested-ID dynamic
+  override that differs from static anchor lookup. No prior green Java tests
+  were repeated for this slice.
+- Project ingestion now audits executable JSON Schema/Avro annotations in all
+  explicit resources. Only the selected explicit-root annotation is consumed;
+  source-only roots, nested/competing annotations and dependency annotations
+  reject instead of being silently ignored. Parse APIs remain inspection and
+  type-checking boundaries. Both JSON inventories include the same legacy
+  `definitions`/`additionalItems` positions as the projection catalog.
+  Aggregate schema-position and pre-concatenation retained-path bounds prevent
+  per-resource budget resets and long-ancestor path amplification.
+- Initial four-test annotation selection passed in 0.275s after correcting an
+  ill-typed test fixture, not production behavior:
+  `go test ./native -run '^(TestProjectRejectsUnconsumedJSONSchemaAnnotationsAcrossResources|TestProjectRejectsUnconsumedAvroAnnotationsAcrossResources|TestProjectAnnotationAuditHasAggregateSchemaPositionBound|TestOrdinaryProjectExportErasesOnlyRefineSchemaAnnotations)$'`.
+  Review added missing source-only, malformed-dependency and competing-root
+  cases plus the retained-path guard. Only the two expanded tests and new
+  path-bound test were run again:
+  `go test ./native -run '^(TestProjectRejectsUnconsumedJSONSchemaAnnotationsAcrossResources|TestProjectRejectsUnconsumedAvroAnnotationsAcrossResources|TestProjectAnnotationAuditBoundsRetainedPathAmplification)$'`
+  passed in 0.327s. The unchanged aggregate/ordinary tests' passes were reused.
+  Edited packages' generation consistency, vet and diff checks passed.

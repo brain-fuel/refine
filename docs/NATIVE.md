@@ -97,6 +97,15 @@ untyped annotations are rejected. Accessors preserve the exact source and also
 provide its deterministic formatted form. Embedded metadata is restored on
 ingestion, while a conflicting caller-supplied policy is rejected.
 
+For JSON Schema and Avro, `Parse*` checks and exposes annotations for inspection;
+it does not claim to enforce their predicates against payloads. Project ingestion
+audits every explicit resource and consumes only the annotation at the selected
+schema root, with an explicit closed `root`. A source-only annotation, another
+schema's annotation, or a dependency's annotation rejects as `native.refinement`
+instead of being accepted and ignored. The audit has shared schema-position and
+path-size bounds across the resource set. Put additional field and structure
+rules in the selected module until nested annotation composition is supported.
+
 Recognized locations include schema positions in JSON Schema and Avro, and the
 OpenAPI root object. OpenAPI 3.1/3.2 projects also compose annotations on the
 selected Schema Object or a directly bound operation Schema Object (including
@@ -234,8 +243,12 @@ more precise homogeneous map when possible. Explicit scalar kinds remain
 precise even through applicators, whose native constraints are not hoisted into
 unconditional refinements. OpenAPI anchor-based roots and nested external
 references that its named projector cannot express still fail explicitly with
-`native.projection`; no resources are fetched to resolve them. Dynamic JSON
-Schema references are not guessed as static language types.
+`native.projection`; no resources are fetched to resolve them. JSON Schema
+`$dynamicRef` occurrences use the intrinsic `JSON` carrier, not a guessed static
+type. The original dynamic references, anchors, and sibling assertions remain
+authoritative in native validation and export. Go and generated Java test both
+ordinary dynamic-anchor resolution and dynamic-scope overrides across nested
+canonical resource identities.
 
 JSON Schema projection and keyword scans share a bounded schema-position
 catalog. Logical IDs and anchors are aliases of physical resource/pointer
@@ -486,12 +499,18 @@ Native JSON Schema and OpenAPI `pattern`/`patternProperties` use one checked
 ECMA-262 2020 Unicode engine in both hosts. The embedded WebAssembly guest is
 built reproducibly from QuickJS-NG 0.15.1 plus regexpp 4.12.2, has a fixed
 SHA-256, a declared 32 MiB maximum memory, and imports only
-`refine.should_interrupt(i32)`. Go executes it through wazero 1.12.0; generated
+`refine.should_interrupt(i32)`. Go executes it through wazero 1.12.0, using its
+native compiler where supported and interpreter fallback elsewhere; generated
 Java 25 executes the identical bytes through Chicory 1.7.5. Pattern and subject
 text cross the ABI as exact little-endian UTF-16 code units. This admits
 `Script=Greek`, lookaround, named backreferences, astral escapes, and escaped
 lone-surrogate pattern units without relying on a host regex translation.
 Ordinary JSON payload decoding still rejects unpaired UTF-16 before matching.
+The compiler's host code memory is outside the guest's 32 MiB ceiling, but its
+input is the fixed checked artifact, never a supplied pattern or schema. No
+filesystem compilation cache or new guest imports are enabled. Go race tests
+check host/session synchronization; they do not instrument generated machine
+instructions in the compiled guest.
 
 Each validation owns fresh request state and an aggregate request budget.
 Initialized guest sessions may be reused from a fixed bounded pool only after

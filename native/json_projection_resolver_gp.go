@@ -525,7 +525,7 @@ func (p *jsonResourceProjector) jsonType(current jsonProjectionNode) (string, er
 		return "", &Error{Code: "native.projection", Format: JSONSchema, Pointer: path, Message: "schema position must be an object or Boolean"}
 	}
 	if _, dynamic := node.Lookup("$dynamicRef"); dynamic {
-		return "", &Error{Code: "native.projection", Format: JSONSchema, Pointer: path + "/$dynamicRef", Message: "dynamic JSON Schema references are retained natively but cannot be projected as a static checked type"}
+		return "JSON", nil
 	}
 	if carrier, handled, err := p.carrier(current); err != nil {
 		return "", err

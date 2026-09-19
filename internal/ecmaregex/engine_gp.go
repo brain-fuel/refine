@@ -140,7 +140,12 @@ func New(ctx context.Context, limits InitLimits) (*Engine, error) {
 	}
 	initCtx, cancel := context.WithTimeout(ctx, checked.MaxDuration)
 	defer cancel()
-	config := wazero.NewRuntimeConfigInterpreter().WithMemoryLimitPages(HardMemoryPages).WithCloseOnContextDone(true).WithCustomSections(false)
+	// Use wazero's native compiler where supported, with its interpreter
+	// fallback elsewhere. Both execute the same checked guest and retain the
+	// memory, interruption, context and import restrictions below. Forcing
+	// instruction-by-instruction Go interpretation makes trusted Unicode
+	// initialization exceed its deadline under race-instrumented CI load.
+	config := wazero.NewRuntimeConfig().WithMemoryLimitPages(HardMemoryPages).WithCloseOnContextDone(true).WithCustomSections(false)
 	runtime := wazero.NewRuntimeWithConfig(initCtx, config)
 	engine := &Engine{runtime: runtime, initialization: checked, idle: make(chan *guestSession, HardSessions), capacity: make(chan struct{}, HardSessions)}
 	for index := 0; index < HardSessions; index++ {

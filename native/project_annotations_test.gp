@@ -1,0 +1,77 @@
+package native
+
+import (
+    "strings"
+    "testing"
+)
+
+func TestProjectRejectsUnconsumedJSONSchemaAnnotationsAcrossResources(t *testing.T){
+    nested:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"value":{"type":"integer","x-refine":{"source":"type Positive = Int where it > 0","root":"Positive"}}}}`
+    doc,err:=ParseJSONSchema([]byte(nested),Options{});if err!=nil||len(doc.Annotations())!=1{t.Fatalf("inspection did not retain the checked nested annotation: %v",err)}
+    if project,err:=IngestProject(JSONSchema,[]byte(nested),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("nested executable annotation entered a Project: %v",err)}
+    referencedDefinition:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","definitions":{"Value":{"type":"integer","x-refine":{"source":"type Positive = Int where it > 0","root":"Positive"}}},"$ref":"#/definitions/Value"}`
+    doc,err=ParseJSONSchema([]byte(referencedDefinition),Options{});if err!=nil||len(doc.Annotations())!=1{t.Fatalf("inspection did not recognize a referenced definitions annotation: %v",err)}
+    if project,err:=IngestProject(JSONSchema,[]byte(referencedDefinition),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("referenced definitions annotation was silently ignored: %v",err)}
+
+    resources:=[]Resource{
+        {URI:"https://example.test/main.json",Source:`{"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"dep.json"}`},
+        {URI:"https://example.test/dep.json",Source:`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","x-refine":{"source":"type Dependency = Int","root":"Dependency"}}`},
+    }
+    selector:=ResourceSelector{Resource:"https://example.test/main.json",TypeName:"Root"}
+    if project,err:=IngestProjectResources(JSONSchema,resources,ProjectOptions{Root:selector});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("dependency annotation entered a Project: %v",err)}
+    malformed:=append([]Resource(nil),resources...);malformed[1].Source=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","x-refine":{"source":"type Broken =","root":"Broken"}}`
+    if project,err:=IngestProjectResources(JSONSchema,malformed,ProjectOptions{Root:selector});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("malformed dependency annotation entered a Project: %v",err)}
+
+    selected:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","x-refine":{"source":"type Root = Int where it > 0","root":"Root"}}`
+    if _,err:=IngestProject(JSONSchema,[]byte(selected),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});err!=nil{t.Fatalf("selected explicit-root annotation was not consumed: %v",err)}
+    sourceOnly:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","x-refine":"type Root = Int"}`
+    if project,err:=IngestProject(JSONSchema,[]byte(sourceOnly),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("source-only root annotation gained Project authority: %v",err)}
+    competing:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"value":{"type":"integer","x-refine":{"source":"type Inner = Int","root":"Inner"}}},"x-refine":{"source":"type Root = {value :: Int}","root":"Root"}}`
+    if project,err:=IngestProject(JSONSchema,[]byte(competing),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("nested annotation competed with selected root authority: %v",err)}
+    lookalike:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"examples":[{"x-refine":"not language"}],"default":{"x-refine":{"source":7}}}`
+    if _,err:=IngestProject(JSONSchema,[]byte(lookalike),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});err!=nil{t.Fatalf("payload metadata lookalike was treated as executable: %v",err)}
+}
+
+func TestProjectRejectsUnconsumedAvroAnnotationsAcrossResources(t *testing.T){
+    nested:=`{"type":"record","name":"Root","fields":[{"name":"value","type":{"type":"int","x-refine":{"source":"type Positive = Int32","root":"Positive"}}}]}`
+    doc,err:=ParseAvro([]byte(nested),Options{});if err!=nil||len(doc.Annotations())!=1{t.Fatalf("inspection did not retain the checked nested annotation: %v",err)}
+    if project,err:=IngestProject(Avro,[]byte(nested),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("nested executable annotation entered a Project: %v",err)}
+
+    resources:=[]Resource{
+        {URI:"https://example.test/dep.avsc",Source:`{"type":"record","name":"Dependency","fields":[],"x-refine":{"source":"type Dependency = {}","root":"Dependency"}}`},
+        {URI:"https://example.test/main.avsc",Source:`{"type":"record","name":"Root","fields":[{"name":"dependency","type":"Dependency"}]}`},
+    }
+    selector:=ResourceSelector{Resource:"https://example.test/main.avsc",TypeName:"Root"}
+    if project,err:=IngestProjectResources(Avro,resources,ProjectOptions{Root:selector});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("dependency annotation entered a Project: %v",err)}
+    malformed:=append([]Resource(nil),resources...);malformed[0].Source=`{"type":"record","name":"Dependency","fields":[],"x-refine":{"source":"type Broken =","root":"Broken"}}`
+    if project,err:=IngestProjectResources(Avro,malformed,ProjectOptions{Root:selector});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("malformed dependency annotation entered a Project: %v",err)}
+
+    selected:=`{"type":"int","x-refine":{"source":"type Root = Int32","root":"Root"}}`
+    if _,err:=IngestProject(Avro,[]byte(selected),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});err!=nil{t.Fatalf("selected explicit-root annotation was not consumed: %v",err)}
+    sourceOnly:=`{"type":"int","x-refine":"type Root = Int32"}`
+    if project,err:=IngestProject(Avro,[]byte(sourceOnly),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("source-only root annotation gained Project authority: %v",err)}
+    competing:=`{"type":"record","name":"Root","fields":[{"name":"value","type":{"type":"int","x-refine":{"source":"type Inner = Int32","root":"Inner"}}}],"x-refine":{"source":"type Root = {value :: Int32}","root":"Root"}}`
+    if project,err:=IngestProject(Avro,[]byte(competing),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});project!=nil||problemCode(err)!="native.refinement"{t.Fatalf("nested annotation competed with selected root authority: %v",err)}
+    lookalike:=`{"type":"record","name":"Root","fields":[{"name":"payload","type":{"type":"map","values":"string"},"default":{"x-refine":"not language"}}]}`
+    if _,err:=IngestProject(Avro,[]byte(lookalike),ProjectOptions{Root:ResourceSelector{TypeName:"Root"}});err!=nil{t.Fatalf("Avro default lookalike was treated as executable: %v",err)}
+}
+
+func TestProjectAnnotationAuditHasAggregateSchemaPositionBound(t *testing.T){
+    resources:=[]Resource{
+        {URI:"https://example.test/one.json",Source:`{"type":"integer"}`},
+        {URI:"https://example.test/two.json",Source:`{"type":"integer"}`},
+    }
+    root:=ResourceSelector{Resource:resources[0].URI,TypeName:"Root"}
+    if err:=auditProjectExecutableAnnotationsWithLimit(JSONSchema,resources,root,false,1);problemCode(err)!="native.limit"{t.Fatalf("resource aggregate received a fresh per-resource allowance: %v",err)}
+    branched:=[]Resource{{URI:resources[0].URI,Source:`{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}}}`}}
+    if err:=auditProjectExecutableAnnotationsWithLimit(JSONSchema,branched,root,false,2);problemCode(err)!="native.limit"{t.Fatalf("schema-position collection was copied before aggregate admission: %v",err)}
+}
+
+func TestProjectAnnotationAuditBoundsRetainedPathAmplification(t *testing.T){
+    resource:="https://example.test/amplified.json";longKey:=strings.Repeat("x",96)
+    source:=`{"type":"object","x-refine":{"source":"type Root = {}","root":"Root"},"properties":{"`+longKey+`":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}}}}}`
+    root:=ResourceSelector{Resource:resource,TypeName:"Root"}
+    err:=auditProjectExecutableAnnotationsWithLimits(JSONSchema,[]Resource{{URI:resource,Source:source}},root,true,1000,160)
+    if problemCode(err)!="native.limit"||!strings.Contains(err.Error(),"retained paths"){t.Fatalf("amplified retained paths did not exhaust the shared byte budget: %v",err)}
+    if strings.Contains(err.Error(),longKey){t.Fatal("limit diagnostic copied the attacker-sized schema path")}
+}

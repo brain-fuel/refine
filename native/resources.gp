@@ -105,6 +105,7 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 			return nil, err
 		}
 	}
+	if err:=auditProjectExecutableAnnotations(format,ordered,options.Root,hasSelectedAnnotation);err!=nil{return nil,err}
 	nativeOrigins := map[string]nativeConstraintOrigin{}
 	avroUnits := map[string]string{}
 	if format == Avro {

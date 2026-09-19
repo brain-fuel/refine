@@ -41,8 +41,9 @@ release gate.
   private schema cache. The project was archived in 2026, which is a maintenance/replacement
   risk and makes independent Apache conformance coverage especially important.
   Upstream license: [MIT](https://github.com/hamba/avro/blob/v2.31.0/LICENSE).
-- `github.com/tetratelabs/wazero v1.12.0`: pure-Go WebAssembly interpreter for
-  the checked native ECMA-262 regex guest. Runtime configuration fixes guest
+- `github.com/tetratelabs/wazero v1.12.0`: pure-Go WebAssembly runtime with
+  an auto-selected native compiler and interpreter fallback for the checked
+  native ECMA-262 regex guest. Runtime configuration fixes guest
   memory to at most 512 pages and closes trapped instances; the guest has one
   interrupt import and no WASI or ambient capabilities. Upstream license:
   [Apache-2.0](https://github.com/tetratelabs/wazero/blob/v1.12.0/LICENSE).

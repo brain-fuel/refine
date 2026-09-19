@@ -141,8 +141,8 @@ func TestJSONProjectionCatalogRejectsAmbiguousAndNonSchemaTargets(t *testing.T) 
 		t.Fatalf("missing explicit resource accepted: %v", err)
 	}
 	dynamic := []Resource{{URI: "https://example.test/dynamic.json", Source: `{"$dynamicRef":"#node","$defs":{"Node":{"$dynamicAnchor":"node","type":"string"}}}`}}
-	if _, err := projectJSONResources(dynamic, ResourceSelector{Resource: "https://example.test/dynamic.json", TypeName: "Dynamic"}); err == nil || problemCode(err) != "native.projection" {
-		t.Fatalf("dynamic reference projected statically: %v", err)
+	if source, err := projectJSONResources(dynamic, ResourceSelector{Resource: "https://example.test/dynamic.json", TypeName: "Dynamic"}); err != nil || source != "type Dynamic = JSON\n" {
+		t.Fatalf("dynamic reference did not use the intrinsic JSON carrier: %v %q", err, source)
 	}
 }
 
