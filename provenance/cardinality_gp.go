@@ -93,6 +93,17 @@ func (w *openAPIProvenanceWalker) discoverCardinalityAssertions(node openAPIProv
 	if err != nil || domain != "array" && domain != "object" {
 		return nil
 	}
+	// OpenAPI 3.0 nullable extends the instance domain with null, while these
+	// canonical scopes contain only collections. Omit the correspondence
+	// rather than strengthening the native union. Explicit false is exact.
+	if w.openAPI30 {
+		if nullable, present := openAPIChild(node, "nullable"); present {
+			isNullable, exact := openAPIExactBoolean(nullable)
+			if !exact || isNullable {
+				return nil
+			}
+		}
+	}
 	encodedDomain, _ := json.Marshal(domain)
 	builder := &JSONSchema{maxValueNodes: 1000000, maxValueDepth: 508, numericExpansion: w.cardinalityExpansion}
 	defer func() { w.cardinalityExpansion = builder.numericExpansion }()

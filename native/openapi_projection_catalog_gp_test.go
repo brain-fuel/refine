@@ -82,6 +82,38 @@ func TestOpenAPICatalogKeepsSchemaAnchorsSeparateFromExamples(t *testing.T) {
 	}
 }
 
+func TestOpenAPICatalogIndexesCompleteSecondaryDocuments(t *testing.T) {
+	entry := "https://example.test/api.json"
+	secondary := "https://example.test/models.json"
+	resources := []Resource{
+		{URI: entry, Source: `{"openapi":"3.1.2","info":{"title":"Entry","version":"1"},"paths":{},"components":{"schemas":{"A":{"$ref":"https://schemas.test/value#value"},"B":{"$ref":"models.json#/components/schemas/Value"}}}}`},
+		{URI: secondary, Source: `{"openapi":"3.2.1","jsonSchemaDialect":"https://json-schema.org/draft/2020-12/schema","info":{"title":"Models","version":"1"},"paths":{},"components":{"schemas":{"Value":{"$id":"https://schemas.test/value","$anchor":"value","type":"string"}},"mediaTypes":{"Lines":{"itemSchema":{"$id":"https://schemas.test/item","type":"integer"}}}}}`},
+	}
+	for _, ordered := range [][]Resource{resources, {resources[1], resources[0]}} {
+		catalog, err := newOpenAPIProjectionCatalog(ordered, entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := catalog.at(ResourceSelector{Resource: entry, Pointer: "/components/schemas/A"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, reference := range []string{"https://schemas.test/value#value", "models.json#/components/schemas/Value"} {
+			target, err := catalog.resolve(current, reference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target.resource != secondary || target.pointer != "/components/schemas/Value" || target.dialect != "https://json-schema.org/draft/2020-12/schema" {
+				t.Fatalf("secondary document context lost: %+v", target)
+			}
+		}
+		item, err := catalog.resolve(current, "https://schemas.test/item")
+		if err != nil || item.pointer != "/components/mediaTypes/Lines/itemSchema" {
+			t.Fatalf("secondary 3.2 Schema Object omitted: %+v %v", item, err)
+		}
+	}
+}
+
 func TestOpenAPICatalogRejectsAmbiguousMissingAndNonSchemaTargets(t *testing.T) {
 	entry := "https://example.test/api.json"
 	for _, test := range []struct{ name, schemas string }{

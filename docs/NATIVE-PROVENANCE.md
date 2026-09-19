@@ -137,6 +137,11 @@ omitted versus explicit false when possible; switching a lower bound into an
 upper bound rejects. An orphan exclusivity Boolean has no assertion to project.
 Ignored Reference Object siblings never acquire editable constraint authority.
 
+OpenAPI 3.0 collection counts use the same exact units as Draft 2020-12.
+They require an explicit array/object type and `nullable` absent or false;
+`nullable: true` extends the instance domain beyond the collection scope and
+therefore remains opaque. Exact JSON/YAML integer spellings are retained.
+
 `native.Project` integrates this exact subset after the complete native OpenAPI
 resource closure has already been validated. Each projected resource receives
 its own canonical constraint source. Edits are applied at the recorded Schema
@@ -248,6 +253,25 @@ unshadowed canonical `unique it` predicate. Removing the unit removes only
 `uniqueItems`; arbitrary replacement predicates reject rather than silently
 retaining stale authority. In particular, `not (unique it)` never means
 `uniqueItems: false`.
+
+## Adapter inventory boundary
+
+| Category | Status | Exact boundary |
+| --- | --- | --- |
+| Numeric bounds and `multipleOf` | Implemented | Explicit singleton integer/number domains; OpenAPI 3.0 lower/upper bounds retain the paired exclusivity Boolean. |
+| `minItems`/`maxItems`, `minProperties`/`maxProperties` | Implemented | Explicit singleton collection domains. OpenAPI 3.0 additionally requires `nullable` to be absent or false. |
+| `const`/`enum` | Implemented | Draft 2020-12 and OpenAPI 3.1/3.2 JSON values representable by the bounded intrinsic JSON algebra. |
+| `uniqueItems: true` | Implemented | Detached explicit singleton array domain over intrinsic JSON equality. |
+| Avro fixed size and enum symbols | Implemented | Atomic exact size and ordered-symbol units; remaining Avro defaults, aliases, order and logical-type parameters are structural/wire metadata, not interchangeable `where` clauses. |
+| `dependentRequired`; OpenAPI 3.0 `enum`; JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Each needs its own bounded canonical syntax, lexical recovery and native inverse. They are not inferred by the current implementation. |
+| `required` | Structurally representable, no detached unit yet | Projected record presence is already checked. A separate editable unit would require atomic coordination with that structural source so removal cannot leave stale requiredness. |
+| `minLength`/`maxLength`, `pattern`, `patternProperties`, `format` | No equivalence to current refinement builtins | Native string length counts Unicode code points rather than UTF-16 units; native regular expressions are ECMA-262 rather than the DSL's RE2 syntax; format assertion depends on dialect/runtime configuration. |
+| `contains` families, `propertyNames`, `dependentSchemas`, `unevaluated*`, references and schema applicators | Native/structural preservation | General exactness requires subschema evaluation and, for unevaluated keywords, annotation state. JSON Schema `oneOf` is not the DSL membership function of the same name. |
+
+This inventory does not turn a similarly named language function into native
+authority. A new row moves to implemented only with semantic-oracle tests,
+structural inverse recognition, builtin-shadow checks, per-unit edit isolation,
+and effective validation/export/bundle evidence.
 
 ## Granularity and edits
 

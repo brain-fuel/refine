@@ -20,9 +20,11 @@ type OpenAPISchemaRoot struct {
 }
 
 // IndexOpenAPISchemaRoots returns the sorted, deduplicated physical Schema
-// Object roots in an explicit OpenAPI resource closure. Wrapper references are
-// resolved with the same role-aware traversal used by provenance discovery;
-// Schema Object references, IDs, and anchors are not interpreted here.
+// Object roots in an explicit OpenAPI resource closure. Every explicit
+// Document is indexed under its own OpenAPI version and schema dialect.
+// Wrapper references are resolved with the same role-aware traversal used by
+// provenance discovery; Schema Object references, IDs, and anchors are not
+// interpreted here.
 func IndexOpenAPISchemaRoots(resources []OpenAPIResource, options OpenAPIOptions) ([]OpenAPISchemaRoot, error) {
 	return indexOpenAPISchemaRootsWithPathLimit(resources, options, schemajson.DefaultBytes)
 }
@@ -105,6 +107,19 @@ func indexOpenAPISchemaRootsWithPathLimit(resources []OpenAPIResource, options O
 	}
 	if err := walker.walkDocument(openAPIProvenanceNode{doc: entryDoc, node: entryDoc.root, pointer: ""}, dialect, 0); err != nil {
 		return nil, err
+	}
+	documents := []string{}
+	for _, item := range copied {
+		if item.Role == OpenAPIDocument && item.URI != entry {
+			documents = append(documents, item.URI)
+		}
+	}
+	sort.Strings(documents)
+	for _, uri := range documents {
+		doc := walker.docs[uri]
+		if err := walker.walkDocument(openAPIProvenanceNode{doc: doc, node: doc.root, pointer: ""}, dialect, 0); err != nil {
+			return nil, err
+		}
 	}
 	for _, item := range copied {
 		if item.Role != OpenAPISchema {

@@ -32,6 +32,15 @@ func TestOpenAPICollectionCardinalityPreservesJSONAndYAMLTokens(t *testing.T){
     }{origin,err:=DiscoverOpenAPI([]OpenAPIResource{{URI:"https://example.test/counts",Syntax:fixture.syntax,Role:OpenAPIDocument,Source:[]byte(fixture.source)}},OpenAPIOptions{EntryResource:"https://example.test/counts"});if err!=nil{t.Fatal(err)};if len(origin.Constraints())!=2{t.Fatalf("OpenAPI counts: %+v",origin.Constraints())};for _,constraint:=range origin.Constraints(){want:="4";if constraint.Keyword=="minItems"{want=fixture.token};if got,err:=origin.RecoverNative(constraint.Name,origin.ConstraintSource());err!=nil||got!=want{t.Fatalf("%s exact token %q: %v",constraint.Keyword,got,err)}}}
 }
 
+func TestOpenAPI30CollectionCardinalityRequiresNonnullableExplicitCollections(t *testing.T){
+    fixtures:=[]struct{name string;syntax OpenAPISyntax;source string;want map[string]string}{
+        {"json-array",OpenAPIJSON,`{"openapi":"3.0.4","info":{"title":"Counts","version":"1"},"paths":{},"components":{"schemas":{"Items":{"type":"array","nullable":false,"minItems":2.00,"maxItems":4}}}}`,map[string]string{"minItems":"2.00","maxItems":"4"}},
+        {"yaml-object",OpenAPIYAML,"openapi: 3.0.4\ninfo: {title: Counts, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Values: {type: object, minProperties: 0x02, maxProperties: 4}\n",map[string]string{"minProperties":"0x02","maxProperties":"4"}},
+    }
+    for _,fixture:=range fixtures{t.Run(fixture.name,func(t *testing.T){origin,err:=DiscoverOpenAPI([]OpenAPIResource{{URI:"https://example.test/oas30-counts",Syntax:fixture.syntax,Role:OpenAPIDocument,Source:[]byte(fixture.source)}},OpenAPIOptions{EntryResource:"https://example.test/oas30-counts"});if err!=nil{t.Fatal(err)};constraints:=origin.Constraints();if len(constraints)!=len(fixture.want){t.Fatalf("constraints: %+v",constraints)};for _,constraint:=range constraints{want,ok:=fixture.want[constraint.Keyword];if !ok{t.Fatalf("unexpected constraint: %+v",constraint)};if got,err:=origin.RecoverNative(constraint.Name,origin.ConstraintSource());err!=nil||got!=want{t.Fatalf("%s exact token %q: %v",constraint.Keyword,got,err)}}})}
+    for _,schema:=range []string{`{"type":"array","nullable":true,"minItems":1}`,`{"type":"object","nullable":true,"minProperties":1}`,`{"type":"array","nullable":"false","minItems":1}`,`{"nullable":false,"minItems":1}`}{source:=`{"openapi":"3.0.4","info":{"title":"Counts","version":"1"},"paths":{},"components":{"schemas":{"Value":`+schema+`}}}`;origin,err:=DiscoverOpenAPI([]OpenAPIResource{{URI:"https://example.test/oas30-opaque",Syntax:OpenAPIJSON,Role:OpenAPIDocument,Source:[]byte(source)}},OpenAPIOptions{EntryResource:"https://example.test/oas30-opaque"});if err!=nil{t.Fatal(err)};if len(origin.Constraints())!=0{t.Fatalf("nullable/untyped count acquired a correspondence: %s %+v",schema,origin.Constraints())}}
+}
+
 func TestCollectionCardinalityChargesAggregateAttemptedExpansion(t *testing.T){
     large:=strings.Repeat("9",40000)
     // Both clauses are native-valid. The first has no useful projected scope,

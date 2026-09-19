@@ -24,23 +24,22 @@ every schema construct. In particular, an explicit unsupported error is safer
 than silent weakening but is still a gap when the agreed first-release scope
 requires that operation.
 
+The source-authored OpenAPI operation frontend, assembly, project/release
+workflow, generated Java and unsigned Maven integration gate is complete at
+`61b21cd362c91a503d9e1565fb56c327ab410cb3`. Its
+[CI run](https://github.com/brain-fuel/refine/actions/runs/35453768722) passed
+both Linux and macOS, including selected fuzz targets. That checkpoint also
+includes the corrected Go regex backend and checked closed generic annotation
+roots. Later edits still require their own affected checks; this does not
+complete the remaining product scope.
+
 ## Confirmed unfinished first-release work
 
-- Finish the checkpoint integration gate for complete OpenAPI operations authored directly in
-  Haskell-like source without a companion native API document. The frontend,
-  native assembly, project/release workflow and first real generated-Java
-  authoring anchor are implemented. Repeated/inherited clause identities and
-  the affected operation-property replay contracts passed their required-Java
-  anchors and the Java integration package. The unsigned Maven lifecycle passed
-  all four phases in 72.26s. Java, Maven and the corrected Go regex backend pass
-  on both CI platforms. The latest run exposed a recursive generic Avro
-  annotation-selection bug. Its correction accepts checked closed applied roots
-  such as `Node Int32`, with four focused regressions passing; the corrected
-  checkpoint still needs the CI gate.
 - Per-constraint native correspondence beyond the documented JSON Schema and
   OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
   and ordered enum symbols. Paired OpenAPI 3.0 bounds and detached intrinsic-JSON
-  `uniqueItems: true` array units are now implemented.
+  `uniqueItems: true` array units are now implemented, as are OpenAPI 3.0
+  non-nullable collection cardinality units.
   Resource-scoped edits now
   rebuild effective validation/export/bundle views; exact whole-document
   retention alone does not satisfy editable, per-constraint bijection.
@@ -55,9 +54,14 @@ requires that operation.
   validation and generated Java offline loaders. Dynamic references now use
   the intrinsic JSON carrier while retaining native authority; Go and required
   Java tests cover dynamic-scope overrides and validated serde boundaries.
-  The OpenAPI Schema-root index and shared catalog foundation have focused
-  tests, but are not yet connected across general ingestion, operation
-  validation, provenance and generated Java loaders.
+  The OpenAPI Schema-root index now covers complete secondary Documents with
+  their own version/dialect. The shared catalog and private scope-preserving
+  oracle view have focused Go tests, but are not yet connected across general
+  ingestion, operation validation, provenance and generated Java loaders.
+  The existing OpenAPI structural validator must not be bypassed by stripping
+  schemas: that would omit annotation/default/example checks it currently
+  performs. Projection and annotation auditing must switch together with
+  rooted/operation validators and generated Java resource/selector handling.
 
 ## Requirements audit distinctions
 

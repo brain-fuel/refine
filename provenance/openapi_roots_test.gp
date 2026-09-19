@@ -4,6 +4,8 @@ import (
     "reflect"
     "strings"
     "testing"
+
+    "goforge.dev/refine/schemajson"
 )
 
 func indexOpenAPIRoots(t *testing.T,resources []OpenAPIResource)[]OpenAPISchemaRoot{t.Helper();roots,err:=IndexOpenAPISchemaRoots(resources,OpenAPIOptions{EntryResource:openAPIEntry});if err!=nil{t.Fatal(err)};return roots}
@@ -37,4 +39,28 @@ func TestOpenAPISchemaRootIndexKeepsWrapperFailuresAndBounds(t *testing.T){
     bad:=openAPIJSONResource(`{"openapi":"3.1.2","info":{"title":"x","version":"1"},"paths":{"/x":{"$ref":"#/components/pathItems/X","get":{"responses":{}}}},"components":{"pathItems":{"X":{}}}}`);if _,err:=IndexOpenAPISchemaRoots([]OpenAPIResource{bad},OpenAPIOptions{EntryResource:openAPIEntry});err==nil||!strings.Contains(err.Error(),"structural siblings"){t.Fatalf("wrapper sibling semantics changed: %v",err)}
     fragment:=OpenAPIResource{URI:"https://example.test/cycle.json",Source:[]byte(`{"a":{"$ref":"#/b"},"b":{"$ref":"#/a"}}`),Syntax:OpenAPIJSON,Role:OpenAPIFragment};cycle:=openAPIJSONResource(`{"openapi":"3.1.2","info":{"title":"x","version":"1"},"paths":{"/x":{"get":{"responses":{"200":{"$ref":"cycle.json#/a"}}}}}}`);if _,err:=IndexOpenAPISchemaRoots([]OpenAPIResource{cycle,fragment},OpenAPIOptions{EntryResource:openAPIEntry});err==nil||!strings.Contains(err.Error(),"cyclic wrapper"){t.Fatalf("wrapper cycle semantics changed: %v",err)}
     bounded:=openAPIJSONResource(`{"openapi":"3.1.2","info":{"title":"x","version":"1"},"components":{"schemas":{"A":{"type":"integer"},"B":{"type":"string"}}}}`);if _,err:=indexOpenAPISchemaRootsWithPathLimit([]OpenAPIResource{bounded},OpenAPIOptions{EntryResource:openAPIEntry},64);err==nil||!strings.Contains(err.Error(),"retained paths"){t.Fatalf("retained wrapper paths were not bounded: %v",err)}
+}
+
+func TestOpenAPISchemaRootIndexUsesEveryDocumentContext(t *testing.T){
+    shared:=OpenAPIResource{URI:"https://example.test/shared.json",Source:[]byte(`{"response":{"content":{"multipart/mixed":{"itemSchema":{"type":"integer"}}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIFragment}
+    entry:=openAPIJSONResource(`{"openapi":"3.1.2","paths":{"/entry":{"get":{"responses":{"200":{"$ref":"shared.json#/response"}}}}}}`)
+    secondary32:=OpenAPIResource{URI:"https://example.test/secondary-32.json",Source:[]byte(`{"openapi":"3.2.0","paths":{"/secondary":{"get":{"responses":{"200":{"$ref":"shared.json#/response"}}}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument}
+    secondary31:=OpenAPIResource{URI:"https://example.test/secondary-31.json",Source:[]byte(`{"openapi":"3.1.2","jsonSchemaDialect":"https://json-schema.org/draft/2020-12/schema","components":{"schemas":{"Own":{"type":"string"}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument}
+    roots:=indexOpenAPIRoots(t,[]OpenAPIResource{entry,shared,secondary32,secondary31});want:=[]OpenAPISchemaRoot{{Resource:secondary31.URI,Pointer:"/components/schemas/Own",Dialect:jsonSchema202012},{Resource:shared.URI,Pointer:"/response/content/multipart~1mixed/itemSchema",Dialect:openAPIBase}};if !reflect.DeepEqual(roots,want){t.Fatalf("document-local version/dialect indexing changed: %+v",roots)}
+}
+
+func TestOpenAPISchemaRootIndexWrapperDocumentAndFragmentContexts(t *testing.T){
+    target:=OpenAPIResource{URI:"https://example.test/target.json",Source:[]byte(`{"openapi":"3.1.2","components":{"responses":{"R":{"content":{"multipart/mixed":{"schema":{"type":"string"},"itemSchema":{"type":"integer"}}}}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument}
+    entry:=openAPIJSONResource(`{"openapi":"3.2.0","paths":{"/x":{"get":{"responses":{"200":{"$ref":"target.json#/components/responses/R"}}}}}}`)
+    roots:=indexOpenAPIRoots(t,[]OpenAPIResource{entry,target});want:=[]OpenAPISchemaRoot{{Resource:target.URI,Pointer:"/components/responses/R/content/multipart~1mixed/schema",Dialect:openAPIBase}};if !reflect.DeepEqual(roots,want){t.Fatalf("wrapper target did not use its document context: %+v",roots)}
+
+    shared:=OpenAPIResource{URI:"https://example.test/shared-context.json",Source:[]byte(`{"response":{"content":{"application/json":{"schema":{"type":"integer"}}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIFragment}
+    draft:=OpenAPIResource{URI:"https://example.test/draft-document.json",Source:[]byte(`{"openapi":"3.1.2","jsonSchemaDialect":"https://json-schema.org/draft/2020-12/schema","paths":{"/x":{"get":{"responses":{"200":{"$ref":"shared-context.json#/response"}}}}}}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument}
+    base:=openAPIJSONResource(`{"openapi":"3.1.2","paths":{"/x":{"get":{"responses":{"200":{"$ref":"shared-context.json#/response"}}}}}}`)
+    roots=indexOpenAPIRoots(t,[]OpenAPIResource{base,draft,shared});want=[]OpenAPISchemaRoot{{Resource:shared.URI,Pointer:"/response/content/application~1json/schema",Dialect:jsonSchema202012},{Resource:shared.URI,Pointer:"/response/content/application~1json/schema",Dialect:openAPIBase}};if !reflect.DeepEqual(roots,want){t.Fatalf("untyped fragment contexts were collapsed: %+v",roots)}
+}
+
+func TestOpenAPISchemaRootIndexDocumentContextWorkIsAggregate(t *testing.T){
+    first:=OpenAPIResource{URI:openAPIEntry,Source:[]byte(`{"openapi":"3.1.2"}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument};second:=OpenAPIResource{URI:"https://example.test/second.json",Source:[]byte(`{"openapi":"3.1.2"}`),Syntax:OpenAPIJSON,Role:OpenAPIDocument}
+    if _,err:=IndexOpenAPISchemaRoots([]OpenAPIResource{first,second},OpenAPIOptions{EntryResource:openAPIEntry,Limits:schemajson.Limits{Nodes:6}});err==nil||!strings.Contains(err.Error(),"document-context work limit"){t.Fatalf("document context work budget reset per resource: %v",err)}
 }

@@ -36,6 +36,10 @@ func (s *JSONSchema) cardinalityConstraint(node schemajson.Node,path,key string,
 
 func (w *openAPIProvenanceWalker) discoverCardinalityAssertions(node openAPIProvenanceNode,dialect string)error{
     typ,ok:=yamlMappingValue(node.node,"type");if !ok{return nil};if typ.Kind==yaml.SequenceNode{if len(typ.Content)!=1{return nil};typ=typ.Content[0]};domain,err:=yamlScalarString(typ);if err!=nil||domain!="array"&&domain!="object"{return nil}
+    // OpenAPI 3.0 nullable extends the instance domain with null, while these
+    // canonical scopes contain only collections. Omit the correspondence
+    // rather than strengthening the native union. Explicit false is exact.
+    if w.openAPI30{if nullable,present:=openAPIChild(node,"nullable");present{isNullable,exact:=openAPIExactBoolean(nullable);if !exact||isNullable{return nil}}}
     encodedDomain,_:=json.Marshal(domain);builder:=&JSONSchema{maxValueNodes:1000000,maxValueDepth:508,numericExpansion:w.cardinalityExpansion};defer func(){w.cardinalityExpansion=builder.numericExpansion}()
     for _,keyword:=range []string{"minItems","maxItems","minProperties","maxProperties"}{
         bound,ok:=openAPIChild(node,keyword);if !ok{continue};raw,normalized,exact:=openAPINumericToken(bound);if !exact{continue}

@@ -47,8 +47,78 @@ func openAPISequenceChildren(parent openAPIProvenanceNode) ([]openAPIProvenanceN
 	return out, nil
 }
 
+type openAPISchemaRootContext struct {
+	dialect   string
+	openAPI30 bool
+	openAPI32 bool
+}
+
+func (w *openAPIProvenanceWalker) schemaRootContext(dialect string) openAPISchemaRootContext {
+	return openAPISchemaRootContext{dialect: dialect, openAPI30: w.openAPI30, openAPI32: w.openAPI32}
+}
+func (w *openAPIProvenanceWalker) documentSchemaRootContext(doc *openAPIProvenanceDoc, inherited openAPISchemaRootContext) (openAPISchemaRootContext, error) {
+	if w.schemaRoot == nil || doc.resource.Role != OpenAPIDocument {
+		return inherited, nil
+	}
+	units := len(doc.root.Content) + 1
+	if units < 1 || units > w.maxSteps-w.steps {
+		return inherited, &Error{Code: "openapi.limit", Pointer: doc.resource.URI, Message: "OpenAPI document-context work limit exceeded"}
+	}
+	w.steps += units
+	version, err := openAPIVersion(doc.root)
+	if err != nil {
+		return inherited, err
+	}
+	context := openAPISchemaRootContext{openAPI30: strings.HasPrefix(version, "3.0."), openAPI32: strings.HasPrefix(version, "3.2.")}
+	if !context.openAPI30 && !strings.HasPrefix(version, "3.1.") && !context.openAPI32 {
+		return inherited, &Error{Code: "openapi.version", Pointer: doc.resource.URI + "#/openapi", Message: "schema-root indexing requires OpenAPI 3.0.x, 3.1.x, or 3.2.x"}
+	}
+	context.dialect = openAPIBase
+	if context.openAPI30 {
+		context.dialect = openAPI30Dialect
+		return context, nil
+	}
+	if raw, ok := yamlMappingValue(doc.root, "jsonSchemaDialect"); ok {
+		context.dialect, err = yamlScalarString(raw)
+		if err != nil {
+			return inherited, &Error{Code: "openapi.dialect", Pointer: doc.resource.URI + "#/jsonSchemaDialect", Message: err.Error()}
+		}
+	}
+	if err := supportedOpenAPIDialect(context.dialect, doc.resource.URI+"#/jsonSchemaDialect"); err != nil {
+		return inherited, err
+	}
+	return context, nil
+}
+func (w *openAPIProvenanceWalker) useSchemaRootContext(context openAPISchemaRootContext) func() {
+	if w.schemaRoot == nil {
+		return func() {}
+	}
+	old30, old32 := w.openAPI30, w.openAPI32
+	w.openAPI30, w.openAPI32 = context.openAPI30, context.openAPI32
+	return func() { w.openAPI30, w.openAPI32 = old30, old32 }
+}
+func (w *openAPIProvenanceWalker) schemaRootTraversalKind(kind, dialect string) string {
+	if w.schemaRoot == nil {
+		return kind
+	}
+	version := "3.1"
+	if w.openAPI30 {
+		version = "3.0"
+	} else if w.openAPI32 {
+		version = "3.2"
+	}
+	return kind + "\x00" + version + "\x00" + dialect
+}
+
 func (w *openAPIProvenanceWalker) walkDocument(root openAPIProvenanceNode, dialect string, depth int) error {
-	if err := w.enter(root, "document", depth); err != nil {
+	context, err := w.documentSchemaRootContext(root.doc, w.schemaRootContext(dialect))
+	if err != nil {
+		return err
+	}
+	restore := w.useSchemaRootContext(context)
+	defer restore()
+	dialect = context.dialect
+	if err := w.enter(root, w.schemaRootTraversalKind("document", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -140,12 +210,15 @@ func (w *openAPIProvenanceWalker) walkComponents(node openAPIProvenanceNode, dia
 }
 
 func (w *openAPIProvenanceWalker) walkPathItem(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
+	restore := w.useSchemaRootContext(context)
+	defer restore()
 	node = resolved
-	if err := w.enter(node, "path-item", depth); err != nil {
+	dialect = context.dialect
+	if err := w.enter(node, w.schemaRootTraversalKind("path-item", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -193,7 +266,7 @@ func (w *openAPIProvenanceWalker) walkPathItem(node openAPIProvenanceNode, diale
 }
 
 func (w *openAPIProvenanceWalker) walkOperation(node openAPIProvenanceNode, dialect string, depth int) error {
-	if err := w.enter(node, "operation", depth); err != nil {
+	if err := w.enter(node, w.schemaRootTraversalKind("operation", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -244,12 +317,15 @@ func (w *openAPIProvenanceWalker) walkOperation(node openAPIProvenanceNode, dial
 }
 
 func (w *openAPIProvenanceWalker) walkParameter(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
+	restore := w.useSchemaRootContext(context)
+	defer restore()
 	node = resolved
-	if err := w.enter(node, "parameter", depth); err != nil {
+	dialect = context.dialect
+	if err := w.enter(node, w.schemaRootTraversalKind("parameter", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -258,12 +334,15 @@ func (w *openAPIProvenanceWalker) walkParameter(node openAPIProvenanceNode, dial
 	return w.walkSchemaOrContent(node, dialect, depth+1)
 }
 func (w *openAPIProvenanceWalker) walkHeader(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
+	restore := w.useSchemaRootContext(context)
+	defer restore()
 	node = resolved
-	if err := w.enter(node, "header", depth); err != nil {
+	dialect = context.dialect
+	if err := w.enter(node, w.schemaRootTraversalKind("header", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -287,11 +366,14 @@ func (w *openAPIProvenanceWalker) walkSchemaOrContent(node openAPIProvenanceNode
 	return nil
 }
 func (w *openAPIProvenanceWalker) walkRequestBody(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
-	if err := w.enter(resolved, "request-body", depth); err != nil {
+	restore := w.useSchemaRootContext(context)
+	defer restore()
+	dialect = context.dialect
+	if err := w.enter(resolved, w.schemaRootTraversalKind("request-body", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -304,11 +386,14 @@ func (w *openAPIProvenanceWalker) walkRequestBody(node openAPIProvenanceNode, di
 	return w.walkContent(content, dialect, depth+1)
 }
 func (w *openAPIProvenanceWalker) walkResponse(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
-	if err := w.enter(resolved, "response", depth); err != nil {
+	restore := w.useSchemaRootContext(context)
+	defer restore()
+	dialect = context.dialect
+	if err := w.enter(resolved, w.schemaRootTraversalKind("response", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -343,12 +428,15 @@ func (w *openAPIProvenanceWalker) walkContent(node openAPIProvenanceNode, dialec
 	return nil
 }
 func (w *openAPIProvenanceWalker) walkMediaType(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
+	restore := w.useSchemaRootContext(context)
+	defer restore()
 	node = resolved
-	if err := w.enter(node, "media-type", depth); err != nil {
+	dialect = context.dialect
+	if err := w.enter(node, w.schemaRootTraversalKind("media-type", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -399,7 +487,7 @@ func (w *openAPIProvenanceWalker) walkMediaType(node openAPIProvenanceNode, dial
 	return nil
 }
 func (w *openAPIProvenanceWalker) walkEncoding(node openAPIProvenanceNode, dialect string, depth int) error {
-	if err := w.enter(node, "encoding", depth); err != nil {
+	if err := w.enter(node, w.schemaRootTraversalKind("encoding", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -447,11 +535,14 @@ func (w *openAPIProvenanceWalker) walkEncoding(node openAPIProvenanceNode, diale
 	return nil
 }
 func (w *openAPIProvenanceWalker) walkCallback(node openAPIProvenanceNode, dialect string, depth int) error {
-	resolved, err := w.resolveWrapper(node, depth)
+	resolved, context, err := w.resolveWrapper(node, w.schemaRootContext(dialect), depth)
 	if err != nil {
 		return err
 	}
-	if err := w.enter(resolved, "callback", depth); err != nil {
+	restore := w.useSchemaRootContext(context)
+	defer restore()
+	dialect = context.dialect
+	if err := w.enter(resolved, w.schemaRootTraversalKind("callback", dialect), depth); err != nil {
 		if err == io.EOF {
 			return nil
 		}
@@ -469,38 +560,42 @@ func (w *openAPIProvenanceWalker) walkCallback(node openAPIProvenanceNode, diale
 	return nil
 }
 
-func (w *openAPIProvenanceWalker) resolveWrapper(node openAPIProvenanceNode, depth int) (openAPIProvenanceNode, error) {
+func (w *openAPIProvenanceWalker) resolveWrapper(node openAPIProvenanceNode, context openAPISchemaRootContext, depth int) (openAPIProvenanceNode, openAPISchemaRootContext, error) {
 	seen := map[string]bool{}
 	for {
 		ref, ok := openAPIChild(node, "$ref")
 		if !ok {
-			return node, nil
+			return node, context, nil
 		}
 		if node.node.Kind != yaml.MappingNode {
-			return node, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "reference wrapper must be an object"}
+			return node, context, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "reference wrapper must be an object"}
 		}
 		for i := 0; i < len(node.node.Content); i += 2 {
 			name := node.node.Content[i].Value
 			if name == "$ref" || name == "summary" || name == "description" || strings.HasPrefix(name, "x-") {
 				continue
 			}
-			return node, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "structural siblings of a wrapper $ref require merge semantics and are not projected"}
+			return node, context, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + node.pointer, Message: "structural siblings of a wrapper $ref require merge semantics and are not projected"}
 		}
 		if err := w.chargeRetainedLocation("wrapper-ref", node); err != nil {
-			return node, err
+			return node, context, err
 		}
 		key := node.doc.resource.URI + "#" + node.pointer
 		if seen[key] {
-			return node, &Error{Code: "openapi.reference", Pointer: key, Message: "cyclic wrapper reference"}
+			return node, context, &Error{Code: "openapi.reference", Pointer: key, Message: "cyclic wrapper reference"}
 		}
 		seen[key] = true
 		raw, err := yamlScalarString(ref.node)
 		if err != nil {
-			return node, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + ref.pointer, Message: "$ref must be a string"}
+			return node, context, &Error{Code: "openapi.reference", Pointer: node.doc.resource.URI + "#" + ref.pointer, Message: "$ref must be a string"}
 		}
 		node, err = w.resolve(node, raw, node.doc.resource.URI, depth+len(seen))
 		if err != nil {
-			return node, err
+			return node, context, err
+		}
+		context, err = w.documentSchemaRootContext(node.doc, context)
+		if err != nil {
+			return node, context, err
 		}
 	}
 }
@@ -615,7 +710,7 @@ func openAPIPointerTokens(pointer string) ([]string, error) {
 
 func (w *openAPIProvenanceWalker) walkSchema(node openAPIProvenanceNode, dialect, base string, baseRoot openAPIProvenanceNode, depth int) error {
 	if w.schemaRoot != nil {
-		if err := w.enter(node, "schema-root\x00"+dialect, depth); err != nil {
+		if err := w.enter(node, w.schemaRootTraversalKind("schema-root", dialect), depth); err != nil {
 			if err == io.EOF {
 				return nil
 			}
@@ -751,6 +846,9 @@ func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanc
 	if err := w.discoverUniqueItemsAssertion(node, dialect); err != nil {
 		return err
 	}
+	if err := w.discoverCardinalityAssertions(node, dialect); err != nil {
+		return err
+	}
 	if w.openAPI30 {
 		return w.discoverOpenAPI30NumericAssertions(node, dialect)
 	}
@@ -783,9 +881,6 @@ func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanc
 				return err
 			}
 		}
-	}
-	if err := w.discoverCardinalityAssertions(node, dialect); err != nil {
-		return err
 	}
 	if !node.doc.isJSON {
 		return nil

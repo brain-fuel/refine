@@ -2441,3 +2441,45 @@ current implementation still performs no Maven deployment or product release.
   Final `go tool goplus gen --check ./provenance ./native ./java`,
   `go vet ./provenance ./native ./java`, and `git diff --check` passed for this
   checkpoint. No unrelated JVM or Maven lifecycle was rerun.
+- Checkpoint `61b21cd362c91a503d9e1565fb56c327ab410cb3` was pushed; its
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/35453768722)
+  passed both Linux and macOS jobs, including generation consistency, the
+  required Java/Maven integration suite, vet, CLI checks and selected fuzz
+  targets. This is a green development checkpoint, not a completed release.
+- OpenAPI 3.0 now discovers exact collection cardinality units for explicit
+  non-nullable arrays/objects. The new provenance anchor
+  `go test ./provenance -run '^TestOpenAPI30CollectionCardinalityRequiresNonnullableExplicitCollections$'`
+  passed in 0.190s; the native edit/validation/export/bundle/immutability anchor
+  `go test ./native -run '^TestOpenAPI30CollectionCardinalityEditsEffectiveResourcesAtomically$'`
+  passed in 0.412s. Existing inverse/effective-resource paths are reused; no
+  Java production code changed and no JVM/Maven lifecycle was repeated.
+- The OpenAPI Schema-root index now walks every explicit Document under its
+  own version and dialect, including wrapper transitions into another Document.
+  Fragments inherit the caller context; visited keys include that context and
+  budgets remain aggregate. `DiscoverOpenAPI` retains its existing traversal
+  behavior. After correcting only expected-order slices in new fixtures,
+  `go test ./provenance -run '^TestOpenAPISchemaRootIndex(CoversWrapperRoles|ResolvesOnlyWrapperReferences|LeavesSchemaReferencesOpaque|KeepsWrapperFailuresAndBounds|UsesEveryDocumentContext|WrapperDocumentAndFragmentContexts|DocumentContextWorkIsAggregate)$'`
+  passed in 0.198s. Four affected existing provenance callers also passed in
+  0.218s:
+  `go test ./provenance -run '^(TestOpenAPI32MediaAndEncodingSchemaPositions|TestOpenAPIExplicitResourcesReferencesAndIDs|TestOpenAPIWrapperReferencesAreChainedWithoutDroppingSiblings|TestOpenAPICollectionCardinalityPreservesJSONAndYAMLTokens)$'`.
+- A private, not-yet-integrated OpenAPI oracle view relocates indexed Schema
+  Objects into one ordinary JSON Schema container per physical resource. It
+  preserves existing resource boundaries and dynamic anchors, normalizes
+  existing IDs, rewrites static references only in known schema positions,
+  and exposes checked selector mappings. Exact originals are untouched.
+  Independently referenced schemas overlapping opaque data fail closed.
+  Retained selectors and total materialized container/alias bytes have separate
+  aggregate 16 MiB ceilings; JSON quoting checks escaped size before allocation.
+  The initial three oracle proofs passed in 0.324s; review then tightened
+  containment and allocation checks. The resulting exact selection passed in
+  0.421s:
+  `go test -v ./native -run '^(TestOpenAPICatalogIndexesCompleteSecondaryDocuments|TestOpenAPIOracleViewPreservesPhysicalAndLogicalScope|TestOpenAPIOracleViewPreservesDynamicScope|TestOpenAPIOracleViewChargesAggregateAliasesAndOutput|TestOpenAPIOracleViewRejectsOverlappingDataInterpretations|TestOpenAPIOracleViewQuotesBeforeAllocatingEscapes)$'`.
+  These are Go-oracle proofs, not generated-Java or end-to-end ingestion claims.
+  Further review added common inherited dialects for physical fragment
+  containers (mixed no-ID dialects reject), explicit dialects at existing ID
+  boundaries, cached semantic-parent mapping, and collection-copy preflights.
+  Fresh alias-loader entry points are covered as well as physical selectors.
+  Only the affected oracle tests and new dialect test were rerun:
+  `go test -v ./native -run '^(TestOpenAPIOracleViewPreservesPhysicalAndLogicalScope|TestOpenAPIOracleViewPreservesDynamicScope|TestOpenAPIOracleViewChargesAggregateAliasesAndOutput|TestOpenAPIOracleViewRejectsOverlappingDataInterpretations|TestOpenAPIOracleViewRetainsFragmentDialects)$'`
+  passed in 0.326s. Generation consistency and vet passed for native/provenance;
+  the unchanged quote and secondary-document passes were reused.
