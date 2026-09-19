@@ -1,0 +1,14 @@
+package value
+
+import "testing"
+
+func TestCodePointLengthPreservesExactUTF16Semantics(t *testing.T){
+    cases:=[]struct{name string;units []uint16;want int}{
+        {"empty",nil,0},{"ascii",[]uint16{'a','b'},2},{"bmp",[]uint16{0x00e9},1},
+        {"decomposed",[]uint16{'e',0x0301},2},{"pair",[]uint16{0xd83d,0xde00},1},
+        {"two-pairs",[]uint16{0xd83d,0xde00,0xd834,0xdd1e},2},
+        {"unmatched-high",[]uint16{0xd800},1},{"unmatched-low",[]uint16{0xdc00},1},
+        {"misordered",[]uint16{0xdc00,0xd800},2},{"mixed",[]uint16{'a',0xd83d,0xde00,0xd800,'b',0xdc00},5},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){text:=TextFromUnits(tc.units);if got:=text.CodePointLength();got!=tc.want{t.Fatalf("code points=%d, want %d",got,tc.want)};if text.Length()!=len(tc.units){t.Fatalf("UTF-16 length changed: %d",text.Length())}})}
+}

@@ -1,0 +1,27 @@
+package language
+
+import (
+    "testing"
+
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func codePointBuiltin(t *testing.T,text value.Text,limit uint64)(result evalValue,failure *evalFailure){
+    t.Helper();e:=newEvaluator(&Module{},validation.NewBudget(validation.Limits{},validation.Limits{Clause:limit}).BeginClause(0));defer func(){if caught:=recover();caught!=nil{var ok bool;failure,ok=caught.(*evalFailure);if !ok{panic(caught)}}}();result=e.builtin("codePointLength",[]evalValue{textValue(text)},Span{});return
+}
+
+func TestCodePointLengthBuiltinTypeSemanticsAndShadowing(t *testing.T){
+    program,err:=Compile("type Scalar = String where codePointLength it == 1\ntype TwoUnits = String where length it == 2");if err!=nil{t.Fatal(err)}
+    cases:=[]struct{name string;units []uint16;scalar bool;twoUnits bool}{
+        {"bmp",[]uint16{0x00e9},true,false},{"pair",[]uint16{0xd83d,0xde00},true,true},
+        {"unmatched",[]uint16{0xd800},true,false},{"decomposed",[]uint16{'e',0x0301},false,true},
+    };for _,tc:=range cases{text:=value.OfText(value.TextFromUnits(tc.units));scalar:=validation.StateName(program.ValidateData("Scalar",text,validation.Limits{}).State())=="valid";units:=validation.StateName(program.ValidateData("TwoUnits",text,validation.Limits{}).State())=="valid";if scalar!=tc.scalar||units!=tc.twoUnits{t.Fatalf("%s: scalar=%v units=%v",tc.name,scalar,units)}}
+    if _,err:=Compile("type Bad = [String] where codePointLength it > 0");err==nil{t.Fatal("codePointLength accepted a list")}
+    shadowed,err:=Compile("codePointLength :: String -> Int\ncodePointLength _ = 0\ntype EmptyByPolicy = String where codePointLength it == 0");if err!=nil{t.Fatal(err)};report:=shadowed.ValidateData("EmptyByPolicy",value.OfText(value.TextFromUnits([]uint16{'x'})),validation.Limits{});if validation.StateName(report.State())!="valid"{t.Fatalf("lexical function did not shadow builtin: %+v",report.Diagnostics())}
+}
+
+func TestCodePointLengthChargesUTF16UnitsBeforeScanning(t *testing.T){
+    text:=value.TextFromUnits([]uint16{0xd83d,0xde00,'a',0xd800});result,failure:=codePointBuiltin(t,text,4);if failure!=nil{t.Fatal(failure)};number,typ:=number(result,Span{});if typ!="Int"||number.Show()!="3"{t.Fatalf("result: %s %s",typ,number.Show())}
+    _,failure=codePointBuiltin(t,text,3);if failure==nil||failure.code!="evaluation.budget"{t.Fatalf("UTF-16 scan escaped preflight budget: %v",failure)}
+}

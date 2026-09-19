@@ -33,7 +33,7 @@ const functionExecutionJava = `
                         work.complete(done, arity == 0 ? new VariantValue(name, List.of()) : new FunctionValue(name, arity, List.of(), signature)); return;
                     }
                     arity = switch (name) {
-                        case "not", "length", "reverse", "unique", "isInteger", "show", "read", "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven", "keys", "values", "size" -> 1;
+                        case "not", "length", "codePointLength", "reverse", "unique", "isInteger", "show", "read", "toReal", "toInteger", "truncate", "floor", "ceiling", "roundHalfEven", "keys", "values", "size" -> 1;
                         case "map", "filter", "all", "any", "oneOf", "elem", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf", "matches", "search", "lookup", "member", "delete", "mapValues", "filterValues", "allValues", "anyValues" -> 2;
                         case "foldl", "insert" -> 3;
                         case "civilSecondsUntil", "siSecondsUntil" -> 2;
@@ -191,6 +191,10 @@ const functionExecutionJava = `
                         case "length" -> {
                             Val value = args.getFirst(); int length = value instanceof TextValue text ? text.value().length() : ((ListValue)value).values().size();
                             work.complete(done, new NumberValue(Rational.of(length), "Int"));
+                        }
+                        case "codePointLength" -> {
+                            String text = ((TextValue)args.getFirst()).value(); int units = text.length();
+                            step(units); work.complete(done, new NumberValue(Rational.of(text.codePointCount(0, units)), "Int"));
                         }
                         case "lookup", "member" -> {
                             String key = ((TextValue)args.getFirst()).value(); var entries = ((MapValue)args.get(1)).entries(); Val value = null;

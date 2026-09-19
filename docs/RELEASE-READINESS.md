@@ -31,52 +31,103 @@ workflow, generated Java and unsigned Maven integration gate is complete at
 both Linux and macOS, including selected fuzz targets. That checkpoint also
 includes the corrected Go regex backend and checked closed generic annotation
 roots. Later edits still require their own affected checks; this does not
-complete the remaining product scope.
+substitute for the release gates below.
 
-## Confirmed unfinished first-release work
+## Supported native correspondence matrix
 
-- Per-constraint native correspondence beyond the documented JSON Schema and
-  OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
-  and ordered enum symbols. Paired OpenAPI 3.0 bounds and detached intrinsic-JSON
-  `uniqueItems: true` array units are now implemented, as are OpenAPI 3.0
-  non-nullable collection cardinality and JSON enum units.
-  JSON-source `dependentRequired` now has detached exact object-presence units
-  with checked edits and inverse lowering for Draft 2020-12/OpenAPI 3.1/3.2.
-  Resource-scoped edits now
-  rebuild effective validation/export/bundle views; exact whole-document
-  retention alone does not satisfy editable, per-constraint bijection.
-- Remaining native ingestion and enforcement boundaries documented in
-  [NATIVE.md](NATIVE.md).
-  Selected Schema Objects and direct operation-part annotations are implemented
-  and fail closed on unsupported reachable OpenAPI annotations. The equivalent
-  JSON Schema/Avro project-boundary audit now rejects annotations outside the
-  selected explicit root rather than accepting source it would not enforce.
-  JSON Schema external recursive references,
-  canonical IDs and static anchors are implemented across Go projection,
-  validation and generated Java offline loaders. Dynamic references now use
-  the intrinsic JSON carrier while retaining native authority; Go and required
-  Java tests cover dynamic-scope overrides and validated serde boundaries.
-  OpenAPI 3.1/3.2 now shares its logical-ID/static-anchor catalog across rooted
-  ingestion, operation projection/validation, annotation auditing, provenance,
-  keyword discovery and generated Java loaders. Complete secondary Documents
-  retain their own version/dialect. Validation-only containers preserve dynamic
-  scope while published selectors and original resources remain physical.
-  A separate structural view retains kin's schema/default/example checks;
-  schemas are not stripped to bypass them. Focused Go, race and required Java
-  evidence is recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md). Automatic
-  operation projection still requires a statically describable checked shape;
-  unsupported structural applicators/dynamic projections require explicit
-  checked metadata rather than a guessed type.
+The first release does not claim that every native keyword is an editable
+Refine clause. Its native-translatable subset is the exact, tested matrix in
+[NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md):
 
-## Requirements audit distinctions
+- numeric bounds and `multipleOf`, including paired OpenAPI 3.0 exclusivity;
+- `minItems`/`maxItems` and `minProperties`/`maxProperties` on explicit
+  singleton collection domains, including non-nullable OpenAPI 3.0 collections;
+- bounded intrinsic-JSON `const`/`enum` for Draft 2020-12 and OpenAPI 3.1/3.2
+  JSON, plus OpenAPI 3.0 JSON `enum`;
+- detached intrinsic-JSON `uniqueItems: true` and JSON-source
+  `dependentRequired` units in their documented array/object domains;
+- native string `minLength`/`maxLength` through the explicit
+  `codePointLength` builtin for JSON and OpenAPI JSON/YAML; the existing UTF-16
+  `length` builtin is unchanged; and
+- Avro fixed sizes and ordered enum symbols.
 
-The native-translatable subset needs an explicit exactness inventory, not an
-assumption that every similarly named builtin is equivalent. For example,
+Each supported unit has exact token recovery, canonical inverse recognition,
+builtin-shadow protection, isolated edits and effective validation/export/bundle
+coverage. Resource-scoped edits rebuild those effective views. Constraints
+outside this matrix remain byte-exact, native-enforced authority but do not gain
+an editable canonical clause. An attempted unsupported scoped rewrite or exact
+cross-format claim fails rather than retaining a stale assertion or weakening
+the native contract. Adding another sound adapter extends this matrix; it is not
+an open-ended prerequisite for the first release.
+
+Native ingestion similarly has an explicit supported boundary rather than an
+unfinished promise to infer every OpenAPI shape. Selected Schema Objects and
+direct operation-part annotations are composed; unsupported reachable annotation
+placements reject. Explicit-resource JSON Schema and OpenAPI 3.1/3.2 references,
+recursive logical IDs, static anchors and dynamic validation scope are preserved
+across Go and generated Java. Automatic operation projection requires a
+statically describable checked shape. Ambiguous structural applicators or dynamic
+projections require explicit checked metadata or fail closed; they are never
+assigned a guessed payload type. See [NATIVE.md](NATIVE.md) for accepted syntax,
+versions and resource limits.
+
+## v0.1.0 release gates
+
+No additional native keyword family is scheduled merely because a convenience
+adapter might be possible. A candidate is eligible for a `v0.1.0` tag only when
+all of these finite gates are satisfied on one exact commit:
+
+1. Every selected semantic batch, including `codePointLength` and native string
+   provenance, is coherently integrated or absent; authored and generated files
+   agree and the candidate worktree is clean.
+2. The final generation-consistency, race, vet, required Java, selected fuzz,
+   CLI and real unsigned-Maven gates pass on that exact commit. Cached focused evidence
+   is reusable only when its relevant inputs are unchanged. The pinned
+   [GitHub Actions workflow](../.github/workflows/ci.yml) is the source of truth
+   for this Linux/macOS release-candidate gate.
+3. The actual distributable/JAR dependency and attribution inventory is audited,
+   including the embedded Go Unicode/regex notices and regex guest notices
+   described in [DEPENDENCIES.md](DEPENDENCIES.md).
+4. The documentation support matrix matches the candidate behavior. The green
+   commit and `v0.1.0` tag are pushed, and public
+   `goforge.dev/refine@v0.1.0` module resolution is verified.
+
+## Documented fail-closed limitations
+
+The supported release is intentionally narrower than the set of every syntactically
+legal native document or every possible conversion:
+
+- YAML aliases, merge keys, multiple documents, non-scalar keys and ambiguous
+  duplicate keys reject at the bounded syntax boundary. Exact JSON and the
+  documented JSON-compatible YAML subset are supported; no expansion is guessed.
+- A native constraint outside the correspondence matrix remains enforced and
+  byte-preserved, but cannot be advertised as an editable canonical clause.
+  Cross-format generation rejects unless the target representation is proven or
+  the agreed documented-loss path applies to a refinement rather than a base
+  wire-value mismatch.
+- Native values that need an undeclared wire convention—such as a repeating
+  `Real` in JSON, arbitrary `Int` in Avro, or a union without required explicit
+  discriminator metadata—reject instead of acquiring an implicit conversion.
+- Automatic OpenAPI projection is limited to statically describable checked
+  shapes. Explicit checked operation metadata/source remains available; ambiguous
+  applicators and dynamic type projection are not guessed.
+- General satisfiability, relational compatibility, native-wire compatibility
+  and Java ABI compatibility can be `unknown`. An enforced unknown fails unless
+  the exact comparison has a schema-carried, content-bound reviewed override.
+
+These are supported error boundaries, not a backlog whose mere existence blocks
+the tag. A limitation becomes a release defect if the tool silently weakens the
+contract, accepts an unsupported edit as exact, skips required enforcement, or
+claims proof it did not establish.
+
+The native-translatable subset is deliberately the explicit inventory above,
+not an assumption that every similarly named builtin is equivalent. For example,
 native regex validation now shares an ECMA-262 engine across Go and Java, but
 the refinement language's regex syntax still uses its separate RE2-based
 parser. That integration does not establish an exact native `pattern` to
-language-regex correspondence. Native string length and Refine UTF-16 length
-also have different semantics.
+language-regex correspondence. Native string length and Refine UTF-16 `length`
+also have different semantics; the separate `codePointLength` builtin provides
+the exact native string-bound measure without changing that agreed contract.
 
 Per-object embedded annotation composition and arbitrary replacement of a
 scoped provenance unit are not separately agreed first-release APIs. The
@@ -98,8 +149,8 @@ application-owned Java adaptation beyond serde are explicitly deferred.
 
 The current goal excludes Maven deployment. Maven coordinates remain a user
 choice; that does not block implementation or unsigned artifact verification.
-No product tag should be represented as release-ready until the required gaps
-above and the final integration audit are resolved. The sibling Hugo page and
+No product tag should be represented as release-ready until the finite gates
+above are complete. The sibling Hugo page and
 vanity imports were explicitly approved, pushed as `8537d17` in
 `brain-fuel/dev.goforge`, and verified live on 2026-09-19. That page describes an
 unreleased development checkpoint, not a completed product release.

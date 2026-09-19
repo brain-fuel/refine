@@ -214,6 +214,7 @@ var builtinSignatures = map[string]string{
     "mapValues":"(a -> b) -> Map String a -> Map String b", "filterValues":"(a -> Bool) -> Map String a -> Map String a",
     "allValues":"(a -> Bool) -> Map String a -> Bool", "anyValues":"(a -> Bool) -> Map String a -> Bool",
     "matches":"String -> String -> Bool", "search":"String -> String -> Bool",
+    "codePointLength":"String -> Int",
     "isInteger":"Real -> Bool",
     "toReal":"Int -> Real", "toInteger":"Real -> Result String Int",
     "truncate":"Real -> Int", "floor":"Real -> Int", "ceiling":"Real -> Int", "roundHalfEven":"Real -> Int",

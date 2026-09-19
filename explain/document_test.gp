@@ -46,6 +46,7 @@ type Infinite = Int where loop it @message show (1 / 0)
 func TestBuiltinAndLexicalShadowing(t *testing.T){
     cases:=[]struct{source string; wanted string; forbidden string}{
         {`type T = String where length it > 0`,"number of list elements or UTF-16", ""},
+        {`type T = String where codePointLength it > 0`,"number of Unicode code points", ""},
         {`length :: Int -> Bool
 length x = x > 0
 type T = Int where length it`,"Refer to named function length", "number of list elements or UTF-16"},
@@ -56,7 +57,7 @@ type T = Int where f it > 0`,"lexically bound value length", "number of list ele
         {`type T = Maybe Int where case it of { Nothing -> True; Just length -> length > 0 }`,"lexically bound value length", "number of list elements or UTF-16"},
     }
     for _,test:=range cases{doc:=documentation(t,test.source);text:=doc.Markdown();if !strings.Contains(text,test.wanted){t.Fatalf("missing %q in %s",test.wanted,text)};if test.forbidden!=""&&strings.Contains(text,test.forbidden){t.Fatalf("shadowed name misdescribed: %s",text)}}
-    for _,name:=range []string{"not","isInteger","show","read","length","reverse","map","filter","foldl","oneOf","elem","unique","matches","search","all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf"}{if words,ok:=builtinMeaning(name);!ok||words==""{t.Errorf("missing builtin %s",name)}}
+    for _,name:=range []string{"not","isInteger","show","read","length","codePointLength","reverse","map","filter","foldl","oneOf","elem","unique","matches","search","all","any","satisfiesAll","satisfiesOnlyOneOf","satisfiesOneOf","satisfiesAtLeastOneOf"}{if words,ok:=builtinMeaning(name);!ok||words==""{t.Errorf("missing builtin %s",name)}}
 }
 
 func TestOperatorsAndDemandDrivenDescriptions(t *testing.T){

@@ -3,11 +3,16 @@
 A GoPlus-authored compiler for Refined OpenAPI 3, Refined Avro, and Refined
 JSON Schema, with Java 25 code generation and validated serde.
 
-**Under development; not ready for release.** [SPEC.md](SPEC.md) is the agreed
-product contract, not a claim that every capability exists. The implementation
-and release evidence is tracked in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
-The current source audit and unfinished release work are summarized in
+**v0.1.0 scope; release tags are issued only after the required CI passes on the
+exact candidate commit.**
+[SPEC.md](SPEC.md) is the agreed product contract. The implementation and release
+evidence is tracked in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md). The
+finite release gates and documented fail-closed support boundaries are
+summarized in
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
+The pinned [GitHub Actions workflow](.github/workflows/ci.yml) is the source of
+truth for the final cross-platform generation, race, Java, Maven, vet, CLI and
+selected-fuzz gate; focused development checks do not substitute for that run.
 
 ## Development
 
@@ -35,23 +40,19 @@ settings and checkpoint evidence are recorded in
 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md); missing-runtime skips are not
 release evidence.
 
-Implemented foundations (not the complete compiler): immutable exact numbers and
-UTF-16 text; three-outcome validation results and deterministic budget meters;
-lossless ordered JSON ingestion/editing; a Haskell-like parser, formatter, and
-static type/pattern checker; and metered in-memory predicate execution and
-typed payload validation. See [docs/RUNTIME.md](docs/RUNTIME.md) for the library
-API, step accounting, and explicit limitations. Generated Java now includes
-standalone validators, initial immutable domain models, exact timestamps,
-canonical show/read, and deterministic dynamic regex predicates; see the
-[Java runtime guide](docs/JAVA-RUNTIME.md). Checked native ingestion and bundles,
-generic model families, bounded Jackson 3 serde, English algorithm export,
-conservative logical analysis, release-planning libraries, schema-derived
-JetCheck tests, Maven generation, validated Avro binary/JSON serde, and pure
-OpenAPI request/response-context validation are available. Native projection
-coverage, cross-format conversion, generator/example coverage, and the complete
-specification/release audit remain in progress.
+The implemented surface includes immutable exact values, three-outcome
+validation and deterministic budgets; the checked Haskell-like language;
+lossless native ingestion and editable supported constraint units; ordinary and
+Refined exports with complete documented-loss explanations; immutable Java 25
+models, validators, Jackson 3 and Avro binary/JSON serde; native-aware OpenAPI
+request/response context; schema-derived JetCheck tests and embedded examples;
+release planning/promotion; and reproducible unsigned Maven assembly. See
+[docs/RUNTIME.md](docs/RUNTIME.md), [docs/NATIVE.md](docs/NATIVE.md), and the
+[Java runtime guide](docs/JAVA-RUNTIME.md) for exact APIs and limits. Unsupported
+native correspondences, wire encodings and ambiguous automatic projections fail
+closed; the release does not claim unrestricted conversion among all schemas.
 
-The development CLI exposes only the phases currently implemented:
+The CLI exposes the implemented phases:
 
 ```sh
 go build -o bin/refine ./cmd/refine
@@ -65,7 +66,8 @@ bin/refine project maven
 ```
 
 `typecheck` is not payload/native schema validation. See
-[docs/LANGUAGE.md](docs/LANGUAGE.md) for syntax, static checks, and remaining gaps.
+[docs/LANGUAGE.md](docs/LANGUAGE.md) for syntax, static checks, and supported
+boundaries.
 `check-schema` additionally rejects proven-empty declarations while explicitly
 reporting unknown satisfiability. Unknown permits compilation, not a claim of
 proof; native schema validity and wire enforcement remain separate checks.

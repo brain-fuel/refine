@@ -118,7 +118,7 @@ func (e *evaluator) literalNumber(raw string,at Span) evalValue {
 }
 
 var builtinArities = map[string]int{
-    "not":1,"show":1,"read":1,"length":1,"reverse":1,"unique":1,"isInteger":1,
+    "not":1,"show":1,"read":1,"length":1,"codePointLength":1,"reverse":1,"unique":1,"isInteger":1,
     "map":2,"filter":2,"all":2,"any":2,"foldl":3,"oneOf":2,"elem":2,
     "satisfiesAll":2,"satisfiesOnlyOneOf":2,"satisfiesOneOf":2,"satisfiesAtLeastOneOf":2,
     "matches":2,"search":2,

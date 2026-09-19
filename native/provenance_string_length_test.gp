@@ -1,0 +1,26 @@
+package native
+
+import (
+    "strings"
+    "testing"
+    "goforge.dev/refine/language"
+)
+
+func TestStringLengthLoweringRequiresExactCodePointBuiltin(t *testing.T){
+    source:=`type Text = String where codePointLength it >= 2 where codePointLength it <= 3`;program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};payload,err:=program.PayloadType("Text");if err!=nil{t.Fatal(err)}
+    for _,format:=range []Format{JSONSchema,OpenAPI}{lowered,err:=LowerPayload(format,payload,LowerOptions{Mode:Ordinary,OpenAPIVersion:"3.1.2"});if err!=nil{t.Fatal(err)};if !strings.Contains(lowered.String(),`"minLength": 2`)||!strings.Contains(lowered.String(),`"maxLength": 3`){t.Fatal(lowered.String())}}
+    for _,bad:=range []string{`type Text = String where length it >= 2`,"codePointLength :: String -> Int\ncodePointLength _ = 2\ntype Text = String where codePointLength it >= 2",`type Text = String where codePointLength it >= -1`}{program,err:=language.Compile(bad);if err!=nil{t.Fatal(err)};payload,err:=program.PayloadType("Text");if err!=nil{t.Fatal(err)};if _,err:=LowerPayload(JSONSchema,payload,LowerOptions{Mode:Ordinary});problemCode(err)!="native.unrepresentable"{t.Fatalf("inexact length acquired native authority: %s: %v",bad,err)}}
+}
+
+func TestStringLengthNativeEditsPreserveCodePointsAndScopedRecovery(t *testing.T){
+    original:=`{"type":"string","minLength":1.0,"maxLength":3,"pattern":"^[^x]*$"}`;uri:="urn:refine:root";project,err:=IngestProject(JSONSchema,[]byte(original),ProjectOptions{Root:ResourceSelector{TypeName:"Text"}});if err!=nil{t.Fatal(err)};minimum,maximum:=constraintByKeyword(t,project,"minLength"),constraintByKeyword(t,project,"maxLength");source:=project.ResourceConstraintSource(uri);changed:=strings.Replace(source,minimum.Predicate,strings.Replace(minimum.Predicate,">= 1",">= 2",1),1);edited,err:=project.WithEditedNativeConstraintSource(uri,changed);if err!=nil{t.Fatal(err)}
+    for _,raw:=range []string{`"ab"`,`"😀a"`,`"😀😀"`,`"á"`}{if err:=edited.ValidateJSON([]byte(raw));err!=nil{t.Fatalf("code point valid %s: %v",raw,err)}};for _,raw:=range []string{`""`,`"a"`,`"😀"`,`"abcd"`,`"ax"`}{if err:=edited.ValidateJSON([]byte(raw));problemCode(err)!="native.payload"{t.Fatalf("code point/native invalid %s: %v",raw,err)}}
+    if got,err:=edited.RecoverResourceNative(uri,maximum.Name,changed);err!=nil||got!="3"{t.Fatalf("untouched recovery: %q %v",got,err)};if _,err:=edited.RecoverResourceNative(uri,minimum.Name,changed);err==nil{t.Fatal("edited minimum retained bijection")};if err:=project.ValidateJSON([]byte(`"😀"`));err!=nil{t.Fatal(err)};if project.Resources()[0].Source!=original{t.Fatal("original mutated")}
+    bundle,err:=edited.Bundle();if err!=nil{t.Fatal(err)};again,err:=ParseBundle(bundle);if err!=nil{t.Fatal(err)};if err:=again.ValidateJSON([]byte(`"😀"`));problemCode(err)!="native.payload"{t.Fatalf("bundle lost code point edit: %v",err)};exported,err:=edited.Export(LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};reingested,err:=IngestProjectResources(JSONSchema,exported.Resources(),ProjectOptions{Root:exported.Root(),Metadata:exported.Metadata()});if err!=nil{t.Fatal(err)};if err:=reingested.ValidateJSON([]byte(`"😀"`));problemCode(err)!="native.payload"{t.Fatalf("export lost code point edit: %v",err)}
+    removedSource:=strings.Replace(source,"type "+minimum.Name+" = "+minimum.Scope+" where "+minimum.Predicate+"\n","",1);removed,err:=project.WithEditedNativeConstraintSource(uri,removedSource);if err!=nil{t.Fatal(err)};if err:=removed.ValidateJSON([]byte(`""`));err!=nil{t.Fatal(err)};if err:=removed.ValidateJSON([]byte(`"abcd"`));problemCode(err)!="native.payload"{t.Fatalf("removal erased maximum: %v",err)}
+    for _,bad:=range []string{strings.Replace(source,minimum.Predicate,`length it >= 2`,1),source+"\ncodePointLength :: String -> Int\ncodePointLength _ = 100\n",strings.Replace(source,minimum.Predicate,`it == "ab"`,1)}{if candidate,err:=project.WithEditedNativeConstraintSource(uri,bad);candidate!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("unsafe string unit edit accepted: %v",err)}}
+}
+
+func TestOpenAPIStringLengthYAMLEditsRetainLexicalBounds(t *testing.T){
+    original:="openapi: 3.1.2\ninfo: {title: Strings, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text:\n      type: string\n      minLength: 1.0\n      maxLength: 3e0\n";uri:="https://example.test/strings";project,err:=IngestProject(OpenAPI,[]byte(original),ProjectOptions{ResourceID:uri,Root:ResourceSelector{TypeName:"Text"}});if err!=nil{t.Fatal(err)};minimum:=openAPIProvenanceConstraint(t,project,uri,"minLength");maximum:=openAPIProvenanceConstraint(t,project,uri,"maxLength");source:=openAPIProvenanceUnit(t,project,uri);changed:=strings.Replace(source,minimum.Predicate,strings.Replace(minimum.Predicate,">= 1",">= 2",1),1);edited,err:=project.WithEditedNativeConstraintSource(uri,changed);if err!=nil{t.Fatal(err)};if got,err:=edited.RecoverResourceNative(uri,maximum.Name,changed);err!=nil||got!="3e0"{t.Fatalf("YAML lexical recovery: %q %v",got,err)};if err:=edited.ValidateJSON([]byte(`"😀"`));problemCode(err)!="native.payload"{t.Fatalf("YAML edit counted UTF-16: %v",err)};if err:=edited.ValidateJSON([]byte(`"😀a"`));err!=nil{t.Fatal(err)};if project.Resources()[0].Source!=original{t.Fatal("YAML original changed")}
+}

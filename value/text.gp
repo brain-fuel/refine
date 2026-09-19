@@ -20,6 +20,10 @@ func TextFromUTF8(text string) (Text, error) {
 }
 func (t Text) Units() []uint16 { return append([]uint16(nil), t.units...) }
 func (t Text) Length() int { return len(t.units) }
+// CodePointLength counts valid UTF-16 surrogate pairs as one code point and
+// every other code unit, including an unmatched surrogate, as one. It does
+// not normalize text and matches Java String.codePointCount semantics.
+func (t Text) CodePointLength() int { count:=0;for i:=0;i<len(t.units);i++{unit:=t.units[i];if unit>=0xd800&&unit<=0xdbff&&i+1<len(t.units)&&t.units[i+1]>=0xdc00&&t.units[i+1]<=0xdfff{i++};count++};return count }
 func (t Text) Equal(other Text) bool {
     if len(t.units) != len(other.units) { return false }
     for i, unit := range t.units { if unit != other.units[i] { return false } }

@@ -328,6 +328,12 @@ func (s *JSONSchema) walk(node schemajson.Node, path string) error {
 			}
 			continue
 		}
+		if handled, err := s.stringLengthConstraint(node, path, key, member.Value); handled {
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if handled, err := s.cardinalityConstraint(node, path, key, member.Value); handled {
 			if err != nil {
 				return err

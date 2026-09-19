@@ -159,6 +159,7 @@ func (s *JSONSchema) walk(node schemajson.Node,path string)error{
         where:=pointer(path,key)
         if handled,err:=s.dependentRequiredConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
         if handled,err:=s.uniqueItemsConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
+        if handled,err:=s.stringLengthConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
         if handled,err:=s.cardinalityConstraint(node,path,key,member.Value);handled{if err!=nil{return err};continue}
         if key=="const"||key=="enum"{
             priorNodes,priorExpansion:=s.valueNodes,s.numericExpansion

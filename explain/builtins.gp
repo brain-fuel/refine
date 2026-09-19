@@ -33,6 +33,7 @@ func builtinMeaning(name string)(string,bool){
     case "show":meaning="Display the argument using canonical language-neutral text: reduced exact fractions, escaped UTF-16 text, ordered lists and constructor arguments, and record fields sorted by identifier. This is not JSON or Avro serialization and does not validate bypass-created values."
     case "read":meaning="Parse only canonical literal-value text into the statically inferred target type; input cannot execute expressions. Validate the target and its refinements. Return Ok with the validated value or Err with the failure; the author must explicitly handle the result."
     case "length":meaning="Return the number of list elements or UTF-16 code units in text. This does not replace native schema character-length semantics."
+    case "codePointLength":meaning="Return the number of Unicode code points in text without normalization. Count a valid UTF-16 surrogate pair once and each unmatched UTF-16 unit once."
     case "reverse":meaning="Return a new list in reverse element order."
     case "map":meaning="Apply the first argument function to every element of the second argument list in order, returning the results in a new list."
     case "filter":meaning="Apply the first argument predicate to every element of the second argument list in order, keeping elements for which it returns true. A predicate error is not silently treated as false."

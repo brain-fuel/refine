@@ -379,7 +379,7 @@ func (l *lowerer) typ(t *language.Type, field bool) (any, error) {
 		for _, rule := range rules {
 			represented := false
 			if l.format != Avro {
-				represented = l.numericRule(result, rule) || l.jsonRule(result, rule) || l.cardinalityRule(result, rule) || l.uniqueItemsRule(result, rule, base) || l.dependentRequiredRule(result, rule, base)
+				represented = l.numericRule(result, rule) || l.jsonRule(result, rule) || l.cardinalityRule(result, rule) || l.stringLengthRule(result, rule) || l.uniqueItemsRule(result, rule, base) || l.dependentRequiredRule(result, rule, base)
 			}
 			if !represented {
 				if l.mode == Refined || l.allowLoss {

@@ -97,6 +97,7 @@ func TestBuiltinAndLexicalShadowing(t *testing.T) {
 		forbidden string
 	}{
 		{`type T = String where length it > 0`, "number of list elements or UTF-16", ""},
+		{`type T = String where codePointLength it > 0`, "number of Unicode code points", ""},
 		{`length :: Int -> Bool
 length x = x > 0
 type T = Int where length it`, "Refer to named function length", "number of list elements or UTF-16"},
@@ -116,7 +117,7 @@ type T = Int where f it > 0`, "lexically bound value length", "number of list el
 			t.Fatalf("shadowed name misdescribed: %s", text)
 		}
 	}
-	for _, name := range []string{"not", "isInteger", "show", "read", "length", "reverse", "map", "filter", "foldl", "oneOf", "elem", "unique", "matches", "search", "all", "any", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf"} {
+	for _, name := range []string{"not", "isInteger", "show", "read", "length", "codePointLength", "reverse", "map", "filter", "foldl", "oneOf", "elem", "unique", "matches", "search", "all", "any", "satisfiesAll", "satisfiesOnlyOneOf", "satisfiesOneOf", "satisfiesAtLeastOneOf"} {
 		if words, ok := builtinMeaning(name); !ok || words == "" {
 			t.Errorf("missing builtin %s", name)
 		}

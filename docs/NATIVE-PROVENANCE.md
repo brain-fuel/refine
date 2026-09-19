@@ -130,12 +130,15 @@ original input. Quoted/tagged values and YAML `const`/`enum` remain opaque;
 anchors and aliases are rejected because they do not provide an unambiguous
 owned lexical token.
 
-Local JSON Pointer references and nested relative references across explicitly
-supplied resources are supported. A local `$id` changes the base and root for
-references within that schema. References to another schema's logical `$id`,
-anchors, dynamic anchors and dynamic references currently fail explicitly;
-they are never resolved against the physical resource URI or declaration
-order.
+The standalone `DiscoverOpenAPI` traversal supports local JSON Pointer
+references and nested relative references across explicitly supplied resources.
+A local `$id` changes the base and root for references within that schema.
+In that standalone API, references to another schema's logical `$id`, anchors,
+dynamic anchors and dynamic references fail explicitly; they are never guessed
+from physical resource URIs or declaration order. Native OpenAPI projects do
+not use that incomplete resolver: their checked catalog handles logical IDs and
+anchors, and `DiscoverOpenAPIIndexed` recovers provenance at the catalog's
+physical Schema Object locations.
 
 OpenAPI 3.0 numeric bounds are separate atomic pairs: `minimum` with its
 Boolean `exclusiveMinimum`, and `maximum` with its Boolean `exclusiveMaximum`.
@@ -217,9 +220,9 @@ for an explicit singleton `array` or `object` type, respectively. Their bounds
 must be nonnegative integer values. Integer-valued decimal/exponent spellings
 normalize to an integer in the predicate while the exact original token remains
 recoverable. Oversized exact-number expansion stays opaque. Shadowing `length`
-or `size` invalidates the corresponding guarantee. String length keywords are
-deliberately excluded because JSON Schema counts Unicode code points while the
-language's `Text` length uses UTF-16 units.
+or `size` invalidates the corresponding guarantee. String bounds use their own
+`codePointLength` adapter because the ordinary `length` builtin measures UTF-16
+units rather than native Unicode code points.
 
 `const` and `enum` use JSON Schema equality exactly: numbers compare as exact
 mathematical rationals (`1` equals `1.0`), array order is significant, object
@@ -242,15 +245,39 @@ materialization limits, not payload-validation limits.
 
 A numeric keyword alone does not imply numeric type: natively it does not reject
 nonnumeric instances. Discovery therefore does not invent `Int` for an untyped
-bound or a nullable/heterogeneous type union. Nor does it translate native
-`minLength` into UTF-16 `length`, or native `pattern` into the RE2 refinement
-predicate. These native clauses stay intact pending exact adapters.
+bound or a nullable/heterogeneous type union. It also does not translate native
+`pattern` into the RE2 refinement predicate. Unsupported native clauses stay
+intact pending exact adapters.
 
 The context pointer matters. A bound under `not`, `if`, `anyOf`, or a property
 schema is a **local unit**, never an unconditional predicate on the document's
 root payload. Full contract assembly must preserve those applicator semantics.
 Generated `Native_<hash>` declaration names are stable internal unit identities,
 not final user-facing Java names or a complete schema type model.
+
+## Exact string length
+
+`minLength` and `maxLength` project only for an explicit singleton `string`
+domain. Their canonical units are `String where codePointLength it >= N` and
+`String where codePointLength it <= N`. `codePointLength` counts a valid UTF-16
+surrogate pair as one Unicode code point; it does not normalize text. Native
+wire ingestion independently rejects unmatched surrogates, so no replacement
+character can change the comparison.
+
+Bounds must be nonnegative integer values. Integer-valued decimal and exponent
+spellings normalize to the canonical integer predicate while unchanged recovery
+returns the exact original JSON or accepted OpenAPI YAML scalar token. Discovery
+uses the shared aggregate exact-number expansion budget. Untyped schemas,
+mixed/nullable type unions, and OpenAPI 3.0 schemas with `nullable: true` remain
+opaque. OpenAPI 3.0 requires `nullable` to be absent or exactly false.
+
+Ordinary lowering and the checked edit inverse recognize only the structural
+`codePointLength it >=/<= N` form with a bounded nonnegative integer literal.
+Shadowing `codePointLength` invalidates only string-length authority. Changed
+units may switch between the lower- and upper-bound keywords, but cannot cross
+into numeric or collection-count families; removal deletes only its original
+keyword. Effective resources drive validation, export, and bundles without
+mutating the retained original.
 
 ## Exact array uniqueness
 
@@ -297,13 +324,14 @@ native schema authority.
 | --- | --- | --- |
 | Numeric bounds and `multipleOf` | Implemented | Explicit singleton integer/number domains; OpenAPI 3.0 lower/upper bounds retain the paired exclusivity Boolean. |
 | `minItems`/`maxItems`, `minProperties`/`maxProperties` | Implemented | Explicit singleton collection domains. OpenAPI 3.0 additionally requires `nullable` to be absent or false. |
+| `minLength`/`maxLength` | Implemented | Explicit singleton string domain using Unicode-code-point `codePointLength`; OpenAPI 3.0 additionally requires `nullable` to be absent or false. |
 | `const`/`enum` | Implemented subset | Draft 2020-12 and OpenAPI 3.1/3.2 JSON values support both. OpenAPI 3.0 supports JSON-source `enum` only. All values must fit the bounded intrinsic JSON algebra. |
 | `uniqueItems: true` | Implemented | Detached explicit singleton array domain over intrinsic JSON equality. |
 | Avro fixed size and enum symbols | Implemented | Atomic exact size and ordered-symbol units; remaining Avro defaults, aliases, order and logical-type parameters are structural/wire metadata, not interchangeable `where` clauses. |
 | `dependentRequired` | Implemented subset | Detached explicit singleton object domain; Draft 2020-12 and OpenAPI 3.1/3.2 JSON only; whole-keyword token recovery and canonical presence inverse. |
 | JSON-compatible YAML `const`/`enum` | Candidate exact adapters | Exact subtree lexical recovery is not yet implemented. These remain natively enforced without editable canonical units. |
 | `required` | Structurally representable, no detached unit yet | Projected record presence is already checked. A separate editable unit would require atomic coordination with that structural source so removal cannot leave stale requiredness. |
-| `minLength`/`maxLength`, `pattern`, `patternProperties`, `format` | No equivalence to current refinement builtins | Native string length counts Unicode code points rather than UTF-16 units; native regular expressions are ECMA-262 rather than the DSL's RE2 syntax; format assertion depends on dialect/runtime configuration. |
+| `pattern`, `patternProperties`, `format` | No general editable equivalence | Native regular expressions are ECMA-262 rather than the DSL's RE2 syntax; format assertion depends on dialect/runtime configuration. |
 | `contains` families, `propertyNames`, `dependentSchemas`, `unevaluated*`, references and schema applicators | Native/structural preservation | General exactness requires subschema evaluation and, for unevaluated keywords, annotation state. JSON Schema `oneOf` is not the DSL membership function of the same name. |
 
 This inventory does not turn a similarly named language function into native
@@ -326,8 +354,8 @@ canonical. Removing the declaration reports `Removed`. Adding other functions,
 types, or `where` rules does not break untouched native correspondences.
 Bindings are part of the correspondence: shadowing the `isInteger` builtin
 breaks `multipleOf` recovery, shadowing `oneOf` breaks enum recovery, and
-shadowing `length` or `size` breaks the corresponding collection-count
-recovery, while unrelated units stay intact.
+shadowing `length`, `size`, or `codePointLength` breaks the corresponding
+collection- or string-count recovery, while unrelated units stay intact.
 
 `RecoverNative` refuses to return a native token for a changed/removed unit, while
 still recovering untouched units. It does not guess an inverse for arbitrary
@@ -351,11 +379,14 @@ against executable refinement clauses.
 
 Remaining provenance work includes additional keyword adapters,
 inferred/intersected type domains, scalar-Unicode-independent subschema-key
-provenance, OpenAPI logical-ID/anchor resolution, and Avro adapters beyond fixed
-sizes and ordered enum symbols. The native package already
+provenance, standalone `DiscoverOpenAPI` logical-ID/anchor resolution, and Avro
+adapters beyond fixed sizes and ordered enum symbols. Native OpenAPI 3.1/3.2
+projects already use their shared checked catalog plus `DiscoverOpenAPIIndexed`
+for logical-ID/anchor-aware validation and provenance. The native package also
 provides explicit-resource reference resolution, bundles, editable projection,
-native output and English generation within its documented boundaries; their
-existence does not broaden this package's documented correspondence guarantee.
+native output and English generation within its documented boundaries; those
+integrated capabilities do not broaden the standalone discovery API's
+documented correspondence guarantee.
 Custom/older `$schema` dialects are
 explicitly unsupported in this discovery entry point; they are not silently
 interpreted as Draft 2020-12. No full native-ingestion gate is checked off here.

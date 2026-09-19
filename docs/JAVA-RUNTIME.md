@@ -1,4 +1,4 @@
-# Java runtime generation (development)
+# Java runtime generation
 
 `goforge.dev/refine/java.GenerateRuntime(packageName)` returns deterministic
 `File{Path, Source}` values for seven Java 25 source files. It performs no I/O.
@@ -58,14 +58,13 @@ compatible and delegate with those default schema limits; generated `Contract`
 entry points use the checked schema limits instead.
 
 These are runtime primitives; [semantic models](JAVA-MODELS.md) are emitted by a
-separate generation API. The initial
-generated contract validator below uses them and precharges literal expansion;
+separate generation API. The generated contract validator below uses them and precharges literal expansion;
 calling `Rational.parse` directly does not provide sandbox resource isolation.
-The current 65,536-bit integer-width guard matches Go's development primitive,
-not the final shared resource policy. Native schema regex dialects, schema-derived
-complete model shapes, Jackson/Avro codecs,
-schema-derived test generators, Maven wiring and the full CLI generation path
-remain required. Nothing here establishes full product conformance.
+The documented 65,536-bit integer-width ceiling is a shared Go/Java backend
+resource limit. Native schema regex dialects are separate from the refinement
+regex engine. Models, Jackson/Avro codecs, schema-derived tests, Maven wiring and
+CLI generation compose these primitives through their separate checked APIs;
+this primitive generator alone does not establish those boundaries.
 
 ## Verification
 
@@ -168,9 +167,9 @@ language data. Structural bypasses still enforce representability.
 
 Java receives static metadata, not a schema/type-expression parser. This
 validator-only API emits no domain classes. `GenerateModels` additionally emits
-[generic record/wrapper models, inheritance and typed witnesses](JAVA-MODELS.md),
-with generic unions still required. Inline-refined argument witnesses
-retain statically checked predicate scope in nested model views.
+[generic record/wrapper models, generic tagged unions, inheritance and typed
+witnesses](JAVA-MODELS.md). Inline-refined argument witnesses retain statically
+checked predicate scope in nested model views.
 No serde or Maven publication is implied.
 
 Supported structural forms include records, aliases, lists, exact string-keyed maps, generic/recursive
@@ -192,7 +191,8 @@ instantiation, recursion, partial application, higher-order arguments/results,
 zero-argument definitions and ordered equations. Case/function patterns support
 bindings, wildcards, literals, constructors, lists and cons patterns.
 
-Implemented builtins are `not`, `isInteger`, `show`, `read`, `length`, `reverse`, `map`, `filter`,
+Implemented builtins include `not`, `isInteger`, `show`, `read`, `length`,
+`codePointLength`, `reverse`, `map`, `filter`,
 `foldl`, `oneOf`, `elem`, `unique`, `all`, `any`, `satisfiesAll`,
 `satisfiesOnlyOneOf`, `satisfiesOneOf`, `satisfiesAtLeastOneOf`, `lookup`,
 `member`, `keys`, `values`, `size`, `insert`, `delete`, `mapValues`,
@@ -219,9 +219,9 @@ including named/higher-order use, inline assertions and typed reads. Malformed
 patterns and resource exhaustion produce indeterminate evaluation diagnostics,
 not false matches; conclusive predicate-combination results retain Go's recovery
 behavior. Pattern text is omitted from parser errors.
-Function-valued payload fields are not serializable payload types.
-Unsupported rules are never dropped. The missing execution forms remain release
-obligations, not optional extensions.
+Function-valued payload fields are not serializable payload types. Unsupported
+rules are never dropped: a generator that cannot execute a checked expression
+rejects the complete output rather than silently weakening the contract.
 
 ### Canonical display
 
@@ -352,7 +352,7 @@ bypass revalidation and arbitrary UTF-16 inputs, with a 256 KiB JVM stack.
 `Profile`, `UnicodeVersion`, `Start`, and typed `Instructions`. Mutating any
 snapshot field, instruction or rune range cannot affect the compiled Go regex.
 The original `pattern.Fold` helper remains available for existing Go consumers.
-This development instruction profile is not a native schema encoding or a
+This pinned instruction profile is not a native schema encoding or a
 promise that different compiler versions produce identical instruction graphs.
 
 Java `RegexProgram` takes the matching instruction profile/Unicode version,
@@ -428,14 +428,13 @@ and typed reads. Each suite adds 6,000 jetCheck cases. Model tests cover validat
 construction, atomic updates, raw values, bypass revalidation and concurrent use.
 All generated Java compilation uses warnings-as-errors and `-Xss256k` execution.
 
-These establish current Go/Java refinement-dialect conformance, not automatic
-compatibility with future changes to Go's regex compiler or Unicode tables.
-Release-stable cross-toolchain profile auditing remains required. Native schema
-regex dialects are separate requirements and are not silently replaced by this
-refinement engine.
+These establish Go/Java refinement-dialect conformance for the pinned compiler,
+Unicode tables and execution profile. A future toolchain/profile change requires
+fresh compatibility evidence. Native schema regex dialects are separate and are
+not silently replaced by this refinement engine.
 
-Canonical reading is not JSON/Avro serde or native schema ingestion; those remain
-separate release obligations.
+Canonical reading is not JSON/Avro serde or native schema ingestion; those are
+implemented and tested through their separate checked boundaries.
 
 ### Initialization and execution evidence
 
@@ -445,7 +444,7 @@ loading, and split long string constants. This removes the former 48,000-byte
 contract-source guard without raising JVM stack or method-size limits. Helpers
 are package-private implementation classes in the same contract source file;
 the public API and eight-file validator source set are unchanged. This does not
-remove the separate development limits on semantic model shapes/source sizes.
+remove the separate documented bounds on semantic model shapes/source sizes.
 Expression-to-signature links use a deferred, finite metadata table: a function's
 contract may refer recursively to the same function without infinite expansion
 during generation or class initialization. Declaration lookup retains source

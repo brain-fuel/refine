@@ -2611,3 +2611,57 @@ current implementation still performs no Maven deployment or product release.
   the entire native package passed in 16.680s. No unchanged Java/Maven suite was
   repeated. Generation checks, vet and diff checks passed for the dependency
   batch; independent review found no further inverse/lowering authority issue.
+- The Linux result for `06c6d6c` found the same stale dialect-test expectation
+  and no additional test failures. The corrected dependency checkpoint
+  `6057f76b3701b2af92e60a1c7e4f7b817690c696` was pushed; its separate
+  [CI run](https://github.com/brain-fuel/refine/actions/runs/35459076951)
+  is the cross-platform gate for that source state.
+- Added `codePointLength :: String -> Int` across the exact-text value API,
+  Go evaluator, explanations and generated Java runtime. Valid UTF-16 pairs
+  count once, unmatched units count once, and no normalization occurs.
+  Both evaluators charge the UTF-16 scan length before scanning. Existing
+  `length` remains UTF-16/list length. The exact selections in
+  [TESTING.md](TESTING.md) passed: value 0.249s, language 0.328s,
+  explanation inventory 0.273s. These are focused evidence, not a full gate.
+- Native `minLength`/`maxLength` now have canonical string-scope units using
+  that distinct builtin. JSON and OpenAPI JSON/YAML lexical bounds retain
+  exact token recovery; singleton domains, OpenAPI 3.0 nullable restrictions,
+  exact-number expansion budgets and builtin shadowing are enforced.
+  The three provenance anchors in the documented selection passed in 0.369s;
+  the three native lowering/edit/recovery/export/bundle/YAML anchors passed
+  in 0.858s. Independent review found no concrete scope, shadowing, numeric
+  admission or effective-edit issue.
+- One coherent affected race selection combined those anchors with the existing
+  UTF-16 semantics, evaluator, explanation and neighboring cardinality checks:
+  `go test -race ./value ./language ./explain ./provenance ./native -run '^(TestCodePointLengthPreservesExactUTF16Semantics|TestUTF16LengthAndEquality|TestCodePointLengthBuiltinTypeSemanticsAndShadowing|TestCodePointLengthChargesUTF16UnitsBeforeScanning|TestEvaluatorExpressionsAndBuiltins|TestBuiltinAndLexicalShadowing|TestStringLengthCanonicalRoundTripAndCodePointOracle|TestStringLengthIsolationShadowingInvalidBoundsAndAggregateBudget|TestOpenAPIStringLengthExactTokensAndNullableBoundary|TestStringLengthLoweringRequiresExactCodePointBuiltin|TestStringLengthNativeEditsPreserveCodePointsAndScopedRecovery|TestOpenAPIStringLengthYAMLEditsRetainLexicalBounds|TestCollectionCardinalityLoweringAndScopedEdits|TestCollectionCardinalityDoesNotLowerStringLengthOrShadowedBuiltins)$'`
+  passed in all five packages (1.248s, 1.291s, 1.508s, 1.816s, 6.020s).
+- The grouped required-Java harness ran once successfully after correcting
+  test-only canonical formatting, a stale dependency directory and an
+  assertion that confused detached provenance with the payload root:
+  `REFINE_REQUIRE_JAVA=1 JAVA_HOME=/opt/homebrew/opt/openjdk@25 REFINE_NETWORKNT_DIR=/tmp/refine-networknt.fPEK2h go test -v ./java -run '^TestGeneratedCodePointLengthRuntimeParityAndNativeStringLengthSerde$'`
+  passed (test 2.90s, package 3.289s). It checks Unicode vectors, lexical
+  shadowing, full Go/Java report parity over both budget limits, and edited
+  native string bounds through Jackson reads and zero-output rejected writes.
+  Production runtime code did not change during those fixture corrections.
+- The finite release audit distinguishes the exact native correspondence
+  matrix from optional additional adapters. Public docs now describe that
+  implemented scope and fail-closed boundaries, plus the actual remaining
+  source/CI/attribution/tag gates. No new language/backend feature family is
+  required merely to eliminate a documented unsupported case.
+- Artifact inspection found a concrete attribution gap: Go BSD notices in
+  Java comments disappear from compiled class files. Every nonempty generated
+  project now includes exact checked Refine MIT and Go BSD resources under
+  `META-INF`. The existing real Maven test's first packaged JAR is inspected
+  for those bytes, the checked guest assets, and absence of shaded dependency
+  class paths; this adds no Maven lifecycle. The focused
+  `go test ./project -run '^TestGeneratedProjectCarriesExactBinaryAttribution$'`
+  passed in 0.519s. The coherent package selection
+  `go test -race ./project -skip '^TestMavenRegenerationAndReproducibleArtifact$'`
+  passed in 9.295s; actual Maven packaging remains for the final required CI
+  gate, not a skipped-success claim. Global `go tool goplus gen --check ./...`,
+  `go vet ./...` and `git diff --check` passed afterward.
+- CI continues its complete gate on branch pushes and pull requests. Release
+  tags are permitted only for an exact already-green commit; the workflow now
+  excludes tag-only pushes so annotation of unchanged source does not launch
+  another full JVM/Maven/race/fuzz campaign. Public module installation and tag
+  identity remain separate required publication checks.

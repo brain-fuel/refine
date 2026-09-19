@@ -2,6 +2,9 @@ name: verify
 
 on:
   push:
+    # Release tags point at an already verified commit. Do not repeat the
+    # unchanged Java/Maven/race/fuzz gate merely because that commit is tagged.
+    branches: ['**']
   pull_request:
 
 permissions:

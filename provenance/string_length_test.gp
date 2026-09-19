@@ -1,0 +1,36 @@
+package provenance
+
+import (
+    "fmt"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/schemajson"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func TestStringLengthCanonicalRoundTripAndCodePointOracle(t *testing.T){
+    for _,edge:=range []string{"minLength","maxLength"}{for _,token:=range []string{"0","2","2.00","2e0","9007199254740993"}{raw:=fmt.Sprintf(`{"type":"string",%q:%s}`,edge,token);origin:=discover(t,raw);constraints:=origin.Constraints();if len(constraints)!=1{t.Fatalf("%s: %+v",raw,constraints)};constraint:=constraints[0];if constraint.Scope!="String"||len(constraint.Builtins)!=1||constraint.Builtins[0]!="codePointLength"{t.Fatalf("constraint: %+v",constraint)};if recovered,err:=origin.RecoverNative(constraint.Name,origin.ConstraintSource());err!=nil||recovered!=token{t.Fatalf("%s exact recovery: %q %v",raw,recovered,err)}}}
+    raw:=`{"type":"string","minLength":2}`;origin:=discover(t,raw);constraint:=origin.Constraints()[0];program,err:=language.Compile(origin.ConstraintSource());if err!=nil{t.Fatal(err)};oracle:=nativeOracle(t,raw)
+    cases:=[][]uint16{{},{'a'},{0x00e9},{0xd83d,0xde00},{'a',0xd83d,0xde00},{0xd83d,0xde00,0xd83d,0xde00}}
+    for _,units:=range cases{text:=value.TextFromUnits(units);wire,err:=text.UTF8();if err!=nil{t.Fatal(err)};expected:=oracle.Validate(wire)==nil;actual:=validation.StateName(program.ValidateData(constraint.Name,value.OfText(text),validation.Limits{}).State())=="valid";if actual!=expected{t.Fatalf("UTF-16 %v (%q): language=%v native=%v",units,wire,actual,expected)}}
+}
+
+func TestStringLengthIsolationShadowingInvalidBoundsAndAggregateBudget(t *testing.T){
+    origin:=discover(t,`{"type":"string","minLength":1.0,"maxLength":4,"properties":{"items":{"type":"array","minItems":2}}}`);if len(origin.Constraints())!=3{t.Fatalf("constraints: %+v",origin.Constraints())};minimum:=find(t,origin,"/minLength");items:=find(t,origin,"/properties/items/minItems");source:=origin.ConstraintSource()+"\ncodePointLength :: String -> Int\ncodePointLength _ = 0\n";findings,err:=origin.AuditSource(source);if err!=nil{t.Fatal(err)};for _,finding:=range findings{want:="unchanged";if finding.Constraint.Keyword=="minLength"||finding.Constraint.Keyword=="maxLength"{want="changed"};if StatusName(finding.Status)!=want{t.Fatalf("shadowing leaked across units: %+v",finding)}};if _,err:=origin.RecoverNative(minimum.Name,source);err==nil{t.Fatal("shadowed codePointLength retained native authority")};if got,err:=origin.RecoverNative(items.Name,source);err!=nil||got!="2"{t.Fatalf("unrelated cardinality lost recovery: %q %v",got,err)}
+    for _,raw:=range []string{`{"minLength":2}`,`{"type":["string","null"],"minLength":2}`,`{"type":"array","minLength":2}`}{opaque:=discover(t,raw);if len(opaque.Constraints())!=0||opaque.Original()!=raw{t.Fatalf("non-singleton string acquired authority: %s %+v",raw,opaque.Constraints())}};singleton:=discover(t,`{"type":["string"],"minLength":2}`);if len(singleton.Constraints())!=1{t.Fatalf("singleton string omitted: %+v",singleton.Constraints())}
+    for _,bound:=range []string{`-1`,`1.5`,`"2"`,`true`}{_,err:=DiscoverJSONSchema([]byte(`{"type":"string","minLength":`+bound+`}`),schemajson.Limits{});if err==nil||!strings.Contains(err.Error(),"native.string_length"){t.Fatalf("invalid length %s: %v",bound,err)}}
+    large:=strings.Repeat("9",40000);bounded:=discover(t,`{"$defs":{"charged":{"type":"object","minLength":`+large+`},"exhausted":{"type":"string","minLength":`+large+`},"small":{"type":"string","maxLength":2}}}`);if bounded.numericExpansion!=40001||len(bounded.Constraints())!=1||bounded.Constraints()[0].Keyword!="maxLength"{t.Fatalf("attempted expansion was not bounded: work=%d constraints=%+v",bounded.numericExpansion,bounded.Constraints())}
+}
+
+func TestOpenAPIStringLengthExactTokensAndNullableBoundary(t *testing.T){
+    fixtures:=[]struct{name string;syntax OpenAPISyntax;source string;want map[string]string}{
+        {"json",OpenAPIJSON,`{"openapi":"3.1.2","info":{"title":"Lengths","version":"1"},"paths":{},"components":{"schemas":{"Text":{"type":"string","minLength":2.00,"maxLength":4}}}}`,map[string]string{"minLength":"2.00","maxLength":"4"}},
+        {"yaml",OpenAPIYAML,"openapi: 3.2.1\ninfo: {title: Lengths, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {type: string, minLength: 0x02, maxLength: 4}\n",map[string]string{"minLength":"0x02","maxLength":"4"}},
+        {"oas30",OpenAPIYAML,"openapi: 3.0.4\ninfo: {title: Lengths, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Text: {type: string, nullable: false, minLength: 2.0, maxLength: 4}\n",map[string]string{"minLength":"2.0","maxLength":"4"}},
+    }
+    for _,fixture:=range fixtures{t.Run(fixture.name,func(t *testing.T){uri:="https://example.test/"+fixture.name;origin,err:=DiscoverOpenAPI([]OpenAPIResource{{URI:uri,Syntax:fixture.syntax,Role:OpenAPIDocument,Source:[]byte(fixture.source)}},OpenAPIOptions{EntryResource:uri});if err!=nil{t.Fatal(err)};constraints:=origin.Constraints();if len(constraints)!=len(fixture.want){t.Fatalf("constraints: %+v",constraints)};for _,constraint:=range constraints{want,ok:=fixture.want[constraint.Keyword];if !ok||constraint.Scope!="String"||len(constraint.Builtins)!=1||constraint.Builtins[0]!="codePointLength"{t.Fatalf("constraint: %+v",constraint)};if got,err:=origin.RecoverNative(constraint.Name,origin.ConstraintSource());err!=nil||got!=want{t.Fatalf("%s exact token %q: %v",constraint.Keyword,got,err)}}})}
+    for _,schema:=range []string{`{"type":"string","nullable":true,"minLength":1}`,`{"type":"string","nullable":"false","minLength":1}`,`{"type":["string","null"],"minLength":1}`,`{"nullable":false,"minLength":1}`}{source:=`{"openapi":"3.0.4","info":{"title":"Lengths","version":"1"},"paths":{},"components":{"schemas":{"Text":`+schema+`}}}`;uri:="https://example.test/opaque";origin,err:=DiscoverOpenAPI([]OpenAPIResource{{URI:uri,Syntax:OpenAPIJSON,Role:OpenAPIDocument,Source:[]byte(source)}},OpenAPIOptions{EntryResource:uri});if err!=nil{t.Fatal(err)};if len(origin.Constraints())!=0{t.Fatalf("nullable/untyped string acquired authority: %s %+v",schema,origin.Constraints())}}
+}

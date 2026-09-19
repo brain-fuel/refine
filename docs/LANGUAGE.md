@@ -1,9 +1,9 @@
 # Refinement language front end
 
-This describes the implemented parser and static checker. The initial in-memory
-evaluator is documented in [RUNTIME.md](RUNTIME.md); neither document claims the
-full language, native backends, or Java generation are complete. The release
-contract remains [SPEC.md](../SPEC.md).
+This describes the implemented parser and static checker. Runtime semantics are
+documented in [RUNTIME.md](RUNTIME.md); native and generated-Java boundaries have
+their own guides. The release contract remains [SPEC.md](../SPEC.md), while
+[RELEASE-READINESS.md](RELEASE-READINESS.md) records the finite release gates.
 
 ## Declarations
 
@@ -188,9 +188,9 @@ constraints. See [qualified polymorphism](CAPABILITIES.md). Inference propagates
 through named forward, higher-order, and recursive references, while a concrete
 unsupported instantiation is rejected statically. Numeric literals remain
 concretely `Int` or `Real`; `Integral` permits polymorphic remainder without
-admitting `Real`; and no implicit numeric coercion is introduced. Length still requests a concrete type.
-Anonymous lambdas, symbol-qualified imports, and remaining native integration
-are still required.
+admitting `Real`; and no implicit numeric coercion is introduced. Length requests
+a concrete type. Anonymous lambdas and symbol-qualified imports are not part of
+the first-release surface; higher-order use is through checked named functions.
 
 ## Formatting and diagnostics
 
@@ -201,8 +201,9 @@ handled separately by the lossless JSON layer.
 
 The command `refine typecheck --json file.refine` reports its phase explicitly.
 Success means static checking succeeded; it does not claim native schema validity,
-satisfiability, compatibility, or successful payload validation. Those commands
-and gates must be implemented before a product release.
+satisfiability, compatibility, or successful payload validation. The separate
+CLI phases implement those boundaries and retain their explicit unknown or
+indeterminate outcomes.
 
 ## Code-generation snapshots
 
@@ -214,7 +215,7 @@ The snapshot is produced by checking a fresh tree. Mutating its syntax, type
 nodes, maps or scopes cannot change the original `Program` or another snapshot.
 Backends can therefore retain the type information needed for polymorphic calls
 and typed codecs without gaining access to the evaluator's private checked AST.
-# Offline reusable source imports
+## Offline reusable source imports
 
 `language.CompileSources(entry, sources)` accepts an explicit map of canonical,
 project-relative source IDs to original source strings. It resolves relative

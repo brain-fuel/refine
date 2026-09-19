@@ -70,10 +70,12 @@ Document-level JSON Schema correspondences delegate to the `provenance`
 package. Editing one canonical constraint does not invalidate an untouched
 constraint. The `Document` provenance methods remain JSON-Schema-only; Avro and
 OpenAPI use resource-scoped `Project` methods. Those project adapters support
-Avro fixed sizes and ordered enum symbols, OpenAPI 3.0 paired numeric bounds,
-and OpenAPI 3.1/3.2 numeric, `const`/`enum`, collection-count, uniqueness and
-JSON-source `dependentRequired` constraints within their documented exact
-subsets. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md).
+Avro fixed sizes and ordered enum symbols, plus documented exact JSON
+Schema/OpenAPI subsets of numeric, `const`/`enum`, collection-count,
+string-length, uniqueness and `dependentRequired` constraints. OpenAPI 3.0
+lower/upper numeric units retain their paired exclusivity Boolean. Version and
+source restrictions are detailed in
+[NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md).
 
 ## Refined annotations
 
@@ -153,7 +155,10 @@ Implemented JSON Schema Draft 2020-12 and OpenAPI 3.1/3.2 mappings include:
 - non-generic named aliases/records and recursive `$ref` definitions;
 - canonical integer comparisons against exact numeric literals as
   `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`;
-- canonical exact divisibility forms as `multipleOf`.
+- canonical exact divisibility forms as `multipleOf`;
+- canonical `codePointLength it >=/<= N` string rules as
+  `minLength`/`maxLength`, counting Unicode code points rather than UTF-16
+  units.
 
 Emitting fixed-width bounds is capped at 65,536 bits to bound backend memory and
 document growth; wider checked language types receive an explicit lowering error.
@@ -189,10 +194,13 @@ fail, even in Refined mode and even when documented loss is allowed. Current
 examples are exact `Real` values such as `1/3`, arbitrary-precision `Int` in Avro,
 and `Timestamp` without an explicit offset/spelling wire policy. Other explicit
 gaps include tagged unions without declared discriminator metadata, tagged
-discriminator objects in Avro, open generic roots, OpenAPI operations
-authored from standalone language source, Avro/OpenAPI native-constraint
-provenance and OpenAPI 3.0 lowering. Native Avro JSON validation and decoding
-are implemented separately; see [AVRO-JSON.md](AVRO-JSON.md).
+discriminator objects in Avro, open generic roots, and ordinary schema
+generation targeting OpenAPI 3.0. OpenAPI 3.0 ingestion and validation remain
+supported, but generated OpenAPI output requires a supported 3.1.x or 3.2.x
+version. Standalone OpenAPI operation authoring and resource-scoped
+Avro/OpenAPI provenance are implemented within the documented bounded subsets.
+Native Avro JSON validation and decoding are implemented separately; see
+[AVRO-JSON.md](AVRO-JSON.md).
 The package reports these as errors and does not narrow, round, add discriminators,
 turn absence into null/default, or strip constraints silently.
 

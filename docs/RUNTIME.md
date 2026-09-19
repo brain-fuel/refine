@@ -74,6 +74,10 @@ results are checked, not silently wrapped. Numeric conversions are not implicit.
 `isInteger :: Real -> Bool` tests exact integrality, without rounding or a
 floating-point tolerance. It charges the canonical number length before testing.
 Text ordering is lexicographic by UTF-16 code units; equality does not normalize.
+For text, `length` continues to return UTF-16 code units. The separate
+`codePointLength :: String -> Int` counts a valid surrogate pair once and an
+unmatched UTF-16 unit once, without normalization. It charges the UTF-16 unit
+count before scanning.
 
 ### Regex and timestamps
 

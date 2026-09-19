@@ -53,6 +53,11 @@ provides the separate Linux/macOS environment coverage. Module/toolchain pins,
 shared runtime contracts, or broad AST changes warrant this full gate, but not
 after each intermediate edit.
 
+CI runs on branch pushes and pull requests. A release tag must reference an
+exact commit that already passed this gate; pushing that tag does not rerun
+unchanged Java/Maven/race/fuzz checks. Tag identity and public module resolution
+are separate publication checks.
+
 CI uses an explicit `-timeout=20m` package ceiling. The hosted macOS Java
 package reached Go's default ten-minute alarm while compiling its final worked
 example, although that individual test had run only four seconds. Raising this
@@ -429,6 +434,23 @@ REFINE_REQUIRE_JAVA=1 JAVA_HOME=/opt/homebrew/opt/openjdk@25 go test -v ./java -
 Use the installed Java 25 path on the host. This batch changes provenance and
 native lowering, not generated-runtime implementation, dependency coordinates,
 or Maven lifecycle behavior; prior unrelated JVM/Maven evidence is reused.
+
+The code-point string-length batch separates builtin semantics, canonical
+provenance and native effective edits. Its new Java harness groups runtime
+budget parity and edited native serde into one compilation/JVM:
+
+```sh
+go test ./value -run '^(TestCodePointLengthPreservesExactUTF16Semantics|TestUTF16LengthAndEquality)$'
+go test ./language -run '^(TestCodePointLengthBuiltinTypeSemanticsAndShadowing|TestCodePointLengthChargesUTF16UnitsBeforeScanning|TestEvaluatorExpressionsAndBuiltins)$'
+go test ./explain -run '^TestBuiltinAndLexicalShadowing$'
+go test ./provenance -run '^(TestStringLengthCanonicalRoundTripAndCodePointOracle|TestStringLengthIsolationShadowingInvalidBoundsAndAggregateBudget|TestOpenAPIStringLengthExactTokensAndNullableBoundary)$' -v
+go test ./native -run '^(TestStringLengthLoweringRequiresExactCodePointBuiltin|TestStringLengthNativeEditsPreserveCodePointsAndScopedRecovery|TestOpenAPIStringLengthYAMLEditsRetainLexicalBounds)$' -v
+REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedCodePointLengthRuntimeParityAndNativeStringLengthSerde$' -v
+```
+
+Provide the host's Java 25 and pinned networknt/Jackson dependency environment
+for that Java command. The added shared evaluator builtin warrants one coherent
+integration gate, not repeated whole-suite runs during each intermediate edit.
 
 For each completed batch record: source revision (or exact dirty-file scope),
 command, result, environment, and any skipped coverage. A later relevant edit

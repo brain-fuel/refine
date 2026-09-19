@@ -295,6 +295,11 @@ func Generate(input GenerateInput) (Bundle, error) {
 			}
 		}
 	}
+	if len(contracts) > 0 {
+		if err := emitDistributionNotices(all, layout.ResourceDir); err != nil {
+			return Bundle{}, err
+		}
+	}
 	if err := runtimeResources.emit(all, layout.ResourceDir); err != nil {
 		return Bundle{}, err
 	}

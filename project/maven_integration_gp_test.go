@@ -4,9 +4,12 @@
 package project_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"goforge.dev/refine/internal/ecmaregex"
 	"goforge.dev/refine/native"
 	"goforge.dev/refine/project"
 	"goforge.dev/refine/release"
@@ -155,6 +159,96 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	}
 	if inventory.ArtifactSHA256() != release.Digest(first) {
 		t.Fatal("actual Maven artifact digest mismatch")
+	}
+	archive, err := zip.NewReader(bytes.NewReader(first), int64(len(first)))
+	if err != nil {
+		t.Fatal("open actual Maven JAR", err)
+	}
+	entries := map[string]*zip.File{}
+	for _, entry := range archive.File {
+		entries[entry.Name] = entry
+		for _, prefix := range []string{"com/networknt/", "tools/jackson/", "org/apache/avro/", "com/dylibso/chicory/"} {
+			if strings.HasPrefix(entry.Name, prefix) {
+				t.Fatalf("generated artifact shaded external dependency entry %s", entry.Name)
+			}
+		}
+	}
+	for _, notice := range []string{"LICENSE.refine.txt", "NOTICE.refine.txt"} {
+		expected, err := os.ReadFile(filepath.Join("notices", notice))
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := entries["META-INF/"+notice]
+		if entry == nil {
+			t.Fatalf("actual Maven JAR omitted META-INF/%s", notice)
+		}
+		stream, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, readErr := io.ReadAll(stream)
+		closeErr := stream.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatal("read packaged attribution", readErr, closeErr)
+		}
+		if !bytes.Equal(actual, expected) {
+			t.Fatalf("actual Maven JAR changed META-INF/%s", notice)
+		}
+	}
+	guestArtifact := ecmaregex.Artifact()
+	guestDigest := sha256.Sum256(guestArtifact)
+	if hex.EncodeToString(guestDigest[:]) != ecmaregex.ArtifactSHA256 {
+		t.Fatal("checked ECMA-262 source asset digest disagrees with runtime metadata")
+	}
+	guestDirectory := "refine/ecmaregex/" + ecmaregex.ArtifactSHA256
+	guestFiles, guestWASM := 0, 0
+	for name := range entries {
+		if !strings.HasPrefix(name, "refine/ecmaregex/") || strings.HasSuffix(name, "/") {
+			continue
+		}
+		guestFiles++
+		if !strings.HasPrefix(name, guestDirectory+"/") {
+			t.Fatalf("actual Maven JAR contains unexpected ECMA-262 guest resource %s", name)
+		}
+		if strings.HasSuffix(name, "/"+ecmaregex.ArtifactName) {
+			guestWASM++
+			if name != guestDirectory+"/"+ecmaregex.ArtifactName {
+				t.Fatalf("actual Maven JAR contains guest under unexpected directory %s", name)
+			}
+		}
+	}
+	if guestWASM != 1 || guestFiles != 3 {
+		t.Fatalf("actual Maven JAR guest resource inventory changed: wasm=%d files=%d", guestWASM, guestFiles)
+	}
+	readGuest := func(name string) []byte {
+		t.Helper()
+		entry := entries[guestDirectory+"/"+name]
+		if entry == nil {
+			t.Fatalf("actual Maven JAR omitted guest resource %s", name)
+		}
+		stream, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, readErr := io.ReadAll(stream)
+		closeErr := stream.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatal("read packaged guest resource", readErr, closeErr)
+		}
+		return actual
+	}
+	actualGuest := readGuest(ecmaregex.ArtifactName)
+	actualDigest := sha256.Sum256(actualGuest)
+	if actualDigest != guestDigest || !bytes.Equal(actualGuest, guestArtifact) {
+		t.Fatal("actual Maven JAR changed checked ECMA-262 guest bytes or digest")
+	}
+	for _, asset := range []struct {
+		name    string
+		content []byte
+	}{{"NOTICE.txt", ecmaregex.DistributionNotice()}, {"manifest.json", ecmaregex.DistributionManifest()}} {
+		if actual := readGuest(asset.name); !bytes.Equal(actual, asset.content) {
+			t.Fatalf("actual Maven JAR changed guest resource %s", asset.name)
+		}
 	}
 	foundGreeting, foundOperations := false, false
 	for _, class := range inventory.Classes() {

@@ -91,6 +91,10 @@ func (e *evaluator) builtin(name string, args []evalValue, at Span) evalValue {
 		default:
 			evalError(at, "evaluation.type", "length requires text or a list")
 		}
+	case "codePointLength":
+		text := textOf(args[0], at)
+		e.step(uint64(text.Length()), at)
+		return numberValue(value.Integer(int64(text.CodePointLength())), "Int")
 	case "lookup", "member":
 		key := textOf(args[0], at)
 		entries := mapEntriesOf(args[1], at)

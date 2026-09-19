@@ -1,10 +1,11 @@
-# Semantic Java models (development)
+# Semantic Java models
 
 `java.GenerateModels(program, packageName, contractClassName)` emits Java 25
 domain classes together with the contract validator and runtime they use. It is
 a pure Go API returning `[]java.File`: callers choose where to write sources.
 There is no separate runtime Maven artifact, deployment, or implicit filesystem
-operation. This is a development backend, not a completed native schema compiler.
+operation. Native schema validation and serde compose these models through their
+separate checked generators; model generation does not pretend to replace them.
 
 For this checked source:
 
@@ -340,7 +341,7 @@ factory calls. Evidence checks do not add another payload-validation pass.
 Generic tagged unions, including instantiated nominal descendants, use the same
 closed witness and evidence design; see [GENERIC-UNIONS.md](GENERIC-UNIONS.md).
 
-## Coverage and remaining scope
+## Coverage and supported boundaries
 
 Current models cover monomorphic named scalars, records, lists, immutable
 `Map<String,T>` values and aliases,
@@ -423,8 +424,9 @@ additional alias levels compiles and runs at `-Xss256k`, including `Factory`
 name collisions. Structural key comparison also handles 2,000 nested list types
 without recursive Java equality.
 
-The complete release still requires all model shapes and language execution,
-validated Jackson and Avro serde, native schema formats,
-English exports, generated schema-derived tests, versioning, Maven/project/CLI
-integration and the full [specification](../SPEC.md). No Maven deployment or
-product release is implied by these model tests.
+These model tests establish the documented Java domain boundary; they are not by
+themselves release evidence for native serde, export, project or release
+workflows. Those implemented boundaries and the finite remaining tag gates are
+tracked in [RELEASE-READINESS.md](RELEASE-READINESS.md). An unsupported closed
+model shape rejects generation atomically instead of being erased or represented
+by an unsafe raw Java type. Maven deployment remains outside the release gate.

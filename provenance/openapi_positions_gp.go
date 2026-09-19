@@ -848,6 +848,9 @@ func (w *openAPIProvenanceWalker) discoverSchemaAssertions(node openAPIProvenanc
 	if err := w.discoverUniqueItemsAssertion(node, dialect); err != nil {
 		return err
 	}
+	if err := w.discoverStringLengthAssertions(node, dialect); err != nil {
+		return err
+	}
 	if err := w.discoverCardinalityAssertions(node, dialect); err != nil {
 		return err
 	}
