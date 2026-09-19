@@ -67,6 +67,7 @@ func validateProject(p *Project) (*Project, error) {
 	if p == nil || p.program == nil {
 		return nil, &Error{Code: "native.project", Message: "a checked project is required"}
 	}
+	p.effectiveResources = nil
 	if err := normalizeAndValidateProjectTarget(p); err != nil {
 		return nil, err
 	}
@@ -83,11 +84,43 @@ func validateProject(p *Project) (*Project, error) {
 		}
 		return nil, wrap(p.Format(), "native.schema", "", err)
 	}
+	if err := validateEffectiveConstraintUnits(p); err != nil {
+		return nil, err
+	}
 	checked, err := validateAvroRefinementDefaults(p)
 	if err != nil {
 		return nil, err
 	}
 	return validateOpenAPINativeBindings(checked)
+}
+
+// Operation-index validation consumes the same canonical resource view and
+// performs this check while rebuilding the index. Other JSON/OpenAPI projects
+// need one explicit pass here so source-linked unit edits cannot return an
+// unusable checked Project.
+func validateEffectiveConstraintUnits(p *Project) error {
+	if p.Format() == Avro {
+		resources, err := p.effectiveAvroResources(p.resources)
+		if err != nil {
+			return err
+		}
+		if _, _, err = validateAvroResources(resources, p.root); err != nil {
+			return err
+		}
+		p.effectiveResources = append([]Resource(nil), resources...)
+		return nil
+	}
+	if len(p.nativeUnitSources) == 0 {
+		return nil
+	}
+	if p.Format() != JSONSchema && p.Format() != OpenAPI {
+		return nil
+	}
+	if p.Format() == OpenAPI && p.metadata.OpenAPI != nil && p.metadata.OpenAPI.Native != nil {
+		return nil
+	}
+	_, err := p.CanonicalJSONResources()
+	return err
 }
 
 func normalizeAndValidateProjectTarget(p *Project) error {

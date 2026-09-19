@@ -1,0 +1,24 @@
+package native
+
+import (
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/provenance"
+)
+
+func TestResourceConstraintOriginAdapterKeepsAuditEditAndRecoveryScoped(t *testing.T){
+    original:=`{"type":"integer","minimum":1,"maximum":9.0}`
+    base,err:=IngestProject(JSONSchema,[]byte(original),ProjectOptions{Root:ResourceSelector{TypeName:"Value"}});if err!=nil{t.Fatal(err)}
+    resource:=base.Root().Resource;origin:=base.jsonOrigins[resource];if origin==nil{t.Fatal("fixture origin is absent")}
+    adapted:=*base;adapted.jsonOrigins=nil;adapted.nativeOrigins=map[string]nativeConstraintOrigin{resource:origin}
+    canonical:=adapted.ResourceConstraintSource(resource);if canonical==""||canonical!=base.ResourceConstraintSource(resource){t.Fatal("adapter lost canonical resource source")}
+    constraints:=adapted.NativeConstraints();if len(constraints)!=2{t.Fatal("adapter lost per-keyword units")};var minimum,maximum provenance.Constraint
+    for _,item:=range constraints{if item.Resource!=resource{t.Fatal("unit escaped resource scope")};if item.Constraint.Keyword=="minimum"{minimum=item.Constraint};if item.Constraint.Keyword=="maximum"{maximum=item.Constraint}}
+    edited:=strings.Replace(canonical,minimum.Predicate,"it >= 3",1);findings,err:=adapted.AuditResourceSource(resource,edited);if err!=nil{t.Fatal(err)};changed:=0;for _,finding:=range findings{if provenance.StatusName(finding.Status)=="changed"{changed++}};if changed!=1{t.Fatalf("changed units: %d",changed)}
+    raw,err:=adapted.RecoverResourceNative(resource,maximum.Name,edited);if err!=nil||raw!="9.0"{t.Fatalf("unrelated raw token changed: %q %v",raw,err)}
+    updated,err:=adapted.WithEditedNativeConstraintSource(resource,edited);if err!=nil{t.Fatal(err)};if err:=updated.ValidateJSON([]byte(`2`));problemCode(err)!="native.payload"{t.Fatalf("generic origin edit did not reach effective validator: %v",err)};if err:=updated.ValidateJSON([]byte(`3`));err!=nil{t.Fatal(err)};if err:=base.ValidateJSON([]byte(`2`));err!=nil{t.Fatalf("adapter edit mutated prior project: %v",err)}
+    if updated.Resources()[0].Source!=original||adapted.NativeConstraintSources()[0].Source!=base.NativeConstraintSources()[0].Source{t.Fatal("adapter mutated baseline or prior unit source")}
+    var absent *Project;if absent.constraintOrigin(resource)!=nil||adapted.constraintOrigin("missing")!=nil||absent.ResourceConstraintSource(resource)!=""{t.Fatal("missing origin became a typed-nil interface")}
+    if _,err:=absent.AuditResourceSource(resource,"");problemCode(err)!="native.provenance"{t.Fatalf("nil project audit did not fail explicitly: %v",err)}
+}

@@ -85,7 +85,11 @@ func (p *Project) ValidateAvroBinary(input []byte, limits AvroPayloadLimits) err
 func (p *Project) avroWriterSchema() (avro.Schema, error) {
 	cache := &avro.SchemaCache{}
 	var selected avro.Schema
-	for _, resource := range p.resources {
+	resources, err := p.EffectiveResources()
+	if err != nil {
+		return nil, err
+	}
+	for _, resource := range resources {
 		schema, err := parseAvroStructure([]byte(resource.Source), cache)
 		if err != nil {
 			return nil, wrap(Avro, "native.structure", resource.URI, err)

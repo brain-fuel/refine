@@ -1,0 +1,114 @@
+package language
+
+import "goforge.dev/refine/value"
+
+// The contextual prefix leaves existing functions named openapi untouched.
+func (p *parser) openAPIStart() bool {
+    i:=p.index
+    if i+2>=len(p.tokens)||p.tokens[i].kind!="name"||p.tokens[i].text!="openapi"||p.tokens[i+1].kind!="text"{return false}
+    i+=2;for i<len(p.tokens)&&p.tokens[i].kind=="newline"{i++}
+    return i<len(p.tokens)&&p.tokens[i].kind=="{"
+}
+func (p *parser) openAPIText() string {
+    raw:=p.need("text");decoded,_:=value.ReadText(raw.text);text,err:=decoded.UTF8()
+    if err!=nil{syntax(raw.at,"OpenAPI text must contain Unicode scalar values")}
+    if len(text)>65536{syntaxResource(raw.at,"OpenAPI text exceeds 64 KiB")}
+    return text
+}
+func (p *parser) openAPISeparators(){for p.accept("newline")||p.accept(";") {}}
+func (p *parser) openAPIItemEnd(){if !p.is("newline")&&!p.is(";")&&!p.is("}"){syntax(p.peek().at,"expected an OpenAPI declaration separator")};p.openAPISeparators()}
+func (p *parser) openAPIBlock(){p.lines();p.need("{");p.openAPISeparators()}
+func (p *parser) openAPIPath() []string {
+    p.need("at");parts:=[]string{p.name().text}
+    for p.accept("."){if len(parts)>=128{syntaxResource(p.peek().at,"OpenAPI field path exceeds 128 segments")};parts=append(parts,p.name().text)}
+    return parts
+}
+func (p *parser) openAPIRequired() *bool {
+    if p.accept("required"){value:=true;return &value};if p.accept("optional"){value:=false;return &value};return nil
+}
+func (p *parser) openAPIWork(work *int){*work++;if *work>65536{syntaxResource(p.peek().at,"OpenAPI declaration exceeds 65,536 entries")}}
+func (p *parser) openAPIBody(work *int) *OpenAPIBodyDeclaration {
+    p.openAPIWork(work);start:=p.need("body").at.Start
+    body:=&OpenAPIBodyDeclaration{MediaType:p.openAPIText()};body.FieldPath=p.openAPIPath();body.Required=p.openAPIRequired();body.At=p.span(start);return body
+}
+func (p *parser) openAPIRequest(work *int) OpenAPIRequestDeclaration {
+    p.openAPIWork(work);start:=p.need("request").at.Start
+    result:=OpenAPIRequestDeclaration{TypeName:p.upperName().text};p.openAPIBlock()
+    for !p.accept("}"){
+        switch {
+        case p.is("parameter"):
+            p.openAPIWork(work);at:=p.take().at.Start;item:=OpenAPIParameterDeclaration{In:p.name().text,Name:p.openAPIText()};item.FieldPath=p.openAPIPath();item.Required=p.openAPIRequired();item.At=p.span(at);result.Parameters=append(result.Parameters,item)
+        case p.is("body"):
+            if result.Body!=nil{syntax(p.peek().at,"duplicate OpenAPI request body")};result.Body=p.openAPIBody(work)
+        default:syntax(p.peek().at,"expected parameter or body in an OpenAPI request")
+        }
+        p.openAPIItemEnd()
+    }
+    result.At=p.span(start);return result
+}
+func (p *parser) openAPIResponse(work *int) OpenAPIResponseDeclaration {
+    p.openAPIWork(work);start:=p.need("response").at.Start
+    result:=OpenAPIResponseDeclaration{Status:p.openAPIText(),TypeName:p.upperName().text,Description:p.openAPIText()};p.openAPIBlock()
+    for !p.accept("}"){
+        switch {
+        case p.is("header"):
+            p.openAPIWork(work);at:=p.take().at.Start;item:=OpenAPIHeaderDeclaration{Name:p.openAPIText()};item.FieldPath=p.openAPIPath();item.Required=p.openAPIRequired();item.At=p.span(at);result.Headers=append(result.Headers,item)
+        case p.is("body"):
+            if result.Body!=nil{syntax(p.peek().at,"duplicate OpenAPI response body")};result.Body=p.openAPIBody(work)
+        case p.accept("context"):
+            if result.ContextType!=""{syntax(p.previous().at,"duplicate OpenAPI response context")};result.ContextType=p.upperName().text
+        default:syntax(p.peek().at,"expected header, body or context in an OpenAPI response")
+        }
+        p.openAPIItemEnd()
+    }
+    result.At=p.span(start);return result
+}
+func (p *parser) openAPIOperation(work *int) OpenAPIOperationDeclaration {
+    p.openAPIWork(work);start:=p.need("operation").at.Start
+    id:="";if p.is("text"){id=p.openAPIText()}else{id=p.name().text}
+    result:=OpenAPIOperationDeclaration{OperationID:id,Method:p.openAPIText(),Path:p.openAPIText()};p.openAPIBlock()
+    for !p.accept("}"){
+        switch {
+        case p.is("request"):
+            if result.Request.TypeName!=""{syntax(p.peek().at,"duplicate OpenAPI operation request")};result.Request=p.openAPIRequest(work)
+        case p.is("response"):
+            if len(result.Responses)>=1024{syntaxResource(p.peek().at,"OpenAPI operation exceeds 1,024 response entries")};result.Responses=append(result.Responses,p.openAPIResponse(work))
+        default:syntax(p.peek().at,"expected request or response in an OpenAPI operation")
+        }
+        p.openAPIItemEnd()
+    }
+    if result.Request.TypeName==""||len(result.Responses)==0{syntax(p.span(start),"an OpenAPI operation requires a request and at least one response")}
+    result.At=p.span(start);return result
+}
+func (p *parser) openAPIDeclaration() *OpenAPIDeclaration {
+    start:=p.need("openapi").at.Start;result:=&OpenAPIDeclaration{Version:p.openAPIText()};p.openAPIBlock();work:=0;title,version:=false,false
+    for !p.accept("}"){
+        switch {
+        case p.accept("title"):
+            if title{syntax(p.previous().at,"duplicate OpenAPI title")};title=true;result.Title=p.openAPIText()
+        case p.accept("version"):
+            if version{syntax(p.previous().at,"duplicate API version")};version=true;result.APIVersion=p.openAPIText()
+        case p.is("operation"):
+            if len(result.Operations)>=4096{syntaxResource(p.peek().at,"OpenAPI declaration exceeds 4,096 operations")};result.Operations=append(result.Operations,p.openAPIOperation(&work))
+        default:syntax(p.peek().at,"expected title, version or operation in an OpenAPI declaration")
+        }
+        p.openAPIItemEnd()
+    }
+    if !title||!version||len(result.Operations)==0{syntax(p.span(start),"OpenAPI requires title, API version and at least one operation")}
+    result.At=p.span(start);return result
+}
+
+func (c *checker) checkOpenAPITypes() {
+    if c.module.OpenAPI==nil{return}
+    seen:=map[string]bool{}
+    check:=func(name string,at Span){
+        if seen[name]{return};seen[name]=true
+        declaration,ok:=c.declarations[name];if !ok||len(declaration.Parameters)!=0{typeError(at,"OpenAPI entrypoint must name a closed type declaration: "+name)}
+        target:=c.typ(&Type{Form:NamedType(name),At:at},map[string]*term{},false,true)
+        c.readableType(target,at,map[string]bool{})
+    }
+    for _,operation:=range c.module.OpenAPI.Operations{
+        check(operation.Request.TypeName,operation.Request.At)
+        for _,response:=range operation.Responses{check(response.TypeName,response.At);if response.ContextType!=""{check(response.ContextType,response.At)}}
+    }
+}

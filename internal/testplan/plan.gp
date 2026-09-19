@@ -25,6 +25,13 @@ func Select(changed []string,packages []Package,forceFull bool)Plan{
     addPackage:=func(name,reason string){if reasons[name]==nil{reasons[name]=map[string]bool{}};reasons[name][reason]=true}
     for _,file:=range plan.Changed{
         if file=="go.mod"||file=="go.sum"||strings.HasPrefix(file,".github/")||strings.HasPrefix(file,"internal/testplan/")||strings.HasPrefix(file,"cmd/refine-testplan/"){plan.Full=true;fullReasons["build or selection policy changed: "+file]=true;continue}
+        // Guest sources, the checked artifact and embedded licensing metadata
+        // have a reviewed production owner even though they are not Go files.
+        // Check before the documentation exemption: NOTICE.md is embedded.
+        if file=="internal/ecmaregex/refine-ecma262.wasm"||strings.HasPrefix(file,"internal/ecmaregex/guest/"){
+            found:=false;for _,pkg:=range packages{if pkg.Directory=="internal/ecmaregex"{addPackage(pkg.ImportPath,"changed checked regex guest input: "+file);found=true}}
+            if !found{plan.Full=true;fullReasons["checked regex guest owner is not build-selected: "+file]=true};continue
+        }
         fixture:=strings.Contains(file,"/testdata/")||strings.HasPrefix(file,"testdata/")||strings.HasPrefix(file,"examples/")
         if !fixture&&(strings.HasSuffix(file,".md")||file=="LICENSE"||file==".gitignore"){continue}
         owner:="";longest:=-1;for _,pkg:=range packages{dir:=pkg.Directory;if dir=="."{dir=""};if (dir==""||strings.HasPrefix(file,dir+"/"))&&len(dir)>longest{owner=pkg.ImportPath;longest=len(dir)}}

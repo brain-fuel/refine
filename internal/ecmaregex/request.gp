@@ -1,0 +1,95 @@
+package ecmaregex
+
+import (
+    "context"
+    "encoding/binary"
+    "errors"
+    "fmt"
+    "math"
+    "sync"
+    "sync/atomic"
+    "time"
+    "unicode/utf16"
+    "unicode/utf8"
+
+    "github.com/tetratelabs/wazero"
+    "github.com/tetratelabs/wazero/api"
+)
+
+type Limits struct {MaxPatternUnits int;MaxInputUnits int;MaxHandles int;MaxEvaluations uint64;MaxWorkUnits uint64;MaxPolls uint32;MaxDuration time.Duration;MaxCompilationPolls uint32;MaxCompilationDuration time.Duration}
+func DefaultLimits()Limits{return Limits{MaxPatternUnits:HardPatternUnits,MaxInputUnits:HardInputUnits,MaxHandles:HardHandles,MaxEvaluations:HardEvaluations,MaxWorkUnits:HardWorkUnits,MaxPolls:HardPolls,MaxDuration:HardDuration,MaxCompilationPolls:HardInitializationPolls,MaxCompilationDuration:HardInitializationDuration}}
+func checkedLimits(input Limits)(Limits,error){
+    if input.MaxPatternUnits==0{input.MaxPatternUnits=HardPatternUnits};if input.MaxInputUnits==0{input.MaxInputUnits=HardInputUnits};if input.MaxHandles==0{input.MaxHandles=HardHandles};if input.MaxEvaluations==0{input.MaxEvaluations=HardEvaluations};if input.MaxWorkUnits==0{input.MaxWorkUnits=HardWorkUnits};if input.MaxPolls==0{input.MaxPolls=HardPolls};if input.MaxDuration==0{input.MaxDuration=HardDuration};if input.MaxCompilationPolls==0{input.MaxCompilationPolls=HardInitializationPolls};if input.MaxCompilationDuration==0{input.MaxCompilationDuration=HardInitializationDuration}
+    if input.MaxPatternUnits<=0||input.MaxInputUnits<=0||input.MaxHandles<=0||input.MaxEvaluations==0||input.MaxWorkUnits==0||input.MaxPolls==0||input.MaxDuration<=0||input.MaxCompilationPolls==0||input.MaxCompilationDuration<=0{return input,errors.New("ECMA-262 request limits must be positive")}
+    if input.MaxPatternUnits>HardPatternUnits||input.MaxInputUnits>HardInputUnits||input.MaxHandles>HardHandles||input.MaxEvaluations>HardEvaluations||input.MaxWorkUnits>HardWorkUnits||input.MaxPolls>HardPolls||input.MaxDuration>HardDuration||input.MaxCompilationPolls>HardInitializationPolls||input.MaxCompilationDuration>HardInitializationDuration{return input,errors.New("ECMA-262 request limits may only tighten hard limits")}
+    return input,nil
+}
+
+type Handle uint32
+type guestSession struct {module api.Module;memory api.Memory;alloc api.Function;free api.Function;compile api.Function;test api.Function;release api.Function;reset api.Function;destroy api.Function}
+type Request struct {
+    engine *Engine;session *guestSession;module api.Module;memory api.Memory;alloc api.Function;free api.Function;compile api.Function;test api.Function;release api.Function;reset api.Function;destroy api.Function
+    limits Limits;runContext context.Context;cancel context.CancelFunc;deadline time.Time;compilationDeadline time.Time;initializationDeadline time.Time;initializing atomic.Bool;initializationInterrupted atomic.Bool;polls atomic.Uint32;compilationPolls atomic.Uint32;initializationPolls atomic.Uint32;lastGuestPhase atomic.Uint32
+    state sync.Mutex;active bool;matching bool;closed bool;poisoned bool;handles map[Handle]int;evaluations uint64;work uint64
+}
+
+func (e *Engine) Begin(ctx context.Context,limits Limits)(*Request,error){
+    if e==nil||e.closed.Load(){return nil,failure(InternalFailure,InitializationPhase,errors.New("ECMA-262 engine is closed"))};if ctx==nil{return nil,errors.New("ECMA-262 request requires a context")};if err:=ctx.Err();err!=nil{return nil,failure(ResourceFailure,InitializationPhase,err)};checked,err:=checkedLimits(limits);if err!=nil{return nil,err}
+    session,waited,err:=e.acquireSession(ctx,checked.MaxCompilationDuration);if err!=nil{return nil,err};remaining:=checked.MaxCompilationDuration-waited;if remaining<=0{e.discardSession(session);return nil,failure(ResourceFailure,CompilationPhase,nil)}
+    request:=&Request{engine:e,session:session,limits:checked,handles:make(map[Handle]int)};request.attach(session);request.compilationDeadline=time.Now().Add(remaining);runBase:=context.WithValue(ctx,requestContextKey{},request);request.runContext,request.cancel=context.WithCancel(runBase)
+    return request,nil
+}
+
+func (e *Engine)acquireSession(ctx context.Context,maximumWait time.Duration)(*guestSession,time.Duration,error){select{case session:=<-e.idle:return session,0,nil;default:};select{case <-e.capacity:session,err:=e.newSession(ctx);if err!=nil{e.capacity<-struct{}{};return nil,0,err};return session,0,nil;default:};started:=time.Now();timer:=time.NewTimer(maximumWait);defer timer.Stop();select{case session:=<-e.idle:return session,time.Since(started),nil;case <-e.capacity:waited:=time.Since(started);session,err:=e.newSession(ctx);if err!=nil{e.capacity<-struct{}{};return nil,waited,err};return session,waited,nil;case <-ctx.Done():return nil,time.Since(started),failure(ResourceFailure,CompilationPhase,ctx.Err());case <-timer.C:return nil,time.Since(started),failure(ResourceFailure,CompilationPhase,nil)}}
+func (e *Engine)newSession(ctx context.Context)(*guestSession,error){request:=&Request{engine:e,handles:make(map[Handle]int)};request.initializing.Store(true);request.initializationDeadline=time.Now().Add(e.initialization.MaxDuration);initBase:=context.WithValue(ctx,requestContextKey{},request);initCtx,initCancel:=context.WithTimeout(initBase,e.initialization.MaxDuration);defer initCancel();module,err:=e.runtime.InstantiateModule(initCtx,e.compiled,wazero.NewModuleConfig().WithName("").WithStartFunctions());if err!=nil{kind:=InternalFailure;if initCtx.Err()!=nil{kind=ResourceFailure};return nil,failure(kind,InitializationPhase,err)};request.module=module;if err:=request.bindExports();err!=nil{module.Close(initCtx);return nil,failure(InternalFailure,InitializationPhase,err)};version,err:=request.module.ExportedFunction("regex_abi_version").Call(initCtx);if err!=nil||len(version)!=1||uint32(version[0])!=ABIVersion{module.Close(initCtx);return nil,failure(InternalFailure,InitializationPhase,err)};initialized,err:=request.module.ExportedFunction("regex_init").Call(initCtx);if err!=nil||len(initialized)!=1||int32(initialized[0])!=0{module.Close(context.Background());kind:=InternalFailure;if initCtx.Err()!=nil||request.initializationInterrupted.Load(){kind=ResourceFailure};return nil,failure(kind,InitializationPhase,err)};request.initializing.Store(false);return &guestSession{module:request.module,memory:request.memory,alloc:request.alloc,free:request.free,compile:request.compile,test:request.test,release:request.release,reset:request.reset,destroy:request.destroy},nil}
+func (e *Engine)discardSession(session *guestSession)error{if session==nil{return nil};cleanup,stop:=context.WithTimeout(context.Background(),time.Second);defer stop();err:=session.module.Close(cleanup);e.capacity<-struct{}{};if err!=nil{return failure(InternalFailure,ReleasePhase,err)};return nil}
+func (e *Engine)recycleSession(session *guestSession)error{if session==nil{return nil};if e.closed.Load(){return e.discardSession(session)};select{case e.idle<-session:return nil;default:return e.discardSession(session)}}
+
+func (r *Request)attach(session *guestSession){r.module=session.module;r.memory=session.memory;r.alloc=session.alloc;r.free=session.free;r.compile=session.compile;r.test=session.test;r.release=session.release;r.reset=session.reset;r.destroy=session.destroy}
+func (r *Request) bindExports()error{r.memory=r.module.Memory();if r.memory==nil{return errors.New("ECMA-262 instance has no memory")};r.alloc=r.module.ExportedFunction("regex_alloc");r.free=r.module.ExportedFunction("regex_free");r.compile=r.module.ExportedFunction("regex_compile");r.test=r.module.ExportedFunction("regex_test");r.release=r.module.ExportedFunction("regex_release");r.reset=r.module.ExportedFunction("regex_reset");r.destroy=r.module.ExportedFunction("regex_destroy");if r.alloc==nil||r.free==nil||r.compile==nil||r.test==nil||r.release==nil||r.reset==nil||r.destroy==nil{return errors.New("ECMA-262 instance export is absent")};return nil}
+
+func (r *Request) shouldInterrupt(phase uint32)uint32{r.lastGuestPhase.Store(phase);if r.initializing.Load(){used:=r.initializationPolls.Add(1);if used>r.engine.initialization.MaxPolls||!time.Now().Before(r.initializationDeadline){r.initializationInterrupted.Store(true);return 1};return 0};if err:=r.runContext.Err();err!=nil{return 1};if phase==3{used:=r.polls.Add(1);if used>r.limits.MaxPolls||!time.Now().Before(r.deadline){return 1};return 0};used:=r.compilationPolls.Add(1);if used>r.limits.MaxCompilationPolls||!time.Now().Before(r.compilationDeadline){return 1};return 0}
+
+func UTF16(input string)([]uint16,error){return boundedUTF16(input,HardInputUnits)}
+func boundedUTF16(input string,maximum int)([]uint16,error){if !utf8.ValidString(input){return nil,errors.New("ECMA-262 string convenience API requires valid UTF-8; use UTF-16 units for lossless input")};count:=0;for _,runeValue:=range input{if runeValue>0xffff{count+=2}else{count++};if count>maximum{return nil,fmt.Errorf("ECMA-262 UTF-16 unit limit exceeded")}};out:=make([]uint16,0,count);for _,runeValue:=range input{if runeValue>0xffff{high,low:=utf16.EncodeRune(runeValue);out=append(out,uint16(high),uint16(low))}else{out=append(out,uint16(runeValue))}};return out,nil}
+func (r *Request) Compile(input string)(Handle,error){maximum:=HardPatternUnits;if r!=nil&&r.limits.MaxPatternUnits>0{maximum=r.limits.MaxPatternUnits};units,err:=boundedUTF16(input,maximum);if err!=nil{kind:=InternalFailure;if utf8.ValidString(input){kind=ResourceFailure};return 0,failure(kind,CompilationPhase,err)};return r.CompileUTF16(units)}
+func (r *Request) Test(handle Handle,input string)(bool,error){maximum:=HardInputUnits;if r!=nil&&r.limits.MaxInputUnits>0{maximum=r.limits.MaxInputUnits};units,err:=boundedUTF16(input,maximum);if err!=nil{kind:=InternalFailure;if utf8.ValidString(input){kind=ResourceFailure};return false,failure(kind,MatchPhase,err)};return r.TestUTF16(handle,units)}
+
+func (r *Request) CompileUTF16(pattern []uint16)(handle Handle,failureResult error){
+    if err:=r.enter(CompilationPhase);err!=nil{return 0,err};defer r.leave()
+    if len(pattern)>r.limits.MaxPatternUnits{return 0,failure(ResourceFailure,CompilationPhase,nil)};if err:=r.charge(uint64(len(pattern)),false,CompilationPhase);err!=nil{return 0,err}
+    r.state.Lock();if len(r.handles)>=r.limits.MaxHandles{r.state.Unlock();return 0,failure(ResourceFailure,CompilationPhase,nil)};r.state.Unlock()
+    pointer,err:=r.copyUnits(pattern,CompilationPhase);if err!=nil{return 0,err};defer func(){if cleanup:=r.freePointer(pointer,CompilationPhase);cleanup!=nil&&failureResult==nil{failureResult=cleanup}}()
+    output,err:=r.allocate(4,CompilationPhase);if err!=nil{return 0,err};defer func(){if cleanup:=r.freePointer(output,CompilationPhase);cleanup!=nil&&failureResult==nil{failureResult=cleanup}}()
+    remaining:=r.remainingCompilationPolls();results,err:=r.compile.Call(r.runContext,pointer,uint64(len(pattern)),uint64(remaining),output);if err!=nil{return 0,r.callFailure(CompilationPhase,err)};if len(results)!=1{return 0,r.internal(CompilationPhase,errors.New("compile returned no status"))};status:=uint32(results[0]);if status!=statusTrue{return 0,r.statusFailure(status,CompilationPhase)}
+    encoded,ok:=r.memory.Read(uint32(output),4);if !ok{return 0,r.internal(CompilationPhase,errors.New("compiled handle is outside guest memory"))};handle=Handle(binary.LittleEndian.Uint32(encoded));if handle==0{return 0,r.internal(CompilationPhase,errors.New("guest returned a zero handle"))}
+    r.state.Lock();if _,exists:=r.handles[handle];exists{r.state.Unlock();return 0,r.internal(CompilationPhase,errors.New("guest reused a live handle"))};r.handles[handle]=len(pattern);r.state.Unlock();return handle,nil
+}
+
+func (r *Request) TestUTF16(handle Handle,subject []uint16)(matched bool,failureResult error){
+    if err:=r.enter(MatchPhase);err!=nil{return false,err};defer r.leave()
+    r.state.Lock();patternUnits,ok:=r.handles[handle];r.state.Unlock();if !ok{return false,r.internal(MatchPhase,errors.New("unknown compiled handle"))};if len(subject)>r.limits.MaxInputUnits{return false,failure(ResourceFailure,MatchPhase,nil)}
+    charge:=uint64(patternUnits)+uint64(len(subject));if err:=r.charge(charge,true,MatchPhase);err!=nil{return false,err};pointer,err:=r.copyUnits(subject,MatchPhase);if err!=nil{return false,err};defer func(){if cleanup:=r.freePointer(pointer,MatchPhase);cleanup!=nil&&failureResult==nil{failureResult=cleanup}}()
+    results,err:=r.test.Call(r.runContext,uint64(handle),pointer,uint64(len(subject)),uint64(r.remainingPolls()));if err!=nil{return false,r.callFailure(MatchPhase,err)};if len(results)!=1{return false,r.internal(MatchPhase,errors.New("match returned no status"))};switch uint32(results[0]){case statusFalse:return false,nil;case statusTrue:return true,nil;default:return false,r.statusFailure(uint32(results[0]),MatchPhase)}
+}
+
+func (r *Request) Release(handle Handle)error{if err:=r.enter(ReleasePhase);err!=nil{return err};defer r.leave();r.state.Lock();_,ok:=r.handles[handle];r.state.Unlock();if !ok{return r.internal(ReleasePhase,errors.New("unknown compiled handle"))};results,err:=r.release.Call(r.runContext,uint64(handle));if err!=nil{return r.callFailure(ReleasePhase,err)};if len(results)!=1||uint32(results[0])!=statusTrue{return r.internal(ReleasePhase,errors.New("guest rejected a live handle"))};r.state.Lock();delete(r.handles,handle);r.state.Unlock();return nil}
+
+func (r *Request) Close()error{if r==nil{return nil};r.state.Lock();if r.closed{r.state.Unlock();return nil};if r.active{r.state.Unlock();if r.cancel!=nil{r.cancel()};return failure(InternalFailure,ReleasePhase,errors.New("cannot close an active ECMA-262 request"))};r.closed=true;poisoned:=r.poisoned;r.state.Unlock();if r.cancel!=nil{r.cancel()};if poisoned{return r.engine.discardSession(r.session)};cleanup,stop:=context.WithTimeout(context.Background(),time.Second);results,err:=r.reset.Call(cleanup);stop();if err!=nil{discardErr:=r.engine.discardSession(r.session);return failure(InternalFailure,ReleasePhase,errors.Join(err,discardErr))};if len(results)!=1{discardErr:=r.engine.discardSession(r.session);return failure(InternalFailure,ReleasePhase,errors.Join(errors.New("guest reset returned no status"),discardErr))};status:=uint32(results[0]);if status==statusDiscard{return r.engine.discardSession(r.session)};if status!=statusTrue{discardErr:=r.engine.discardSession(r.session);kind:=InternalFailure;if status==statusResource{kind=ResourceFailure};return failure(kind,ReleasePhase,errors.Join(fmt.Errorf("guest reset returned status %d",status),discardErr))};r.state.Lock();clear(r.handles);r.state.Unlock();return r.engine.recycleSession(r.session)}
+
+func (r *Request) enter(phase Phase)error{if r==nil{return failure(InternalFailure,phase,errors.New("nil ECMA-262 request"))};r.state.Lock();defer r.state.Unlock();if r.closed{return failure(InternalFailure,phase,errors.New("ECMA-262 request is closed"))};if r.poisoned{return failure(InternalFailure,phase,errors.New("ECMA-262 request is poisoned"))};if r.active{return failure(InternalFailure,phase,errors.New("ECMA-262 request is already active"))};if r.runContext.Err()!=nil{r.poisoned=true;return failure(ResourceFailure,phase,r.runContext.Err())};now:=time.Now();if phase==CompilationPhase{if r.compilationPolls.Load()>=r.limits.MaxCompilationPolls||!now.Before(r.compilationDeadline){r.poisoned=true;return failure(ResourceFailure,phase,nil)}};if phase==MatchPhase{if !r.matching{r.matching=true;r.deadline=now.Add(r.limits.MaxDuration)}else if r.polls.Load()>=r.limits.MaxPolls||!now.Before(r.deadline){r.poisoned=true;return failure(ResourceFailure,phase,nil)}};r.active=true;return nil}
+func (r *Request) leave(){r.state.Lock();r.active=false;r.state.Unlock()}
+func (r *Request) remainingPolls()uint32{used:=r.polls.Load();if used>=r.limits.MaxPolls{return 0};return r.limits.MaxPolls-used}
+func (r *Request) remainingCompilationPolls()uint32{used:=r.compilationPolls.Load();if used>=r.limits.MaxCompilationPolls{return 0};return r.limits.MaxCompilationPolls-used}
+func (r *Request) charge(units uint64,evaluation bool,phase Phase)error{r.state.Lock();defer r.state.Unlock();if units>r.limits.MaxWorkUnits-r.work{return failure(ResourceFailure,phase,nil)};if evaluation{if r.evaluations>=r.limits.MaxEvaluations{return failure(ResourceFailure,phase,nil)};r.evaluations++};r.work+=units;return nil}
+
+func (r *Request) allocate(size uint32,phase Phase)(uint64,error){results,err:=r.alloc.Call(r.runContext,uint64(size));if err!=nil{return 0,r.callFailure(phase,err)};return r.checkedAllocation(results,phase)}
+func (r *Request)checkedAllocation(results []uint64,phase Phase)(uint64,error){if len(results)!=1{return 0,r.internal(phase,errors.New("guest allocation returned no pointer"))};if uint32(results[0])==0{r.state.Lock();r.poisoned=true;r.state.Unlock();return 0,failure(ResourceFailure,phase,errors.New("guest memory limit exceeded"))};return results[0],nil}
+func (r *Request) copyUnits(units []uint16,phase Phase)(uint64,error){if len(units)>math.MaxUint32/2{return 0,failure(ResourceFailure,phase,nil)};bytes:=make([]byte,len(units)*2);for i,unit:=range units{binary.LittleEndian.PutUint16(bytes[i*2:],unit)};pointer,err:=r.allocate(uint32(len(bytes)),phase);if err!=nil{return 0,err};if !r.memory.Write(uint32(pointer),bytes){if cleanup:=r.freePointer(pointer,phase);cleanup!=nil{return 0,cleanup};return 0,r.internal(phase,errors.New("guest memory write failed"))};return pointer,nil}
+func (r *Request) freePointer(pointer uint64,phase Phase)error{if pointer==0{return nil};cleanup,cancel:=context.WithTimeout(context.Background(),time.Second);defer cancel();if _,err:=r.free.Call(cleanup,pointer);err!=nil{return r.internal(phase,fmt.Errorf("guest memory cleanup failed: %w",err))};return nil}
+
+func (r *Request) callFailure(phase Phase,cause error)error{kind:=InternalFailure;if r.runContext.Err()!=nil||phase==CompilationPhase&&!time.Now().Before(r.compilationDeadline)||phase==MatchPhase&&!time.Now().Before(r.deadline){kind=ResourceFailure};r.state.Lock();r.poisoned=true;r.state.Unlock();return failure(kind,phase,cause)}
+func (r *Request) internal(phase Phase,cause error)error{r.state.Lock();r.poisoned=true;r.state.Unlock();return failure(InternalFailure,phase,cause)}
+func (r *Request) statusFailure(status uint32,phase Phase)error{switch status{case statusSyntax:return failure(SyntaxFailure,CompilationPhase,nil);case statusResource:r.state.Lock();r.poisoned=true;r.state.Unlock();return failure(ResourceFailure,phase,nil);case statusInternal:return r.internal(phase,errors.New("guest reported an internal failure"));default:return r.internal(phase,fmt.Errorf("guest returned status %d",status))}}
+
+const (statusFalse uint32=0;statusTrue uint32=1;statusSyntax uint32=2;statusResource uint32=3;statusInternal uint32=4;statusDiscard uint32=5)

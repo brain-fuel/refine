@@ -10,6 +10,7 @@ import (
 )
 
 func normalizeContract(c Contract)(Contract,error){
+    var err error;c,err=normalizeAuthoredOpenAPI(c);if err!=nil{return c,err}
     if c.NativeProject==nil{return c,nil}
     if c.Program!=nil{return c,fmt.Errorf("project.native: Program and NativeProject are mutually exclusive")}
     if projectWireConfigured(c.Wire){return c,fmt.Errorf("project.native: wire metadata belongs in the versioned native bundle")}

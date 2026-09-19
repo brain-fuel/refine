@@ -33,8 +33,8 @@ func (p *Project) ValidateAvroBinary(input []byte,limits AvroPayloadLimits)error
     cursor:=avroBinaryCursor{input:input,limits:bounded};if err:=cursor.value(schema,0,"$");err!=nil{var exhausted *avroPayloadLimitError;if errors.As(err,&exhausted){return wrap(Avro,"native.limit","",err)};return wrap(Avro,"native.payload","",err)};if cursor.offset!=len(input){return &Error{Code:"native.payload",Format:Avro,Message:fmt.Sprintf("trailing bytes after one Avro datum at byte %d",cursor.offset)}};return nil
 }
 
-func (p *Project) avroWriterSchema()(avro.Schema,error){cache:=&avro.SchemaCache{};var selected avro.Schema
-    for _,resource:=range p.resources{schema,err:=parseAvroStructure([]byte(resource.Source),cache);if err!=nil{return nil,wrap(Avro,"native.structure",resource.URI,err)};if resource.URI==p.root.Resource{selected=schema}}
+func (p *Project) avroWriterSchema()(avro.Schema,error){cache:=&avro.SchemaCache{};var selected avro.Schema;resources,err:=p.EffectiveResources();if err!=nil{return nil,err}
+    for _,resource:=range resources{schema,err:=parseAvroStructure([]byte(resource.Source),cache);if err!=nil{return nil,wrap(Avro,"native.structure",resource.URI,err)};if resource.URI==p.root.Resource{selected=schema}}
     if selected==nil{return nil,&Error{Code:"native.root",Format:Avro,Pointer:p.root.Resource,Message:"root writer schema is absent"}};return selected,nil
 }
 

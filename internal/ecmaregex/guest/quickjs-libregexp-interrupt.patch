@@ -1,0 +1,60 @@
+--- a/libregexp.c
++++ b/libregexp.c
+@@ -861,6 +861,10 @@
+     }
+ 
+     for(;;) {
++        if (lre_check_timeout(s->opaque)) {
++            re_parse_error(s, "interrupted");
++            goto fail;
++        }
+         if (*p == ']')
+             break;
+         c1 = get_class_atom(s, cr1, &p, true);
+@@ -1686,6 +1690,8 @@
+         return -1;
+     start = s->byte_code.size;
+     for(;;) {
++        if (lre_check_timeout(s->opaque))
++            return re_parse_error(s, "interrupted");
+         p = s->buf_ptr;
+         if (p >= s->buf_end)
+             break;
+@@ -1748,17 +1754,22 @@
+ }
+ 
+ /* the control flow is recursive so the analysis can be linear */
+-static int lre_compute_stack_size(const uint8_t *bc_buf, int bc_buf_len)
++static int lre_compute_stack_size(const uint8_t *bc_buf, int bc_buf_len,
++                                  void *opaque)
+ {
+     int stack_size, stack_size_max, pos, opcode, len;
+     uint32_t val;
++    unsigned int interrupt_counter;
+ 
+     stack_size = 0;
+     stack_size_max = 0;
+     bc_buf += RE_HEADER_LEN;
+     bc_buf_len -= RE_HEADER_LEN;
+     pos = 0;
++    interrupt_counter = 0;
+     while (pos < bc_buf_len) {
++        if ((interrupt_counter++ & 255) == 0 && lre_check_timeout(opaque))
++            return -2;
+         opcode = bc_buf[pos];
+         len = reopcode_info[opcode].size;
+         assert(opcode < REOP_COUNT);
+@@ -1861,7 +1872,12 @@
+         goto error;
+     }
+ 
+-    stack_size = lre_compute_stack_size(s->byte_code.buf, s->byte_code.size);
++    stack_size = lre_compute_stack_size(s->byte_code.buf, s->byte_code.size,
++                                        s->opaque);
++    if (stack_size == -2) {
++        re_parse_error(s, "interrupted");
++        goto error;
++    }
+     if (stack_size < 0) {
+         re_parse_error(s, "too many imbricated quantifiers");
+         goto error;

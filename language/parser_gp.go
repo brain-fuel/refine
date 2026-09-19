@@ -126,6 +126,11 @@ func Parse(source string) (module *Module, failure error) {
 		}
 		start := p.peek().at.Start
 		switch {
+		case p.openAPIStart():
+			if result.OpenAPI != nil {
+				syntax(p.peek().at, "duplicate OpenAPI declaration")
+			}
+			result.OpenAPI = p.openAPIDeclaration()
 		case p.accept("@"):
 			name := p.name()
 			if name.text != "limits" {

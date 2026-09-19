@@ -327,7 +327,7 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 		t.Fatal("Int-prefixed record was classified as a numeric primitive")
 	}
 	compiler, vm := javaTools(t)
-	classpath := strings.Join([]string{jetCheckClasspath(t), networkntClasspath(t), graalJSClasspath(t)}, string(os.PathListSeparator))
+	classpath := strings.Join([]string{jetCheckClasspath(t), networkntClasspath(t), chicoryClasspath(t)}, string(os.PathListSeparator))
 	all := []File{}
 	project := operationPropertyProject(t)
 	facade, err := GenerateProjectOpenAPIContext(project, "Contract", "OperationFacade")
@@ -450,8 +450,13 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files, err := GenerateProjectOpenAPIPropertyTests(duplicate, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{}); err == nil || files != nil {
-		t.Fatalf("ambiguous duplicate diagnostic property returned partial output: %v %#v", err, files)
+	duplicateFiles, err := GenerateProjectOpenAPIPropertyTests(duplicate, "example.openapiproperties", "Contract", "OperationFacade", PropertyTestOptions{})
+	if err != nil || len(duplicateFiles) != 1 || strings.Count(duplicateFiles[0].Source, "invalid request createItem request.stable ") < 2 {
+		t.Fatalf("distinguishable duplicate diagnostic occurrences were omitted: %v %#v", err, duplicateFiles)
+	}
+	ambiguous := PropertyTestOptions{Replays: []PropertyReplay{{Target: OpenAPIRequestReplayTarget("createItem"), Kind: ReplayInvalid, DiagnosticCode: "request.stable", SerializedData: "legacy"}}}
+	if files, ambiguousErr := GenerateProjectOpenAPIPropertyTests(duplicate, "example.openapiproperties", "Contract", "OperationFacade", ambiguous); ambiguousErr == nil || files != nil {
+		t.Fatalf("ambiguous supplied legacy replay returned partial output: %v %#v", ambiguousErr, files)
 	}
 	root := t.TempDir()
 	sources := []string{}

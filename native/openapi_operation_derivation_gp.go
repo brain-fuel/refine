@@ -76,12 +76,15 @@ func (p *Project) WithDerivedOpenAPIOperations(options OpenAPIDerivationOptions)
 	for _, decl := range p.program.Syntax().Types {
 		used[decl.Name] = true
 	}
+	openAPI30 := strings.HasPrefix(p.Version(), "3.0.")
+	annotationSources := map[string]bool{}
+	annotationSources[p.program.Formatted()] = true
+	annotations := &derivedOpenAPIAnnotationContext{used: used, sources: annotationSources, openAPI30: openAPI30}
 	declarations := []string{}
 	refined := []refineopenapi.OperationBinding{}
 	nativeBindings := []refineopenapi.NativeOperationBinding{}
-	openAPI30 := strings.HasPrefix(p.Version(), "3.0.")
 	for _, id := range selected {
-		derived, deriveErr := deriveOpenAPIOperation(operations[id], docs, used, openAPI30)
+		derived, deriveErr := deriveOpenAPIOperation(operations[id], docs, used, annotations, openAPI30)
 		if deriveErr != nil {
 			return nil, deriveErr
 		}
@@ -93,7 +96,10 @@ func (p *Project) WithDerivedOpenAPIOperations(options OpenAPIDerivationOptions)
 	if err != nil {
 		return nil, err
 	}
-	metadata := updated.Metadata()
+	metadata, err := mergeScopedOpenAPIAnnotationMetadata(updated.Metadata(), annotations.annotations)
+	if err != nil {
+		return nil, err
+	}
 	metadata.OpenAPI = &refineopenapi.Schema{Version: refineopenapi.SchemaVersion, Operations: refined, Native: &refineopenapi.NativeBindings{Version: refineopenapi.NativeBindingsVersion, Operations: nativeBindings}}
 	return updated.WithMetadata(metadata)
 }
@@ -130,18 +136,16 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 	if addition == "" {
 		return nil, &Error{Code: "native.projection", Format: OpenAPI, Message: "operation derivation produced no checked declarations"}
 	}
-	appendSource := func(source string) string {
-		if source != "" && !strings.HasSuffix(source, "\n") {
-			source += "\n"
-		}
-		return source + "\n" + addition + "\n"
-	}
+	appendSource := func(source string) (string, error) { return appendNativeSourceDeclarations(source, addition) }
 	copy := *p
 	copy.metadata = copyMetadata(p.metadata)
 	copy.resources = append([]Resource(nil), p.resources...)
 	copy.nativeUnitsInEditable = copyBoolMap(p.nativeUnitsInEditable)
 	if p.languageEntry == "" {
-		source := appendSource(p.source)
+		source, err := appendSource(p.source)
+		if err != nil {
+			return nil, wrap(OpenAPI, "native.refinement", "", err)
+		}
 		program, err := language.Compile(source)
 		if err != nil {
 			return nil, wrap(OpenAPI, "native.refinement", "", err)
@@ -161,7 +165,11 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 	for _, file := range p.languageFiles {
 		source := file.Source
 		if file.ID == p.languageEntry {
-			source = appendSource(source)
+			updated, err := appendSource(source)
+			if err != nil {
+				return nil, wrap(OpenAPI, "native.refinement", file.ID, err)
+			}
+			source = updated
 			found = true
 		}
 		sources[file.ID] = source
@@ -185,7 +193,7 @@ func (p *Project) withDerivedOpenAPISource(declarations []string) (*Project, err
 	return &copy, nil
 }
 
-func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]schemajson.Document, used map[string]bool, openAPI30 bool) (derivedOpenAPIOperation, error) {
+func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]schemajson.Document, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, openAPI30 bool) (derivedOpenAPIOperation, error) {
 	requestName, err := reserveDerivedOpenAPIName(used, document.operationID, "request")
 	if err != nil {
 		return derivedOpenAPIOperation{}, err
@@ -229,7 +237,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		if openAPI30 {
 			direction = OpenAPIRequest
 		}
-		expr, decls, projectErr := deriveOpenAPISchemaType(parameter.schema, docs, nameParts, used, direction)
+		expr, decls, projectErr := deriveOpenAPISchemaType(parameter.schema, docs, nameParts, used, annotations, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -263,7 +271,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 		if openAPI30 {
 			direction = OpenAPIRequest
 		}
-		expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "request", "body", media}, used, direction)
+		expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "request", "body", media}, used, annotations, direction)
 		if projectErr != nil {
 			return derivedOpenAPIOperation{}, projectErr
 		}
@@ -334,7 +342,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if openAPI30 {
 				direction = OpenAPIResponse
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "header", item.name}, used, direction)
+			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "header", item.name}, used, annotations, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -353,7 +361,7 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 			if openAPI30 {
 				direction = OpenAPIResponse
 			}
-			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "body", media}, used, direction)
+			expr, decls, projectErr := deriveOpenAPISchemaType(schema, docs, []string{document.operationID, "response", status, "body", media}, used, annotations, direction)
 			if projectErr != nil {
 				return derivedOpenAPIOperation{}, projectErr
 			}
@@ -370,7 +378,12 @@ func deriveOpenAPIOperation(document openAPIDocumentOperation, docs map[string]s
 	return derivedOpenAPIOperation{declarations: declarations, refined: refined, native: native}, nil
 }
 
-func deriveOpenAPISchemaType(schema openAPINode, docs map[string]schemajson.Document, nameParts []string, used map[string]bool, direction OpenAPIDirection) (string, []string, error) {
+func deriveOpenAPISchemaType(schema openAPINode, docs map[string]schemajson.Document, nameParts []string, used map[string]bool, annotations *derivedOpenAPIAnnotationContext, direction OpenAPIDirection) (string, []string, error) {
+	if annotation, ok, err := resolveOpenAPISchemaAnnotation(schema, docs); err != nil {
+		return "", nil, err
+	} else if ok {
+		return annotations.use(annotation)
+	}
 	doc, ok := docs[schema.resource]
 	if !ok {
 		return "", nil, &Error{Code: "native.resource", Format: OpenAPI, Pointer: schema.resource, Message: "operation Schema Object resource is absent"}

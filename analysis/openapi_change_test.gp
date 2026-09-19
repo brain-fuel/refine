@@ -1,0 +1,23 @@
+package analysis
+
+import (
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+)
+
+func TestContractSyntaxNamesStandaloneOpenAPIChanges(t *testing.T){
+    source:=`type Root = Int
+type Request = {parameters :: {}, headers :: {}, body :: Int}
+type Response = {headers :: {}, body :: Int}
+openapi "3.2.1" {
+  title "API"
+  version "1"
+  operation get "GET" "/items" {
+    request Request { body "application/json" at body required }
+    response "200" Response "ok" { body "application/json" at body required }
+  }
+}
+`;changed:=strings.Replace(source,"/items","/things",1);old,err:=language.Compile(source);if err!=nil{t.Fatal(err)};next,err:=language.Compile(changed);if err!=nil{t.Fatal(err)};evidence,err:=CompareContractSyntax(old,"Root",next,"Root");if err!=nil{t.Fatal(err)};if evidence.Equal{t.Fatal("OpenAPI edit was equal")};found:=false;for _,difference:=range evidence.Differences{if difference.Kind=="openapi"{found=true}};if !found{t.Fatalf("OpenAPI edit was unnamed: %+v",evidence.Differences)}
+}

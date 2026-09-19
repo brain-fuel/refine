@@ -43,7 +43,8 @@ not claimed yet. Strings containing unpaired UTF-16 surrogate escapes are
 rejected because the native validators cannot retain their semantics faithfully.
 
 Single-document validation is offline: OpenAPI external references are disabled
-and the JSON Schema compiler is not given a URL loader. Consequently an
+and the JSON Schema compiler explicitly rejects missing resource loads, overriding
+the underlying library's filesystem-loader default. Consequently an
 unresolved external `$ref` is an error, not a network or filesystem read.
 Internal references are supported. `IngestProjectResources` enables external
 references only against an explicit bounded in-memory resource set; `Project.Bundle`
@@ -65,11 +66,13 @@ document. Import followed by unchanged export therefore preserves whitespace,
 member order, number spelling, Avro field/union order, YAML presentation, unknown
 extensions, and documentation byte for byte.
 
-JSON Schema numeric-bound correspondences delegate to the existing `provenance`
-package. There is one identity and recovery check per native keyword. Editing one
-canonical constraint does not invalidate an untouched constraint. Avro and
-OpenAPI provenance adapters are not implemented and return an explicit
-`native.provenance` error rather than an empty success.
+Document-level JSON Schema correspondences delegate to the `provenance`
+package. Editing one canonical constraint does not invalidate an untouched
+constraint. The `Document` provenance methods remain JSON-Schema-only; Avro and
+OpenAPI use resource-scoped `Project` methods. Those project adapters support
+Avro fixed sizes and ordered enum symbols, OpenAPI 3.0 paired numeric bounds,
+and OpenAPI 3.1/3.2 numeric, `const`/`enum`, and collection-count constraints within their documented exact
+subsets. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md).
 
 ## Refined annotations
 
@@ -94,10 +97,14 @@ untyped annotations are rejected. Accessors preserve the exact source and also
 provide its deterministic formatted form. Embedded metadata is restored on
 ingestion, while a conflicting caller-supplied policy is rejected.
 
-The currently recognized locations are schema positions in JSON Schema, schema
-positions in Avro, and the OpenAPI root object. Objects carried in examples,
-defaults, arbitrary extension payloads, and documentation are not executed or
-mistaken for declarations. Per-OpenAPI-object annotations are a stated gap.
+Recognized locations include schema positions in JSON Schema and Avro, and the
+OpenAPI root object. OpenAPI 3.1/3.2 projects also compose annotations on the
+selected Schema Object or a directly bound operation Schema Object (including
+supported references). Such annotations require an explicit closed `root`.
+Reachable nested annotations beneath fields or applicators currently reject
+rather than being silently ignored; OpenAPI 3.0 retains document-level
+annotation support. Objects carried in examples, defaults, arbitrary extension
+payloads, and documentation are not executed or mistaken for declarations.
 
 ## Checked type lowering
 
@@ -212,8 +219,11 @@ The initial safe structural projection covers:
   forms, named definitions, and local refs;
 - Avro primitives, arrays, maps, records, enums, fixed byte sequences, nullable and
   general unions, named references, and ordered fields/branches;
-- root-level external JSON Schema/OpenAPI reference chains whose fragments are
-  JSON Pointers, and ordered Avro dependency schemas.
+- nested and recursive external JSON Schema references, canonical `$id`
+  resource identities, static `$anchor` names, and resource-relative JSON
+  Pointers, using only explicitly supplied resources;
+- root-level external OpenAPI reference chains whose fragments are JSON
+  Pointers, and ordered Avro dependency schemas.
 
 Projection does not infer an object or number type merely from `properties` or
 `minimum`: those keywords permit other JSON kinds. It instead uses the explicit
@@ -222,9 +232,22 @@ pattern maps and non-identifier field names also have carrier projections.
 Schema-valued `additionalProperties` and closed `patternProperties` retain a
 more precise homogeneous map when possible. Explicit scalar kinds remain
 precise even through applicators, whose native constraints are not hoisted into
-unconditional refinements. Anchor-based root references and nested external
-references that the named projector cannot express still fail explicitly with
-`native.projection`; no resources are fetched to resolve them.
+unconditional refinements. OpenAPI anchor-based roots and nested external
+references that its named projector cannot express still fail explicitly with
+`native.projection`; no resources are fetched to resolve them. Dynamic JSON
+Schema references are not guessed as static language types.
+
+JSON Schema projection and keyword scans share a bounded schema-position
+catalog. Logical IDs and anchors are aliases of physical resource/pointer
+identities, so multiple references to one definition do not duplicate it.
+Existing local `$defs` names remain available when selecting a nested root;
+external names include deterministic identity hashes. Duplicate IDs or anchors,
+references into non-schema data, and missing explicit resources reject.
+The catalog caps aggregate retained-location accounting at 16 MiB in addition
+to source, node and depth limits, preventing repeated long ancestor paths from
+amplifying memory use. `Project.JSONSchemaResourceAliases` exposes a sorted,
+defensive inventory for offline runtimes that need canonical `$id` loader
+entries; it does not replace or mutate the original physical resources.
 
 Map identity is the decoded exact UTF-16 key sequence: alternate JSON escape
 spellings are duplicates, while case and Unicode normalization remain distinct.
@@ -241,7 +264,7 @@ Schema, each resource has independently scoped `NativeConstraints`,
 `ResourceConstraintSource`, `AuditResourceSource`, and
 `RecoverResourceNative` operations. Constraint declaration names are scoped by
 resource; callers must not concatenate colliding resource projections. Numeric
-rules under `not`, `allOf`, conditionals, or other applicators are emitted only
+and intrinsic-JSON `const`/`enum` rules under `not`, `allOf`, conditionals, or other applicators are emitted only
 as provenance units and are never attached unconditionally to the projected
 root. `Project.ValidateJSON` evaluates the selected schema with every explicit
 resource installed, enforcing retained opaque JSON Schema keywords.
@@ -253,11 +276,15 @@ unit from `EditableSource` is never inferred as removal. Bundles retain these
 edits, while older bundles with no unit field reconstruct the canonical defaults.
 Untouched units keep their original keyword. Explicit removal deletes only that
 keyword from the effective validator. A changed unit currently must retain its
-numeric scope and lower to exactly one native numeric assertion at its original
+scope and lower to exactly one supported native assertion at its original
 Schema Object position; unsupported scoped edits fail `native.enforcement`
 instead of leaving the stale original constraint active. Arbitrary refinements
 should be added to the payload type until scoped evaluation under native
 applicators is implemented.
+For `const` and `enum`, an edited unit must retain its original keyword family;
+the inverse recognizes intrinsic JSON constructors, not arbitrary equivalent
+functions. See [NATIVE-PROVENANCE.md](NATIVE-PROVENANCE.md) for exact supported
+forms and bounds.
 `Project.ValidateAvroBinary` validates exactly one binary datum against the
 selected writer schema and its ordered named dependencies. Its independent byte
 cursor enforces exact EOF, Boolean/int/enum/union encodings, declared collection
@@ -455,43 +482,51 @@ over the whole request before Jackson or networknt materializes exact numbers.
 Standalone `GenerateJSONSerde` remains language-only and makes no
 native-sidecar claim.
 
-If a reachable native Schema Object uses `pattern` or `patternProperties`, the
-validator conditionally emits a GraalJS Community 25.0.1 adapter configured for
-ECMA-262 2020 Unicode regular expressions. Native ingestion's regexp2 syntax
-oracle is not equivalent: it rejects valid `Script=Greek` property escapes and
-accepts some non-ECMA forms, including atomic groups and lone script names such
-as `\p{Katakana}`. Thus a schema accepted by Go ingestion can still fail Java
-generation or runtime initialization. The Graal adapter does not erase this
-documented conformance gap; see [RELEASE-READINESS.md](RELEASE-READINESS.md).
-Non-regex validators contain no Graal class
-reference and retain their smaller runtime closure. A regex validator exposes
-separate tighten-only `RegexLimits` for pattern and subject UTF-16 units,
-evaluation count, aggregate charged units, and the whole schema-evaluation
-deadline. Context and fixed matcher initialization has a separate generated
-10-second deployment-startup ceiling. It evaluates only the fixed matcher
-factory and a fixed empty pattern against an empty subject before the caller's
-payload deadline starts; no schema pattern or payload is executed during that
-phase. Context construction is elapsed-time checked because there is not yet a
-context that another thread can cancel, so that portion is bounded as a
-deployment check rather than a hard real-time guarantee. Once a context exists,
-initialization and payload evaluation each have a request-owned virtual
-watchdog. The watchdog inherits neither thread-local state nor the caller's
-context class loader, and is interrupted during request cleanup.
-GraalVM documents that
-[`Context.close(true)`](https://www.graalvm.org/sdk/javadoc/org/graalvm/polyglot/Context.html#close(boolean))
-may cancel a context executing on another thread. Timeout, cancellation, and budget
-exhaustion are `RESOURCE_LIMIT`/indeterminate outcomes; combinators never see
-them as ordinary false matches. The context denies host access, class lookup,
-IO, environment, processes, native access, polyglot access, value sharing, and
-guest-created threads. The composed Jackson module preserves its no-argument
-and native-`Limits` constructors and additionally accepts `(Limits,
-RegexLimits)` or `(CodecLimits, Limits, RegexLimits)` when regex support is
-present, so callers can tighten every boundary without constructing a sidecar.
-The shared Graal engine lives for the generated helper's class lifetime.
-Its cached fixed source lets contexts share compiled code. Missing or
-incompatible Graal deployment artifacts, static engine initialization failure,
-or exceeding the separate trusted-initialization ceiling are fatal deployment
-errors, not payload-validation outcomes. There is no automatic retry.
+Native JSON Schema and OpenAPI `pattern`/`patternProperties` use one checked
+ECMA-262 2020 Unicode engine in both hosts. The embedded WebAssembly guest is
+built reproducibly from QuickJS-NG 0.15.1 plus regexpp 4.12.2, has a fixed
+SHA-256, a declared 32 MiB maximum memory, and imports only
+`refine.should_interrupt(i32)`. Go executes it through wazero 1.12.0; generated
+Java 25 executes the identical bytes through Chicory 1.7.5. Pattern and subject
+text cross the ABI as exact little-endian UTF-16 code units. This admits
+`Script=Greek`, lookaround, named backreferences, astral escapes, and escaped
+lone-surrogate pattern units without relying on a host regex translation.
+Ordinary JSON payload decoding still rejects unpaired UTF-16 before matching.
+
+Each validation owns fresh request state and an aggregate request budget.
+Initialized guest sessions may be reused from a fixed bounded pool only after
+the guest releases every compiled handle, clears request failure/interrupt
+state, runs GC, and returns to its exact post-warmup allocation watermark. A
+cleaned session that cannot prove that watermark is discarded without changing
+the completed validation outcome; timeout, OOM, trap, cancellation, dirty reset,
+or cleanup failure also prevents reuse. Fixed guest initialization uses only a
+trusted built-in Unicode pattern and has a hard 10-second/one-million-poll
+deployment ceiling;
+checked-pattern compilation has a separate caller-tightenable aggregate
+10-second/one-million-poll ceiling; matching retains the caller-tightenable
+one-second deadline, one-million polls, pattern/input UTF-16 limits, handle and
+evaluation counts, and aggregate charged work. None of these limits resets for
+another pattern or match in the same request. Waiting for a cached schema's
+single request slot is charged to the appropriate aggregate deadline. All
+guest allocation and release paths are bounded; a trapped request is disposed
+and never reused. The four-session Go pool and each generated Java scope bound
+retained memory and acquisition. Go deducts blocking acquisition from the
+compilation budget; Java deducts it from the selected construction or validation
+request budget. Syntax failure is a schema error. Queue, initialization,
+compilation, matching, memory, or work exhaustion is a resource/indeterminate
+outcome and is never converted into false inside `not`, `anyOf`, or another
+combinator. Internal/trap failures are enforcement outcomes. There is no retry.
+
+The guest exposes no general JavaScript evaluation API, WASI import,
+filesystem, network, clock, random, environment, process, native, or host-class
+capability. Generated helpers verify the guest size and digest before parsing
+it. They preserve the no-argument and native-`Limits` constructors and also
+accept `(Limits, RegexLimits)` or `(CodecLimits, Limits, RegexLimits)` so callers
+can tighten the payload and compilation boundaries. A regex-bearing generated
+project automatically packages the content-addressed `.wasm`, build manifest,
+and complete upstream notices as classpath resources and adds pinned Chicory
+dependencies. Schemas without reachable regex keywords emit no Chicory class
+reference, regex resource, or optional dependency.
 
 Schema keyword and dialect scans traverse only real Schema Object positions and
 follow bundled JSON Pointer references. A payload property named `pattern` or

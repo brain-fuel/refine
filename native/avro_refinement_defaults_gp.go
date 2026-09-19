@@ -144,7 +144,11 @@ func validateAvroRefinementDefaults(p *Project) (*Project, error) {
 	if p == nil || p.Format() != Avro {
 		return p, nil
 	}
-	schema, index, err := collectRawAvroDefaults(p.resources, p.root)
+	resources, err := p.EffectiveResources()
+	if err != nil {
+		return nil, err
+	}
+	schema, index, err := collectRawAvroDefaults(resources, p.root)
 	if err != nil {
 		return nil, wrap(Avro, "native.default", "", err)
 	}
@@ -300,6 +304,18 @@ func (w *avroDefaultWalker) walk(t *language.Type, schema avro.Schema, bindings 
 }
 
 func (w *avroDefaultWalker) union(variants []language.Variant, schema avro.Schema, bindings map[string]*language.Type, depth int) error {
+	if schema.Type() == avro.Enum {
+		symbols := schema.(*avro.EnumSchema).Symbols()
+		if len(symbols) != len(variants) {
+			return &Error{Code: "native.enforcement", Format: Avro, Message: "edited checked constructors do not match the effective Avro enum symbol order"}
+		}
+		for i, variant := range variants {
+			if len(variant.Arguments) != 0 || variant.Name != safeTypeName(symbols[i]) {
+				return &Error{Code: "native.enforcement", Format: Avro, Pointer: variant.Name, Message: "edited checked constructors do not match the effective Avro enum symbol order"}
+			}
+		}
+		return nil
+	}
 	if schema.Type() != avro.Union {
 		return nil
 	}

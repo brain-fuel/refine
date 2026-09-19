@@ -1,0 +1,76 @@
+package provenance
+
+import (
+    "encoding/json"
+    "fmt"
+    "math/rand"
+    "strings"
+    "testing"
+    "testing/quick"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/schemajson"
+    "goforge.dev/refine/validation"
+    "goforge.dev/refine/value"
+)
+
+func jsonNumberData(t *testing.T,raw string)value.Data{t.Helper();number,err:=value.ParseNumber(raw);if err!=nil{t.Fatal(err)};data,err:=value.Variant("JSONNumber",[]value.Data{value.OfNumber(number)});if err!=nil{t.Fatal(err)};return data}
+func jsonStringData(t *testing.T,raw string)value.Data{t.Helper();text,err:=value.TextFromUTF8(raw);if err!=nil{t.Fatal(err)};data,err:=value.Variant("JSONString",[]value.Data{value.OfText(text)});if err!=nil{t.Fatal(err)};return data}
+func jsonNullData(t *testing.T)value.Data{t.Helper();data,err:=value.Variant("JSONNull",nil);if err!=nil{t.Fatal(err)};return data}
+func jsonArrayData(t *testing.T,items ...value.Data)value.Data{t.Helper();data,err:=value.Variant("JSONArray",[]value.Data{value.List(items)});if err!=nil{t.Fatal(err)};return data}
+func jsonObjectData(t *testing.T,entries ...value.MapEntry)value.Data{t.Helper();mapping,err:=value.Map(entries);if err!=nil{t.Fatal(err)};data,err:=value.Variant("JSONObject",[]value.Data{mapping});if err!=nil{t.Fatal(err)};return data}
+func jsonEntry(t *testing.T,name string,item value.Data)value.MapEntry{t.Helper();key,err:=value.TextFromUTF8(name);if err!=nil{t.Fatal(err)};return value.MapEntry{Key:key,Value:item}}
+
+func TestConstAndEnumCanonicalJSONProvenance(t *testing.T){
+    cases:=[]struct{name string;schema string;pointer string;predicate string;valid value.Data;invalid value.Data}{
+        {"null",`{"const":null}`,"/const",`(it == JSONNull)`,jsonNullData(t),jsonNumberData(t,"0")},
+        {"boolean",`{"const":true}`,"/const",`(it == (JSONBoolean True))`,func()value.Data{v,_:=value.Variant("JSONBoolean",[]value.Data{value.OfBool(true)});return v}(),jsonNullData(t)},
+        {"exact-number",`{"const":1}`,"/const",`(it == (JSONNumber (1 / 1)))`,jsonNumberData(t,"1.0"),jsonNumberData(t,"1.01")},
+        {"text",`{"const":"e\u0301"}`,"/const",`(it == (JSONString "e\u0301"))`,jsonStringData(t,"é"),jsonStringData(t,"é")},
+        {"ordered-array",`{"const":[1,"x"]}`,"/const",`(it == (JSONArray [(JSONNumber (1 / 1)), (JSONString "x")]))`,jsonArrayData(t,jsonNumberData(t,"1.0"),jsonStringData(t,"x")),jsonArrayData(t,jsonStringData(t,"x"),jsonNumberData(t,"1"))},
+        {"unordered-object",`{"const":{"b":2,"a":1}}`,"/const",`(it == (JSONObject map {"a" = (JSONNumber (1 / 1)), "b" = (JSONNumber (2 / 1))}))`,jsonObjectData(t,jsonEntry(t,"a",jsonNumberData(t,"1.0")),jsonEntry(t,"b",jsonNumberData(t,"2"))),jsonObjectData(t,jsonEntry(t,"a",jsonNumberData(t,"1")))},
+        {"enum",`{"enum":[null,1,"x"]}`,"/enum",`((oneOf it) [JSONNull, (JSONNumber (1 / 1)), (JSONString "x")])`,jsonNumberData(t,"1.0"),jsonStringData(t,"y")},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){projection:=discover(t,tc.schema);constraints:=projection.Constraints();if len(constraints)!=1{t.Fatalf("%+v",constraints)};constraint:=constraints[0];if constraint.Scope!="JSON"||constraint.Pointer!=tc.pointer||constraint.Predicate!=tc.predicate||constraint.Native==""{t.Fatalf("%+v",constraint)};program,err:=language.Compile(projection.ConstraintSource());if err!=nil{t.Fatal(err)};for _,item:=range []struct{data value.Data;valid bool}{{tc.valid,true},{tc.invalid,false}}{report:=program.ValidateData(constraint.Name,item.data,validation.Limits{});if (validation.StateName(report.State())=="valid")!=item.valid{t.Fatalf("valid=%v diagnostics=%+v",item.valid,report.Diagnostics())}};recovered,err:=projection.RecoverNative(constraint.Name,projection.ConstraintSource());if err!=nil||recovered!=constraint.Native{t.Fatalf("recovery %q: %v",recovered,err)}})}
+}
+
+func TestEnumRecommendationsDoNotStrengthenDraft202012(t *testing.T){
+    for _,raw:=range []string{`{"enum":[]}`,`{"enum":[1,1.0,{"a":1},{"a":1}]}`}{projection:=discover(t,raw);constraint:=projection.Constraints()[0];if constraint.Native!=strings.TrimSuffix(strings.TrimPrefix(raw,`{"enum":`),`}`){t.Fatalf("native enum changed: %+v",constraint)};if _,err:=language.Compile(projection.ConstraintSource());err!=nil{t.Fatal(err)};if got,err:=projection.RecoverNative(constraint.Name,projection.ConstraintSource());err!=nil||got!=constraint.Native{t.Fatalf("%s: %q %v",raw,got,err)};_=nativeOracle(t,raw)}
+}
+
+func TestConstEnumExactSemanticsMatchDraft202012Oracle(t *testing.T){
+    schemas:=[]string{`{"const":1}`,`{"const":{"b":[1,2],"a":"e\u0301"}}`,`{"enum":[]}`,`{"enum":[1,1.0,[1,2],{"a":1,"b":2}]}`}
+    candidates:=[]struct{raw string;data value.Data}{
+        {`1.0`,jsonNumberData(t,"1.0")},{`1.01`,jsonNumberData(t,"1.01")},
+        {`[1,2]`,jsonArrayData(t,jsonNumberData(t,"1"),jsonNumberData(t,"2"))},
+        {`[2,1]`,jsonArrayData(t,jsonNumberData(t,"2"),jsonNumberData(t,"1"))},
+        {`{"b":2,"a":1}`,jsonObjectData(t,
+            jsonEntry(t,"a",jsonNumberData(t,"1")),
+            jsonEntry(t,"b",jsonNumberData(t,"2")),
+        )},
+        {`{"a":"e\u0301","b":[1,2]}`,jsonObjectData(t,
+            jsonEntry(t,"b",jsonArrayData(t,jsonNumberData(t,"1"),jsonNumberData(t,"2"))),
+            jsonEntry(t,"a",jsonStringData(t,"é")),
+        )},
+        {`{"a":"é","b":[1,2]}`,jsonObjectData(t,
+            jsonEntry(t,"a",jsonStringData(t,"é")),
+            jsonEntry(t,"b",jsonArrayData(t,jsonNumberData(t,"1"),jsonNumberData(t,"2"))),
+        )},
+    }
+    for _,schema:=range schemas{projection:=discover(t,schema);constraint:=projection.Constraints()[0];program,err:=language.Compile(projection.ConstraintSource());if err!=nil{t.Fatal(err)};oracle:=nativeOracle(t,schema);for _,candidate:=range candidates{var native any;decoder:=json.NewDecoder(strings.NewReader(candidate.raw));decoder.UseNumber();if err:=decoder.Decode(&native);err!=nil{t.Fatal(err)};expected:=oracle.Validate(native)==nil;actual:=validation.StateName(program.ValidateData(constraint.Name,candidate.data,validation.Limits{}).State())=="valid";if actual!=expected{t.Fatalf("schema %s candidate %s: refine=%v native=%v",schema,candidate.raw,actual,expected)}}}
+}
+
+func TestConstExactNumberPropertyMatchesDraft202012Oracle(t *testing.T){
+    property:=func(raw int32,scale uint8)bool{
+        divisor:=int64(1);for i:=uint8(0);i<scale%5;i++{divisor*=10};number:=fmt.Sprintf("%d.%0*d",raw,int(scale%5)+1,0)
+        schema:=`{"const":`+number+`}`;projection:=discover(t,schema);constraint:=projection.Constraints()[0];program,err:=language.Compile(projection.ConstraintSource());if err!=nil{t.Fatal(err)}
+        candidate:=fmt.Sprintf("%d/%d",int64(raw)*divisor,divisor);data:=jsonNumberData(t,candidate);native:=nativeOracle(t,schema);expected:=native.Validate(json.Number(fmt.Sprintf("%d.0",raw)))==nil;actual:=validation.StateName(program.ValidateData(constraint.Name,data,validation.Limits{}).State())=="valid";return actual==expected
+    }
+    if err:=quick.Check(property,&quick.Config{MaxCount:200,Rand:rand.New(rand.NewSource(202012))});err!=nil{t.Fatal(err)}
+}
+
+func TestConstEnumIsolationShadowingAndLimits(t *testing.T){
+    projection:=discover(t,`{"type":"integer","minimum":0,"const":1,"enum":[1,1.0]}`);if len(projection.Constraints())!=3{t.Fatalf("%+v",projection.Constraints())};source:=projection.ConstraintSource()+"\noneOf :: JSON -> [JSON] -> Bool\noneOf _ _ = True\n";findings,err:=projection.AuditSource(source);if err!=nil{t.Fatal(err)};for _,finding:=range findings{want:="unchanged";if finding.Constraint.Keyword=="enum"{want="changed"};if StatusName(finding.Status)!=want{t.Fatalf("%s: %s",finding.Constraint.Keyword,StatusName(finding.Status))}}
+    for _,tc:=range []struct{raw string;code string}{{`{"enum":true}`,"native.enum"},{`{"const":"\ud800"}`,"native.value_unicode"},{`{"const":{"\ud800":true}}`,"native.value_unicode"}}{_,err:=DiscoverJSONSchema([]byte(tc.raw),schemajson.Limits{});if err==nil||!strings.Contains(err.Error(),tc.code){t.Fatalf("%s: %v",tc.raw,err)}}
+    for _,raw:=range []string{`{"const":1e1000000000}`,fmt.Sprintf(`{"const":%s}`,strings.Repeat("[",253)+"null"+strings.Repeat("]",253))}{projection,err:=DiscoverJSONSchema([]byte(raw),schemajson.Limits{});if err!=nil||len(projection.Constraints())!=0||projection.Original()!=raw{t.Fatalf("unsupported bounded projection did not remain opaque: %+v %v",projection,err)}}
+}

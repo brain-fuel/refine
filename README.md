@@ -12,7 +12,7 @@ The current source audit and unfinished release work are summarized in
 ## Development
 
 Use Go 1.26 or newer. GoPlus is pinned as a module tool at **v0.158.0**, verified
-against the latest published module on 2026-09-12. Do not use an older globally
+against the latest published module on 2026-09-19. Do not use an older globally
 installed `goplus`. Semantic source lives in `.gp`; generated Go is committed so
 ordinary Go consumers do not need the GoPlus compiler.
 The generated `//goplus:v v0.28.0` marker is GoPlus's separate source-compatibility

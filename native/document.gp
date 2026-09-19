@@ -84,12 +84,12 @@ func ParseJSONSchema(input []byte,options Options)(document *Document,failure er
     root:=doc.Root();kind:=schemajson.KindName(root.Kind())
     if kind!="object"&&kind!="boolean"{return nil,&Error{Code:"native.structure",Format:JSONSchema,Message:"a Draft 2020-12 schema must be an object or Boolean"}}
     if err:=checkJSONDraft(root,"");err!=nil{return nil,err}
-    compiler:=jsonoracle.NewCompiler();compiler.DefaultDraft(jsonoracle.Draft2020);compiler.UseRegexpEngine(jsonRegexp)
-    // No URLLoader is installed. Internal references work; external references
-    // fail closed instead of causing filesystem or network access.
+    scope:=newRegexScope();compiler:=newOfflineJSONCompiler();compiler.DefaultDraft(jsonoracle.Draft2020);compiler.UseRegexpEngine(scope.jsonRegexp)
+    // A rejecting loader overrides the library's default filesystem loader.
+    // Internal references work without allowing external file or network reads.
     oracleInput,err:=jsonoracle.UnmarshalJSON(strings.NewReader(doc.Raw()));if err!=nil{return nil,wrap(JSONSchema,"native.syntax","",err)}
     if err:=compiler.AddResource("https://refine.invalid/imported.schema.json",oracleInput);err!=nil{return nil,wrap(JSONSchema,"native.structure","",err)}
-    if _,err:=compiler.Compile("https://refine.invalid/imported.schema.json");err!=nil{return nil,wrap(JSONSchema,"native.structure","",err)}
+    if err:=scope.run(JSONSchema,true,func()error{_,compileErr:=compiler.Compile("https://refine.invalid/imported.schema.json");return compileErr});err!=nil{return nil,wrapRegexResult(JSONSchema,"native.structure","",err)}
     annotations,err:=jsonSchemaAnnotations(root);if err!=nil{return nil,err}
     origins,err:=provenance.DiscoverJSONSchema(input,options.Limits);if err!=nil{return nil,wrap(JSONSchema,"native.provenance","",err)}
     return &Document{format:JSONSchema,version:"2020-12",raw:doc.Raw(),annotations:annotations,jsonProvenance:origins},nil
@@ -129,7 +129,7 @@ func ParseOpenAPI(input []byte,options Options)(document *Document,failure error
     version,ok:=declaredOpenAPIVersion(yamlRoot);if !ok||!openAPIVersion.MatchString(version)||!supportedOpenAPI(version){return nil,&Error{Code:"native.version",Format:OpenAPI,Pointer:"/openapi",Message:"supported published versions are 3.0.0-3.0.4, 3.1.0-3.1.2, and 3.2.0-3.2.1"}}
     oracleInput,err:=openAPIOracleInput(input,yamlRoot,version);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)};loader:=openapi3.NewLoader();loader.IsExternalRefsAllowed=false
     parsed,err:=loader.LoadFromData(oracleInput);if err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
-    if err:=parsed.Validate(context.Background(),openapi3.SetRegexCompiler(openAPIRegexp));err!=nil{return nil,wrap(OpenAPI,"native.structure","",err)}
+    scope:=newRegexScope();if err:=scope.run(OpenAPI,false,func()error{validationOptions:=[]openapi3.ValidationOption{openapi3.SetRegexCompiler(scope.openAPIRegexp)};if strings.HasPrefix(version,"3.0."){validationOptions=append(validationOptions,openapi3.AllowExtraSiblingFields(openAPI30IgnoredRefSiblingFields(yamlRoot)...))};return parsed.Validate(context.Background(),validationOptions...)});err!=nil{return nil,wrapRegexResult(OpenAPI,"native.structure","",err)}
     annotations,err:=yamlRootAnnotation(yamlRoot);if err!=nil{return nil,err}
     return &Document{format:OpenAPI,version:version,raw:string(append([]byte(nil),input...)),annotations:annotations},nil
 }

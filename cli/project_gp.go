@@ -362,6 +362,18 @@ func loadProject(rootPath, configPath, packageOverride string) (project.Generate
 				return input, err
 			}
 			program := bundle.Program()
+			if program.OpenAPI() != nil {
+				authored, formats, err := authoredOpenAPIProject(program, name, settings)
+				if err != nil {
+					return input, err
+				}
+				namespace := settings.Package
+				if namespace == "" {
+					namespace = program.Syntax().Package
+				}
+				input.Contracts = append(input.Contracts, project.Contract{Family: name, Version: version, NativeProject: authored, LogicalNamespace: namespace, JavaPackage: javaPackage, NoCodegen: noCodegen, Formats: formats})
+				continue
+			}
 			target := settings.Root
 			if target == "" {
 				types := program.Syntax().Types

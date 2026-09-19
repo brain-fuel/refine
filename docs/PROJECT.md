@@ -15,6 +15,11 @@ identifies its family, released version or snapshot status, logical namespace,
 optional Java-specific package override, native formats, and `NoCodegen`
 setting. A contract supplies either a checked `language.Program` and root
 payload type or a self-contained `native.Project` imported from a native bundle.
+When a checked program contains a standalone `openapi` declaration it instead
+normalizes to the same operations-only native project internally, with no
+payload root. Its ordinary Request, Response, and Context declarations remain
+the authored model; the OpenAPI block supplies the method, path, parameter,
+header, body, response, and relational-context bindings.
 The native project remains the authority for its original resources, sidecar
 metadata, native constraint units, target, and publication namespace. Its target
 is either one selected payload root or an operations-only OpenAPI entry resource;
@@ -60,6 +65,14 @@ contain both ordinary and Refined exports; ordinary lowering explicitly allows
 documented loss and includes its companion explanation. Omitting `Formats`
 requests JSON Schema, Avro, and OpenAPI, so an unrepresentable target rejects the
 entire bundle instead of silently omitting it.
+
+A standalone source OpenAPI declaration is the exception to that format
+default: its intrinsic origin is `openapi`, so omitted `Formats` selects only
+OpenAPI. An explicit selection must contain exactly that one format. A payload
+`RootType` or externally supplied `Wire.OpenAPI` is rejected because either
+would compete with source authority. Other explicit scalar, discriminator,
+extra-field, example, numeric, and publication metadata is validated and
+retained; it never supplies an implicit encoding.
 
 Avro targets also emit `RefineAvroSerde`, using the lowered checked ordinary
 schema as its embedded reader schema. Shared semantic models appear once even
@@ -218,6 +231,15 @@ origin format is the currently supported exact path. Omitting `formats` still
 requests all three formats and therefore fails closed when opaque native details
 cannot be represented cross-format; no target is silently skipped.
 
+A `SNAPSHOT.refine` or released `.refine` file may instead carry the standalone
+OpenAPI declaration directly. Discovery resolves its imports first, requires no
+configured `root`, defaults its effective format to OpenAPI, and builds a
+checked rootless execution view without replacing the authored file. Generated
+resources include the deterministic self-contained OpenAPI project, facade,
+operation-wide explanation, and mandatory properties. The original source
+bundle—not that derived project—remains the versioned identity and import
+authority.
+
 Native project resources include `contract.refined.json` (the complete original
 bundle), the effective ordinary/refined selected target resource set, and a
 `<mode>-<format>-resources.json` manifest. That manifest preserves ordered URI
@@ -249,11 +271,13 @@ Maven Compiler 3.15.0, Exec 3.6.3, and Build Helper 3.6.1.
 
 Inside a Maven project, the command inspects its schema catalog (`--root` and
 `--config` override discovery). Native JSON/OpenAPI schema `pattern` or
-`patternProperties` positions automatically add the pinned GraalJS runtime and
-its compile-time Polyglot API; example payloads and `no-codegen` entries do not.
-Outside a project, `--native-regex` opts into that dependency in a bootstrap
-fragment. It is omitted for projects that do not need native regex execution.
-Generated JSON property tests use the module's bounded `strictMapper()`.
+`patternProperties` positions automatically add pinned Chicory 1.7.5 runtime
+and parser dependencies plus the content-addressed checked ECMA-262 WebAssembly
+guest, build manifest, and full upstream notices. Example payloads and
+`no-codegen` entries do not trigger them. Outside a project, `--native-regex`
+opts into the dependencies in a bootstrap fragment. They are omitted for
+projects that do not need native regex execution. Generated JSON property tests
+use the module's bounded `strictMapper()`.
 
 The integration test uses SHA-512-pinned Maven 3.9.16 to build an unsigned fixture
 artifact with released and snapshot schema packages and an imported native JSON

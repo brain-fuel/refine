@@ -34,8 +34,21 @@ type openAPIPropertyRule struct {
 
 const openAPIReplayPrefix = "@refine-openapi-property/v1/"
 
+// OpenAPIPropertyElementPathSegment is the reserved affected-path segment for
+// one runtime list element or map key in an occurrence replay selector. It is
+// not a JSON Pointer escape and cannot collide with an authored field name.
+const OpenAPIPropertyElementPathSegment = "~2"
+
 func openAPIReplayTarget(role, operationID, status string) string {
 	return fmt.Sprintf("%s%s/%d:%s/%d:%s", openAPIReplayPrefix, role, len(operationID), operationID, len(status), status)
+}
+func openAPIOccurrenceReplayTarget(base string, paths []string, offset int) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s/occurrence/%d/%d", base, offset, len(paths))
+	for _, item := range paths {
+		fmt.Fprintf(&out, "/%d:%s", len(item), item)
+	}
+	return out.String()
 }
 
 // OpenAPIRequestReplayTarget returns the opaque replay selector for one
@@ -45,6 +58,13 @@ func OpenAPIRequestReplayTarget(operationID string) string {
 	return openAPIReplayTarget("request", operationID, "")
 }
 
+// OpenAPIRequestOccurrenceReplayTarget selects one repeated request clause by
+// its checked affected paths and source offset. Prefer the shorter request
+// selector when a diagnostic code occurs only once in the request.
+func OpenAPIRequestOccurrenceReplayTarget(operationID string, paths []string, offset int) string {
+	return openAPIOccurrenceReplayTarget(OpenAPIRequestReplayTarget(operationID), paths, offset)
+}
+
 // OpenAPIResponseReplayTarget selects response-origin invalid predicates,
 // including those evaluated within a context. It also selects valid response
 // pairs when the binding has no additional context type.
@@ -52,10 +72,112 @@ func OpenAPIResponseReplayTarget(operationID, status string) string {
 	return openAPIReplayTarget("response", operationID, status)
 }
 
+// OpenAPIResponseOccurrenceReplayTarget selects one repeated response-origin
+// clause, including a response clause evaluated through a context binding.
+func OpenAPIResponseOccurrenceReplayTarget(operationID, status string, paths []string, offset int) string {
+	return openAPIOccurrenceReplayTarget(OpenAPIResponseReplayTarget(operationID, status), paths, offset)
+}
+
 // OpenAPIContextReplayTarget returns the opaque replay selector for a response
 // pair validated through an additional checked context type.
 func OpenAPIContextReplayTarget(operationID, status string) string {
 	return openAPIReplayTarget("context", operationID, status)
+}
+
+// OpenAPIContextOccurrenceReplayTarget selects one repeated additional context
+// clause by its checked affected paths and source offset.
+func OpenAPIContextOccurrenceReplayTarget(operationID, status string, paths []string, offset int) string {
+	return openAPIOccurrenceReplayTarget(OpenAPIContextReplayTarget(operationID, status), paths, offset)
+}
+
+func propertyRuleArguments(rule propertyRule) string {
+	parts := []string{javaQuote(rule.code), javaQuote(rule.predicate), javaQuote(rule.enclosing), fmt.Sprint(rule.offset), fmt.Sprint(rule.automatic)}
+	for _, item := range rule.paths {
+		parts = append(parts, javaQuote(item))
+	}
+	return strings.Join(parts, ",")
+}
+func propertyRuleReplayCounts(rules []openAPIPropertyRule, bases []string) map[string]int {
+	out := map[string]int{}
+	for i, item := range rules {
+		out[bases[i]+"\x00"+item.rule.code]++
+	}
+	return out
+}
+func propertyRuleReplaySelector(base string, rule propertyRule, counts map[string]int, replays map[string]string, seen map[string]bool) (string, error) {
+	key := base + "\x00" + rule.code
+	if counts[key] == 1 {
+		return base, nil
+	}
+	legacy := replayKey(base, ReplayInvalid, rule.code)
+	if _, supplied := replays[legacy]; supplied {
+		return "", fmt.Errorf("operation replay selector %s is ambiguous for repeated diagnostic %s; use an occurrence selector", base, rule.code)
+	}
+	diagnostic := base + "\x00" + rule.code + "\x00" + rule.predicate
+	for _, item := range rule.paths {
+		diagnostic += fmt.Sprintf("\x00%d:%s", len(item), item)
+	}
+	if seen[diagnostic] {
+		return "", fmt.Errorf("operation property occurrences for diagnostic %s cannot be distinguished by their emitted diagnostics", rule.code)
+	}
+	seen[diagnostic] = true
+	return openAPIOccurrenceReplayTarget(base, rule.paths, rule.offset), nil
+}
+
+func propertyPathsPrefixed(paths []string, prefix string) []string {
+	out := make([]string, len(paths))
+	for i, item := range paths {
+		if item == "" {
+			out[i] = prefix
+		} else {
+			out[i] = prefix + item
+		}
+	}
+	return out
+}
+func samePropertyPaths(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+func embeddedPropertyRule(outer, inner propertyRule, prefix string) bool {
+	return outer.predicate == inner.predicate && outer.offset == inner.offset && samePropertyPaths(outer.paths, propertyPathsPrefixed(inner.paths, prefix))
+}
+func classifyOpenAPIContextRules(context, request, response []propertyRule) []openAPIPropertyRule {
+	usedRequest := make([]bool, len(request))
+	usedResponse := make([]bool, len(response))
+	out := []openAPIPropertyRule{}
+	for _, rule := range context {
+		inherited := false
+		for i, candidate := range request {
+			if !usedRequest[i] && embeddedPropertyRule(rule, candidate, "/request") {
+				usedRequest[i] = true
+				inherited = true
+				break
+			}
+		}
+		if inherited {
+			continue
+		}
+		for i, candidate := range response {
+			if !usedResponse[i] && embeddedPropertyRule(rule, candidate, "/response") {
+				usedResponse[i] = true
+				out = append(out, openAPIPropertyRule{rule: candidate, role: "response"})
+				inherited = true
+				break
+			}
+		}
+		if !inherited {
+			out = append(out, openAPIPropertyRule{rule: rule, role: "context"})
+		}
+	}
+	return out
 }
 
 func openAPIPropertyRules(emitter *propertyEmitter, declarations map[string]language.TypeDecl, name string) ([]propertyRule, error) {
@@ -609,7 +731,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		}
 		fmt.Fprintf(&methods, "return new %s.RequestJSON(parameters,headers,body);}\n", facadeName)
 		fmt.Fprintf(&methods, "    private static boolean requestCandidate%d(Data data){try{var token=FACADE.validateRequest(%s,%s(data));return token.data().equals(data);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar)
-		fmt.Fprintf(&methods, "    private static boolean requestInvalidCandidate%d(Data data,String code){try{FACADE.validateRequest(%s,%s(data));return false;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){return targeted(failure.outcome(),code);}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar)
+		fmt.Fprintf(&methods, "    private static boolean requestInvalidCandidate%d(Data data,String code,String predicate,String enclosing,int offset,boolean automatic,String... paths){if(!targeted(%s.validate(%s,data),code,predicate,enclosing,offset,automatic,paths))return false;try{FACADE.validateRequest(%s,%s(data));return false;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate()||failure.code()!=%s.Code.INVALID)throw failure;return true;}catch(ValidationException failure){return rejected(failure.outcome());}}\n", opIndex, contractName, javaQuote(operation.RequestType), javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar)
 		fmt.Fprintf(&methods, "    private static boolean requestExample%d(Data data,Validation.State expected,boolean nativeInvalid,String... codes){try{var token=FACADE.validateRequest(%s,%s(data));return !nativeInvalid&&expected==Validation.State.VALID&&token.data().equals(data);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){return !nativeInvalid&&matchesOutcome(failure.outcome(),expected,codes);}}\n", opIndex, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar)
 		requestRules, ruleErr := openAPIPropertyRules(emitter, declarations, operation.RequestType)
 		if ruleErr != nil {
@@ -620,13 +742,26 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		if replayErr != nil {
 			return nil, replayErr
 		}
+		requestItems := []openAPIPropertyRule{}
+		requestBases := []string{}
+		for _, rule := range requestRules {
+			requestItems = append(requestItems, openAPIPropertyRule{rule: rule, role: "request"})
+			requestBases = append(requestBases, requestSelector)
+		}
+		requestCounts := propertyRuleReplayCounts(requestItems, requestBases)
+		requestSeen := map[string]bool{}
 		var invalid strings.Builder
 		for ruleIndex, rule := range requestRules {
-			replay, replayErr := propertyReplay(requestSelector, ReplayInvalid, rule.code)
+			selector, selectorErr := propertyRuleReplaySelector(requestSelector, rule, requestCounts, replayValues, requestSeen)
+			if selectorErr != nil {
+				return nil, selectorErr
+			}
+			replay, replayErr := propertyReplay(selector, ReplayInvalid, rule.code)
 			if replayErr != nil {
 				return nil, replayErr
 			}
-			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, javaQuote(rule.code), javaQuote("invalid request "+operation.OperationID+" "+rule.code), ruleIndex, opIndex, javaQuote(rule.code), javaQuote(replay))
+			arguments := propertyRuleArguments(rule)
+			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, arguments, javaQuote("invalid request "+operation.OperationID+" "+rule.code+" "+strings.Join(rule.paths, ",")), ruleIndex, opIndex, arguments, javaQuote(replay))
 		}
 		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, requestGenerator, contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
 		calls = append(calls, fmt.Sprintf("requestProperty%d();", opIndex))
@@ -663,7 +798,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			fmt.Fprintf(&methods, "return new %s.ResponseJSON(%s,headers,body);}\n", facadeName, javaQuote(status))
 			fmt.Fprintf(&methods, "    private record Pair%d(Data request,Data response){}\n", pairIndex)
 			fmt.Fprintf(&methods, "    private static boolean responseCandidate%d(Pair%d pair){try{var token=FACADE.validateRequest(%s,%s(pair.request()));var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);if(outcome.incomplete())throw new AssertionError(\"operation response validation was indeterminate\");return outcome.state()==Validation.State.VALID;}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
-			fmt.Fprintf(&methods, "    private static boolean responseInvalidCandidate%d(Pair%d pair,String code){try{var token=FACADE.validateRequest(%s,%s(pair.request()));return targeted(FACADE.validateResponse(%s,%s(pair.response()),token),code);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}}\n", pairIndex, pairIndex, javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar)
+			fmt.Fprintf(&methods, "    private static boolean responseInvalidCandidate%d(Pair%d pair,String target,Data logical,String code,String predicate,String enclosing,int offset,boolean automatic,String... paths){if(!targeted(%s.validate(target,logical),code,predicate,enclosing,offset,automatic,paths))return false;%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{return rejected(FACADE.validateResponse(%s,%s(pair.response()),token));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate()||failure.code()!=%s.Code.INVALID)throw failure;return true;}catch(ValidationException failure){return rejected(failure.outcome());}}\n", pairIndex, pairIndex, contractName, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
 			fmt.Fprintf(&methods, "    private static boolean responseExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return false;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, responseExact, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
 			fmt.Fprintf(&methods, "    private static boolean contextExample%d(Pair%d pair,Validation.State expected,boolean nativeInvalid,String... codes){%s%s.ValidatedRequest token;try{token=FACADE.validateRequest(%s,%s(pair.request()));}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}catch(ValidationException failure){if(failure.outcome().incomplete())throw failure;return false;}try{var outcome=FACADE.validateResponse(%s,%s(pair.response()),token);return !nativeInvalid&&matchesOutcome(outcome,expected,codes);}catch(%s.OpenAPILimitException failure){throw failure;}catch(%s.NativeValidationException failure){if(failure.isIndeterminate())throw failure;return nativeInvalid&&failure.code()==%s.Code.INVALID;}}\n", pairIndex, pairIndex, responseExact, facadeName, javaQuote(operation.OperationID), requestMethod, facadeName, names.sidecar, names.sidecar, javaQuote(operation.OperationID), responseMethod, facadeName, names.sidecar, names.sidecar)
 			responseRules, ruleErr := openAPIPropertyRules(emitter, declarations, response.TypeExpression)
@@ -679,25 +814,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 				if contextErr != nil {
 					return nil, contextErr
 				}
-				requestOffsets, responseOffsets := map[int]int{}, map[int]bool{}
-				for _, rule := range requestRules {
-					requestOffsets[rule.offset]++
-				}
-				for _, rule := range responseRules {
-					responseOffsets[rule.offset] = true
-				}
-				rules = nil
-				for _, rule := range contextRules {
-					if requestOffsets[rule.offset] > 0 {
-						requestOffsets[rule.offset]--
-						continue
-					}
-					role := "context"
-					if responseOffsets[rule.offset] {
-						role = "response"
-					}
-					rules = append(rules, openAPIPropertyRule{rule: rule, role: role})
-				}
+				rules = classifyOpenAPIContextRules(contextRules, requestRules, responseRules)
 			}
 			validSelector := OpenAPIResponseReplayTarget(operation.OperationID, response.Status)
 			if response.ContextType != "" {
@@ -707,17 +824,33 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			if replayErr != nil {
 				return nil, replayErr
 			}
+			bases := make([]string, len(rules))
+			for i, item := range rules {
+				bases[i] = OpenAPIResponseReplayTarget(operation.OperationID, response.Status)
+				if item.role == "context" {
+					bases[i] = OpenAPIContextReplayTarget(operation.OperationID, response.Status)
+				}
+			}
+			counts := propertyRuleReplayCounts(rules, bases)
+			seen := map[string]bool{}
 			var responseInvalid strings.Builder
 			for ruleIndex, item := range rules {
-				selector := OpenAPIResponseReplayTarget(operation.OperationID, response.Status)
-				if item.role == "context" {
-					selector = OpenAPIContextReplayTarget(operation.OperationID, response.Status)
+				selector, selectorErr := propertyRuleReplaySelector(bases[ruleIndex], item.rule, counts, replayValues, seen)
+				if selectorErr != nil {
+					return nil, selectorErr
 				}
 				replay, replayErr := propertyReplay(selector, ReplayInvalid, item.rule.code)
 				if replayErr != nil {
 					return nil, replayErr
 				}
-				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(invalid%d,p->responseInvalidCandidate%d(p,%s),%s);", ruleIndex, pairIndex, javaQuote(item.rule.code), javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code), ruleIndex, pairIndex, javaQuote(item.rule.code), javaQuote(replay))
+				logicalType := response.TypeExpression
+				logicalValue := "p.response()"
+				if item.role == "context" {
+					logicalType = response.ContextType
+					logicalValue = "new Data.Struct(java.util.List.of(new Data.Field(\"request\",p.request()),new Data.Field(\"response\",p.response())))"
+				}
+				arguments := javaQuote(logicalType) + "," + logicalValue + "," + propertyRuleArguments(item.rule)
+				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(invalid%d,p->responseInvalidCandidate%d(p,%s),%s);", ruleIndex, pairIndex, arguments, javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code+" "+strings.Join(item.rule.paths, ",")), ruleIndex, pairIndex, arguments, javaQuote(replay))
 			}
 			label := "response " + operation.OperationID + " " + response.Status
 			if response.ContextType != "" {
@@ -784,7 +917,15 @@ public final class %s {
     private static <T> org.jetbrains.jetCheck.Generator<T> requiring(org.jetbrains.jetCheck.Generator<T> raw,java.util.function.Predicate<T> wanted,int attempts,String label){return org.jetbrains.jetCheck.Generator.from(env->{for(int i=0;i<attempts;i++){T value=env.generate(raw);if(wanted.test(value)){env.generate(org.jetbrains.jetCheck.Generator.integers());return value;}}throw new AssertionError("property generation exhausted: "+label+" after "+attempts+" attempts");});}
     private static <T> void check(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property,String replay){if(replay.isEmpty())org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property);else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property);}
     private static <T> void checkExample(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property){org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(1).silent().forAll(generator,property);}
-    private static boolean targeted(Validation.Outcome outcome,String code){if(outcome.incomplete()||outcome.state()==Validation.State.INDETERMINATE)throw new AssertionError("operation validation was indeterminate");return outcome.state()==Validation.State.INVALID&&outcome.diagnostics().stream().anyMatch(d->d.code().equals(code));}
+    // Invalid properties require dual evidence: the checked logical contract
+    // identifies the exact clause occurrence, then the native-first facade
+    // rejects the same request or response at either enforcement layer.
+    private static boolean pathPattern(String actual,String pattern){var found=actual.split("/",-1);var expected=pattern.split("/",-1);if(found.length!=expected.length)return false;for(int i=0;i<found.length;i++)if(!expected[i].equals("~2")&&!found[i].equals(expected[i]))return false;return true;}
+    private static boolean diagnosticPaths(java.util.List<String> actual,String... patterns){if(actual.size()!=patterns.length)return false;for(int i=0;i<patterns.length;i++)if(!pathPattern(actual.get(i),patterns[i]))return false;return true;}
+    private static String concreteEnclosing(String pattern,String actual){var found=actual.split("/",-1);var expected=pattern.split("/",-1);if(found.length<expected.length)return null;var result=new String[expected.length];for(int i=0;i<expected.length;i++){if(expected[i].equals("~2"))result[i]=found[i];else if(found[i].equals(expected[i]))result[i]=expected[i];else return null;}return String.join("/",result);}
+    private static String automaticCode(String path,int offset,String predicate){try{var digest=java.security.MessageDigest.getInstance("SHA-256").digest((path+":"+offset+":"+predicate).getBytes(java.nio.charset.StandardCharsets.UTF_8));return "refine."+java.util.HexFormat.of().formatHex(digest,0,8);}catch(java.security.NoSuchAlgorithmException impossible){throw new AssertionError(impossible);}}
+    private static boolean targeted(Validation.Outcome outcome,String code,String predicate,String enclosing,int offset,boolean automatic,String... paths){if(outcome.incomplete()||outcome.state()==Validation.State.INDETERMINATE)throw new AssertionError("operation validation was indeterminate");return outcome.state()==Validation.State.INVALID&&outcome.diagnostics().stream().anyMatch(d->{if(!d.predicate().equals(predicate)||!diagnosticPaths(d.paths(),paths))return false;if(!automatic)return d.code().equals(code);var concrete=concreteEnclosing(enclosing,d.paths().getFirst());return concrete!=null&&d.code().equals(automaticCode(concrete,offset,predicate));});}
+    private static boolean rejected(Validation.Outcome outcome){if(outcome.incomplete()||outcome.state()==Validation.State.INDETERMINATE)throw new AssertionError("operation validation was indeterminate");return outcome.state()==Validation.State.INVALID;}
     private static boolean matchesOutcome(Validation.Outcome outcome,Validation.State state,String... codes){if(outcome.state()!=state)return false;if(state!=Validation.State.INDETERMINATE&&outcome.incomplete())return false;for(var code:codes)if(outcome.diagnostics().stream().noneMatch(d->d.code().equals(code)))return false;return true;}
     private static Data contextField(Data data,String name){if(!(data instanceof Data.Struct record)||record.fields().size()!=2)throw new AssertionError("operation context example must contain exactly request and response");Data found=null;for(var field:record.fields()){if(!field.name().equals("request")&&!field.name().equals("response"))throw new AssertionError("operation context example has an unknown field");if(field.name().equals(name)){if(found!=null)throw new AssertionError("duplicate operation context field");found=field.value();}}if(found==null)throw new AssertionError("operation context example lacks "+name);return found;}
 %s

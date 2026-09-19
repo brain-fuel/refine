@@ -16,8 +16,9 @@ import (
 // first adapted by native.Project to equivalent Draft 2020-12 assertions. The public helper
 // validates bytes only; callers compose it with their semantic serde so that
 // both the immutable native sidecar and editable refinements are enforced.
-// Pattern-bearing schemas conditionally receive the bounded GraalJS ECMA-262
-// adapter. Helpers without native patterns have no Graal runtime linkage.
+// Pattern-bearing schemas conditionally receive the bounded shared QuickJS-NG
+// WebAssembly ECMA-262 adapter. Helpers without native patterns have no Chicory
+// runtime linkage and require no companion guest resources.
 func GenerateProjectNativeJSONValidator(project *native.Project, className string) (files []File, failure error) {
 	if project == nil {
 		return nil, &GenerationError{Message: "a checked native project is required"}
@@ -67,7 +68,7 @@ func generateProjectNativeJSONValidatorWithBaseResources(project *native.Project
 	}
 	resources := append([]native.Resource(nil), base...)
 	if len(resources) > 128 {
-		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources"}
+		return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources and canonical aliases"}
 	}
 	if len(additional) > 1 {
 		return nil, &GenerationError{Message: "generated native JSON validation supports at most one trusted generated resource"}
@@ -78,6 +79,22 @@ func generateProjectNativeJSONValidatorWithBaseResources(project *native.Project
 			return nil, &GenerationError{Message: "generated native JSON validation has a duplicate or empty resource URI"}
 		}
 		seenResources[resource.URI] = true
+	}
+	if project.Format() == native.JSONSchema {
+		aliases, aliasErr := project.JSONSchemaResourceAliases()
+		if aliasErr != nil {
+			return nil, &GenerationError{Message: "native JSON canonical alias inventory failed: " + aliasErr.Error()}
+		}
+		if len(aliases) > 128-len(resources) {
+			return nil, &GenerationError{Message: "generated native JSON validation supports at most 128 project resources and canonical aliases"}
+		}
+		for _, alias := range aliases {
+			if alias.URI == "" || seenResources[alias.URI] {
+				return nil, &GenerationError{Message: "generated native JSON validation has a duplicate or empty canonical alias URI"}
+			}
+			seenResources[alias.URI] = true
+			resources = append(resources, alias)
+		}
 	}
 	for _, resource := range additional {
 		if resource.URI == "" || seenResources[resource.URI] {
@@ -163,7 +180,7 @@ public final class %s {
     private static final String ROOT=%s;
 %s
     public void validate(String input){java.util.Objects.requireNonNull(input);if(input.length()>limits.maxBytes())throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON input byte limit exceeded.");for(int i=0;i<input.length();i++){char unit=input.charAt(i);if(Character.isHighSurrogate(unit)){if(i+1>=input.length()||!Character.isLowSurrogate(input.charAt(++i)))throw new NativeValidationException("JSON text contains an unpaired UTF-16 surrogate.");}else if(Character.isLowSurrogate(unit))throw new NativeValidationException("JSON text contains an unpaired UTF-16 surrogate.");}validate(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));}
-    public void validate(byte[] input){java.util.Objects.requireNonNull(input);if(input.length>limits.maxBytes())throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON input byte limit exceeded.");checkNumericExpansion(input,limits.maxNumericExpansion());try{var value=instanceMapper.readTree(input);if(value==null)throw new NativeValidationException("Expected one JSON value.");checkDecodedUnicode(value);%sschema.validate(value,com.networknt.schema.OutputFormat.FLAG);%s%sif(!result.isValid())throw new NativeValidationException("JSON payload does not satisfy the native schema.");}catch(NativeValidationException failure){throw failure;}catch(tools.jackson.core.exc.StreamConstraintsException failure){throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON parser resource limit exceeded.");}catch(tools.jackson.core.JacksonException failure){throw new NativeValidationException("Invalid JSON payload.");}catch(RuntimeException failure){throw new NativeValidationException(Code.ENFORCEMENT,"Native JSON validation could not complete.");}}
+    public void validate(byte[] input){java.util.Objects.requireNonNull(input);if(input.length>limits.maxBytes())throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON input byte limit exceeded.");checkNumericExpansion(input,limits.maxNumericExpansion());try{var value=instanceMapper.readTree(input);if(value==null)throw new NativeValidationException("Expected one JSON value.");checkDecodedUnicode(value);%sschema.validate(value,com.networknt.schema.OutputFormat.FLAG)%s%s;if(!result.isValid())throw new NativeValidationException("JSON payload does not satisfy the native schema.");}catch(NativeValidationException failure){throw failure;}catch(tools.jackson.core.exc.StreamConstraintsException failure){throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON parser resource limit exceeded.");}catch(tools.jackson.core.JacksonException failure){throw new NativeValidationException("Invalid JSON payload.");}catch(RuntimeException failure){throw new NativeValidationException(Code.ENFORCEMENT,"Native JSON validation could not complete.");}}
     private static void checkDecodedUnicode(tools.jackson.databind.JsonNode root){var pending=new java.util.ArrayDeque<tools.jackson.databind.JsonNode>();pending.add(root);while(!pending.isEmpty()){var value=pending.removeLast();if(value.isString()){requirePairedUTF16(value.asString());}else if(value.isObject()){var fields=value.properties().iterator();while(fields.hasNext()){var field=fields.next();requirePairedUTF16(field.getKey());pending.add(field.getValue());}}else if(value.isArray()){var items=value.values().iterator();while(items.hasNext())pending.add(items.next());}}}
     private static void requirePairedUTF16(String value){for(int i=0;i<value.length();i++){char unit=value.charAt(i);if(Character.isHighSurrogate(unit)){if(i+1>=value.length()||!Character.isLowSurrogate(value.charAt(++i)))throw new NativeValidationException("JSON value contains an unpaired UTF-16 surrogate.");}else if(Character.isLowSurrogate(unit))throw new NativeValidationException("JSON value contains an unpaired UTF-16 surrogate.");}}
     private static void checkNumericExpansion(byte[] input,int limit){long used=0;boolean string=false,escaped=false;for(int i=0;i<input.length;i++){int unit=input[i]&255;if(string){if(escaped){escaped=false;continue;}if(unit=='\\'){escaped=true;continue;}if(unit=='"')string=false;continue;}if(unit=='"'){string=true;continue;}if(unit!='-'&&(unit<'0'||unit>'9'))continue;int start=i,end=jsonNumberEnd(input,start);if(end<0)throw new NativeValidationException("Invalid JSON number.");int exponent=-1;for(int j=start;j<end;j++){int next=input[j]&255;if(next=='e'||next=='E'){exponent=j;break;}}long magnitude=0;if(exponent>=0){int j=exponent+1;if(j<end&&((input[j]&255)=='+'||(input[j]&255)=='-'))j++;for(;j<end;j++){int digit=(input[j]&255)-'0';if(magnitude>(limit-digit)/10L)throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON numeric expansion limit exceeded.");magnitude=magnitude*10L+digit;}}long token=(long)end-start;if(token>limit-used||magnitude>limit-used-token)throw new NativeValidationException(Code.RESOURCE_LIMIT,"Native JSON numeric expansion limit exceeded.");used+=token+magnitude;i=end-1;}}

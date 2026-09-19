@@ -163,8 +163,16 @@ func TestSchemaPositionTraversalAndNativeRetention(t *testing.T) {
       "x-extension":{"type":"integer","minimum":1000}
     }`
 	s := discover(t, raw)
-	if len(s.Constraints()) != 6 {
+	if len(s.Constraints()) != 7 {
 		t.Fatalf("wrong schema traversal: %+v", s.Constraints())
+	}
+	if find(t, s, "/const").Native != `{"type":"integer","minimum":900}` {
+		t.Fatal("const value was not retained as one opaque value")
+	}
+	for _, constraint := range s.Constraints() {
+		if strings.HasPrefix(constraint.Pointer, "/const/") {
+			t.Fatal("const payload was traversed as a schema")
+		}
 	}
 	c := find(t, s, "/$defs/a~1b~0c/minimum")
 	if c.SchemaPointer != "/$defs/a~1b~0c" {
@@ -359,7 +367,7 @@ func TestExactFractionalMultiples(t *testing.T) {
 }
 
 func FuzzNativeConstraintRoundTrip(f *testing.F) {
-	for _, raw := range []string{`{"type":"integer","minimum":0}`, `{"type":"number","maximum":1e20}`, `{"allOf":[{"type":"integer","minimum":-0.5}]}`, `{"properties":{"a/b~":{"type":"integer","minimum":3}}}`, `{"type":"number","multipleOf":0.1}`} {
+	for _, raw := range []string{`{"type":"integer","minimum":0}`, `{"type":"number","maximum":1e20}`, `{"allOf":[{"type":"integer","minimum":-0.5}]}`, `{"properties":{"a/b~":{"type":"integer","minimum":3}}}`, `{"type":"number","multipleOf":0.1}`, `{"const":{"b":[1,true],"a":null}}`, `{"enum":[]}`, `{"enum":[1,1.0,"e\u0301"]}`} {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {

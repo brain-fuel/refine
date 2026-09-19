@@ -131,7 +131,7 @@ func loadProject(rootPath,configPath,packageOverride string)(project.GenerateInp
                 input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,NativeProject:imported,RootType:settings.Root,LogicalNamespace:settings.Package,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:settings.Formats});continue
             }
             bundle,err:=loadSources(root,sourceID);if err!=nil{return input,err}
-            program:=bundle.Program();target:=settings.Root
+            program:=bundle.Program();if program.OpenAPI()!=nil{authored,formats,err:=authoredOpenAPIProject(program,name,settings);if err!=nil{return input,err};namespace:=settings.Package;if namespace==""{namespace=program.Syntax().Package};input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,NativeProject:authored,LogicalNamespace:namespace,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:formats});continue};target:=settings.Root
             if target==""{types:=program.Syntax().Types;if len(types)==1{target=types[0].Name}else{return input,fmt.Errorf("family %s requires a root type in refine.project.json",name)}}
             namespace:=settings.Package;if namespace==""{namespace=program.Syntax().Package}
             input.Contracts=append(input.Contracts,project.Contract{Family:name,Version:version,Program:program,RootType:target,LogicalNamespace:namespace,JavaPackage:javaPackage,NoCodegen:noCodegen,Formats:settings.Formats,Wire:settings.Wire})

@@ -95,6 +95,31 @@ func TestSelectionIsStableUnderInputAndPackagePermutation(t *testing.T) {
 	}
 }
 
+func TestSelectionScopesCheckedRegexGuestAndEmbeddedNotice(t *testing.T) {
+	pkgs := fixturePackages()
+	pkgs = append(pkgs, Package{ImportPath: "example/internal/ecmaregex", Directory: "internal/ecmaregex"})
+	for i := range pkgs {
+		if pkgs[i].Directory == "java" {
+			pkgs[i].Imports = append(pkgs[i].Imports, "example/internal/ecmaregex")
+		}
+	}
+	for _, file := range []string{"internal/ecmaregex/refine-ecma262.wasm", "internal/ecmaregex/guest/regex_abi.c", "internal/ecmaregex/guest/embed_source.go", "internal/ecmaregex/guest/build.sh", "internal/ecmaregex/guest/NOTICE.md", "internal/ecmaregex/guest/licenses/QUICKJS-MIT.txt"} {
+		t.Run(file, func(t *testing.T) {
+			plan := Select([]string{file}, pkgs, false)
+			if plan.Full || selectedNames(plan) != "FuzzExternal,FuzzJava" {
+				t.Fatalf("guest input did not follow its reviewed owner: %+v", plan)
+			}
+			missing := Select([]string{file}, fixturePackages(), false)
+			if !missing.Full {
+				t.Fatal("missing guest owner was silently skipped")
+			}
+		})
+	}
+	if plan := Select([]string{"internal/ecmaregex/unreviewed.wasm"}, pkgs, false); !plan.Full {
+		t.Fatal("unreviewed runtime asset did not fall back")
+	}
+}
+
 func TestDiscoveryIncludesTransitiveTestHelpersAndInitializers(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{

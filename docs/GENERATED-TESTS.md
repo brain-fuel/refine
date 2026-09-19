@@ -76,6 +76,18 @@ silently truncated to Java `int`. Lists are bounded to eight elements and
 generated strings currently use printable ASCII up to 24 characters. These are
 generation distributions, not restrictions on the schema or runtime.
 
+For a native JSON Schema or OpenAPI payload root whose checked Refine type is
+`String`, project generation recognizes a deliberately small exact subset of
+anchored ASCII character-class repetition patterns. It specializes the raw
+JetCheck alphabet and length distribution before rejection sampling, including
+the direct schema's `minLength` and `maxLength` bounds. Generated lengths remain
+bounded to 1,024 characters and the native validator's 1 MiB default string
+limit. Every candidate still passes through the real native adapter, Refine
+validator, model and wire boundaries. Unknown keywords, composition, references,
+non-ASCII or complex regular expressions, malformed bounds, and larger required
+lengths retain the ordinary bounded rejection sampler and its explained
+exhaustion behavior; the optimizer never treats them as proved constraints.
+
 Distinct expanding specializations are capped at 512 while deriving a strategy,
 so a family such as `Grow [a]` fails closed instead of exhausting the generator
 process. Top-level closed tagged unions also use their generated validating factories
@@ -95,6 +107,13 @@ root. Request, response and context checks use the generated native-first
 facade and real validated-request tokens. Every request/response binding gets
 valid properties; discovered clauses get targeted-invalid properties. Candidate
 exhaustion and indeterminate validation fail the suite rather than skip cases.
+Each invalid occurrence is identified by its diagnostic code, bounded affected
+path list, and authored source offset. When native lowering also represents the
+clause, the property records dual evidence: the checked contract must produce
+that exact code and path for the logical value, and the real native-first facade
+must reject the same request or response. This proves both logical targeting and
+boundary enforcement; it does not claim that a native validator reports Refine
+diagnostic codes. Native limits and indeterminate outcomes remain fatal.
 Valid, refinement-invalid, indeterminate, and native-invalid examples execute
 explicitly through the real facade at every matching catalog occurrence.
 Response examples search within `AttemptBudget` for a compatible valid request;
@@ -111,6 +130,19 @@ Operation replays use opaque selectors returned by
 response and context replays carry the generated request/response pair. Each
 selector, kind, and diagnostic must identify exactly one emitted property;
 unmatched or ambiguous entries reject generation atomically.
+Reusing one refined type at several paths does not make mandatory property
+generation ambiguous. When the same code occurs more than once in one role,
+use the corresponding `OpenAPI*OccurrenceReplayTarget` helper with the checked
+affected paths and clause source offset. A supplied legacy role selector then
+rejects as ambiguous; without such a replay, every occurrence is still emitted.
+The exported `OpenAPIPropertyElementPathSegment` marks one concrete list index
+or map key inside an occurrence path pattern; it is a reserved non-JSON-Pointer
+escape and cannot alias an authored object field. Runtime diagnostics must match
+the complete path pattern, code, and predicate. Indistinguishable emitted
+diagnostics reject generation instead of crediting the wrong clause.
+For an automatic `refine.*` code below a collection, the generator substitutes
+the concrete diagnostic key or index before recomputing the same checked code;
+the static element marker is never treated as the runtime code path.
 Response-origin invalid clauses use the response selector even when validated
 inside a context; additional context clauses use the context selector. Valid
 pairs use the context selector when bound to a context and the response selector

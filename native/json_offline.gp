@@ -1,0 +1,17 @@
+package native
+
+import (
+    "fmt"
+
+    jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+)
+
+// NewCompiler otherwise installs a FileLoader. Absence of an HTTP loader is
+// not an offline guarantee: every missing explicit URI must reject, including
+// file URIs. Project catalogs may replace this with their in-memory-only loader.
+func newOfflineJSONCompiler()*jsonoracle.Compiler{
+    compiler:=jsonoracle.NewCompiler();compiler.UseLoader(offlineJSONLoader{});return compiler
+}
+
+type offlineJSONLoader struct{}
+func (offlineJSONLoader)Load(identity string)(any,error){return nil,fmt.Errorf("schema resource %s is absent from explicit resources; external loading is disabled",identity)}

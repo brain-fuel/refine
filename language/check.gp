@@ -474,6 +474,7 @@ func checkModule(module *Module,payload *Type)*Program {
         c.readableType(target,payload.At,make(map[string]bool))
         c.refinements(payload,variables);c.solveObligations()
     }
+    c.checkOpenAPITypes()
     c.solveCapabilities()
     module.inferred=make(map[*Expr]*Type,len(c.expressionTerms))
     c.reified=make(map[*term]*Type)

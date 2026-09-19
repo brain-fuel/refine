@@ -21,7 +21,7 @@ type OpenAPIResponseOperation struct {Status string;TypeExpression string;Contex
 type OpenAPIOperation struct {OperationID string;Method string;Path string;RequestType string;RequestParts []OpenAPISchemaTarget;Responses []OpenAPIResponseOperation}
 type OpenAPIOperationCatalog struct {Version string;Resources []Resource;Operations []OpenAPIOperation}
 
-type openAPIOperationIndex struct {catalog OpenAPIOperationCatalog;operations map[string]*indexedOpenAPIOperation;requestSchemas map[string]*jsonoracle.Schema;responseSchemas map[string]*jsonoracle.Schema}
+type openAPIOperationIndex struct {catalog OpenAPIOperationCatalog;operations map[string]*indexedOpenAPIOperation;requestSchemas map[string]*jsonoracle.Schema;responseSchemas map[string]*jsonoracle.Schema;requestRegex *regexScope;responseRegex *regexScope}
 type indexedOpenAPIOperation struct {descriptor OpenAPIOperation;requestType *language.PayloadType;requestParts []indexedOpenAPIPart;responses []indexedOpenAPIResponse}
 type indexedOpenAPIPart struct {descriptor OpenAPISchemaTarget;typ *language.Type;top string}
 type indexedOpenAPIResponse struct {descriptor OpenAPIResponseOperation;responseType *language.PayloadType;contextType *language.PayloadType;parts []indexedOpenAPIPart}

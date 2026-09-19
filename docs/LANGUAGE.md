@@ -64,6 +64,52 @@ bytes, including existing line endings, and cannot move diagnostic spans.
 Imported policies are retained in original source files but never inherited as
 the entry schema's approvals. Formatting emits the entry policy last.
 
+## Standalone OpenAPI declaration
+
+The frontend accepts a complete operation declaration alongside its ordinary
+checked types:
+
+```haskell
+type Person = {age :: Int where it >= 0}
+type GetPersonRequest = {
+  parameters :: {id :: Int where it > 0},
+  headers :: {},
+  body :: Maybe ({})
+}
+type GetPersonResponse = {headers :: {}, body :: Person}
+
+openapi "3.2.1" {
+  title "People"
+  version "1.0.0"
+  operation getPerson "GET" "/people/{id}" {
+    request GetPersonRequest {
+      parameter path "id" at parameters.id required
+    }
+    response "200" GetPersonResponse "The requested person" {
+      body "application/json" at body
+    }
+  }
+}
+```
+
+`at` selects a field path in the semantic request/response envelope; the quoted
+parameter or header name is its wire name. A response can also declare
+`header "ETag" at headers.etag` and `context SomeContext`. Status selectors are
+quoted text, including exact statuses, classes such as `"2XX"`, and `"default"`.
+Operation identifiers may be identifiers or quoted strings. Newlines or
+semicolons separate items inside braces. A module has at most one declaration,
+owned by the entry source; imported files provide reusable types and functions,
+not implicitly merged APIs. Existing functions named `openapi` or `operation`
+are not reserved by this contextual grammar.
+
+Omitted presence is inferred from the checked field type. `required` and
+`optional` make it explicit; native assembly checks consistency and protocol
+requirements. Request/response/context names must identify closed declared
+payload types. Parsing/type checking alone does not establish a valid OpenAPI
+wire mapping: native assembly additionally checks supported protocol versions,
+field coverage, wire representations and binding semantics. A release-policy
+footer remains the final declaration and does not move operation source spans.
+
 ## Expressions and patterns
 
 - Application is curried: `every isAdult people`. Named functions can be passed

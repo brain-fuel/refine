@@ -13,19 +13,20 @@ import (
 	"goforge.dev/refine/schemajson"
 )
 
-// effectiveJSONSchemaResources applies only explicitly authored edits to the
-// resource-scoped canonical provenance units. Opaque and untouched constraints
-// remain in the immutable baseline. A changed unit must still be one exactly
-// lowerable numeric constraint at the same scoped Schema Object; otherwise the
+// effectiveJSONSchemaResources applies only explicitly authored edits to
+// resource-scoped canonical JSON Schema/OpenAPI provenance units. Opaque and
+// untouched constraints remain in the immutable baseline. A changed unit must
+// remain one exactly lowerable numeric, exact const/enum, item-count, or
+// property-count constraint at the same scoped Schema Object; otherwise the
 // current runtime cannot enforce it and fails closed.
 func (p *Project) effectiveJSONSchemaResources(resources []Resource) ([]Resource, error) {
-	if p.Format() != JSONSchema || len(p.nativeUnitSources) == 0 {
+	if p.Format() != JSONSchema && p.Format() != OpenAPI || len(p.nativeUnitSources) == 0 {
 		return resources, nil
 	}
 	out := make([]Resource, len(resources))
 	for index, resource := range resources {
 		source, tracked := p.nativeUnitSources[resource.URI]
-		origin := p.jsonOrigins[resource.URI]
+		origin := p.constraintOrigin(resource.URI)
 		if !tracked || origin == nil {
 			out[index] = resource
 			continue
@@ -43,14 +44,14 @@ func (p *Project) effectiveJSONSchemaResources(resources []Resource) ([]Resource
 	return out, nil
 }
 
-func (p *Project) effectiveJSONSchemaResource(resource Resource, source string, origin *provenance.JSONSchema) (Resource, bool, error) {
+func (p *Project) effectiveJSONSchemaResource(resource Resource, source string, origin nativeConstraintOrigin) (Resource, bool, error) {
 	findings, err := origin.AuditSource(source)
 	if err != nil {
-		return Resource{}, false, wrap(JSONSchema, "native.provenance", resource.URI, err)
+		return Resource{}, false, wrap(p.Format(), "native.provenance", resource.URI, err)
 	}
 	program, err := language.Compile(source)
 	if err != nil {
-		return Resource{}, false, wrap(JSONSchema, "native.provenance", resource.URI, err)
+		return Resource{}, false, wrap(p.Format(), "native.provenance", resource.URI, err)
 	}
 	decls := map[string]language.TypeDecl{}
 	for _, decl := range program.Syntax().Types {
@@ -69,31 +70,39 @@ func (p *Project) effectiveJSONSchemaResource(resource Resource, source string, 
 		status := provenance.StatusName(finding.Status)
 		if status == "unchanged" {
 			if rules != 1 || base != finding.Constraint.Scope {
-				return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, "an imported native constraint unit contains additional or structurally changed rules that cannot be scoped exactly", nil)
+				return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, "an imported native constraint unit contains additional or structurally changed rules that cannot be scoped exactly", nil)
 			}
 			continue
 		}
 		if status == "changed" {
 			if !exists || base != finding.Constraint.Scope {
-				return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, "a changed native constraint unit must retain its original numeric scope", nil)
+				return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, "a changed native constraint unit must retain its original scope", nil)
 			}
 			if rules > 1 {
-				return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, "one imported native constraint unit may contain at most one edited rule; add independent refinements to the payload type", nil)
+				return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, "one imported native constraint unit may contain at most one edited rule; add independent refinements to the payload type", nil)
 			}
 		}
 		schema, atErr := effectiveSchemaObject(root, finding.Constraint.SchemaPointer)
 		if atErr != nil {
-			return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, "native constraint scope is no longer addressable", atErr)
+			return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, "native constraint scope is no longer addressable", atErr)
 		}
 		delete(schema, finding.Constraint.Keyword)
+		if finding.Constraint.PairedKeyword != "" {
+			delete(schema, finding.Constraint.PairedKeyword)
+		}
 		changed = true
 		if status == "changed" && rules == 1 {
 			keyword, bound, deriveErr := effectiveChangedAssertion(program, finding.Constraint)
 			if deriveErr != nil {
-				return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, "changed native constraint is not exactly representable in JSON Schema: "+deriveErr.Error(), deriveErr)
+				return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, "changed native constraint is not exactly representable in JSON Schema: "+deriveErr.Error(), deriveErr)
 			}
-			if err := effectiveConjoin(schema, keyword, bound); err != nil {
-				return Resource{}, false, effectiveConstraintError(resource.URI, finding.Constraint, err.Error(), err)
+			if finding.Constraint.PairedKeyword != "" {
+				deriveErr = effectiveOpenAPI30Pair(schema, finding.Constraint, keyword, bound)
+			} else {
+				deriveErr = effectiveConjoin(schema, keyword, bound)
+			}
+			if deriveErr != nil {
+				return Resource{}, false, effectiveConstraintError(p.Format(), resource.URI, finding.Constraint, deriveErr.Error(), deriveErr)
 			}
 		}
 	}
@@ -102,17 +111,17 @@ func (p *Project) effectiveJSONSchemaResource(resource Resource, source string, 
 	}
 	encoded, err := json.Marshal(root)
 	if err != nil {
-		return Resource{}, false, wrap(JSONSchema, "native.structure", resource.URI, err)
+		return Resource{}, false, wrap(p.Format(), "native.structure", resource.URI, err)
 	}
 	doc, err := schemajson.Parse(encoded, schemajson.Limits{})
 	if err != nil {
-		return Resource{}, false, wrap(JSONSchema, "native.structure", resource.URI, err)
+		return Resource{}, false, wrap(p.Format(), "native.structure", resource.URI, err)
 	}
 	return Resource{URI: resource.URI, Source: doc.Raw()}, true, nil
 }
 
-func effectiveConstraintError(resource string, constraint provenance.Constraint, message string, cause error) error {
-	return &Error{Code: "native.enforcement", Format: JSONSchema, Pointer: resource + "#" + constraint.Pointer, Message: message, Cause: cause}
+func effectiveConstraintError(format Format, resource string, constraint provenance.Constraint, message string, cause error) error {
+	return &Error{Code: "native.enforcement", Format: format, Pointer: resource + "#" + constraint.Pointer, Message: message, Cause: cause}
 }
 func effectiveDeclarationShape(decl language.TypeDecl, exists bool) (string, int) {
 	if !exists || decl.Body == nil {
@@ -142,11 +151,11 @@ func effectiveChangedAssertion(program *language.Program, constraint provenance.
 	if err != nil {
 		return "", nil, err
 	}
-	lowered, err := LowerPayload(JSONSchema, payload, LowerOptions{Mode: Ordinary})
+	lowered, err := LowerPayload(JSONSchema, payload, LowerOptions{Mode: Ordinary, nativeJSONNumbers: true})
 	if err != nil {
 		return "", nil, err
 	}
-	return effectiveNumericAssertion(lowered.Bytes())
+	return effectiveConstraintAssertion(lowered.Bytes(), constraint.Keyword)
 }
 func effectiveConjoin(schema map[string]any, keyword string, bound any) error {
 	if _, collision := schema[keyword]; !collision {
@@ -160,12 +169,35 @@ func effectiveConjoin(schema map[string]any, keyword string, bound any) error {
 	schema["allOf"] = append(existing, map[string]any{keyword: bound})
 	return nil
 }
+func effectiveOpenAPI30Pair(schema map[string]any, constraint provenance.Constraint, keyword string, bound any) error {
+	paired := ""
+	switch constraint.Keyword {
+	case "minimum":
+		paired = "exclusiveMinimum"
+	case "maximum":
+		paired = "exclusiveMaximum"
+	}
+	if paired == "" || constraint.PairedKeyword != paired {
+		return fmt.Errorf("imported OpenAPI 3.0 paired-bound authority is malformed")
+	}
+	strict := keyword == paired
+	if keyword != constraint.Keyword && !strict {
+		return fmt.Errorf("edited %s unit changes lower/upper-bound direction to %s", constraint.Keyword, keyword)
+	}
+	schema[constraint.Keyword] = bound
+	if strict {
+		schema[paired] = true
+	} else if constraint.PairedNative != "" {
+		schema[paired] = false
+	}
+	return nil
+}
 
 func effectiveSchemaObject(root any, pointer string) (map[string]any, error) {
 	return openAPI30At(root, pointer)
 }
 
-func effectiveNumericAssertion(input []byte) (string, any, error) {
+func effectiveConstraintAssertion(input []byte, origin string) (string, any, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(input)))
 	decoder.UseNumber()
 	var document any
@@ -189,17 +221,37 @@ func effectiveNumericAssertion(input []byte) (string, any, error) {
 	}
 	found := ""
 	var value any
-	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+	for _, keyword := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "const", "enum", "minItems", "maxItems", "minProperties", "maxProperties"} {
 		if item, ok := root[keyword]; ok {
 			if found != "" {
-				return "", nil, fmt.Errorf("edited native unit lowers to more than one numeric assertion")
+				return "", nil, fmt.Errorf("edited native unit lowers to more than one supported assertion")
 			}
 			found = keyword
 			value = item
 		}
 	}
 	if found == "" {
-		return "", nil, fmt.Errorf("edited native unit has no exact numeric assertion")
+		return "", nil, fmt.Errorf("edited native unit has no exact supported assertion")
+	}
+	originFamily, foundFamily := effectiveConstraintFamily(origin), effectiveConstraintFamily(found)
+	if originFamily == "" || foundFamily != originFamily {
+		return "", nil, fmt.Errorf("edited %s unit lowers to a different constraint family %s", origin, found)
+	}
+	if originFamily == "exact" && found != origin {
+		return "", nil, fmt.Errorf("edited %s unit lowers to a different keyword %s", origin, found)
 	}
 	return found, value, nil
+}
+func effectiveConstraintFamily(keyword string) string {
+	switch keyword {
+	case "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf":
+		return "numeric"
+	case "const", "enum":
+		return "exact"
+	case "minItems", "maxItems":
+		return "item-count"
+	case "minProperties", "maxProperties":
+		return "property-count"
+	}
+	return ""
 }

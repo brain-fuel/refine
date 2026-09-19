@@ -21,6 +21,10 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return e.Code + " at " + e.Pointer + ": " + e.Message }
+func valueLimit(err error) bool {
+	problem, ok := err.(*Error)
+	return ok && problem.Code == "native.value_limit"
+}
 
 // Constraint describes one locally translatable native keyword. Scope is the
 // Haskell type of that keyword's subject, not a claim about the whole document.
@@ -28,9 +32,16 @@ func (e *Error) Error() string { return e.Code + " at " + e.Pointer + ": " + e.M
 // must never be hoisted into an unconditional root predicate.
 type Constraint struct {
 	Name          string
+	Resource      string
 	Pointer       string
 	SchemaPointer string
 	Keyword       string
+	// PairedKeyword and PairedNative describe a second native member whose
+	// semantics are inseparable from Keyword. OpenAPI 3.0 numeric bounds use
+	// this for the Boolean exclusiveMinimum/exclusiveMaximum member. Empty
+	// PairedNative means the member was omitted and its native default applies.
+	PairedKeyword string
+	PairedNative  string
 	Scope         string
 	Predicate     string
 	Native        string
@@ -41,8 +52,13 @@ type Constraint struct {
 // JSONSchema retains the entire original document, including native keywords
 // without an exact DSL translation. Public descriptions are detached copies.
 type JSONSchema struct {
-	document    schemajson.Document
-	constraints []Constraint
+	document         schemajson.Document
+	constraints      []Constraint
+	valueNodes       int
+	numericExpansion int
+	sourceBytes      int
+	maxValueNodes    int
+	maxValueDepth    int
 }
 
 func (s *JSONSchema) Original() string { return s.document.Raw() }
@@ -58,17 +74,30 @@ func (s *JSONSchema) Constraints() []Constraint {
 	return result
 }
 
-// DiscoverJSONSchema identifies exact editable numeric-bound correspondences in
+// DiscoverJSONSchema identifies exact numeric-bound, collection-count and const/enum correspondences in
 // Draft 2020-12 schema positions. It deliberately does not interpret arbitrary
 // objects in annotations/examples as subschemas, infer types from constraints,
 // resolve references, or substitute UTF-16 length/RE2 for native semantics.
 // Full native structure validation and projection remain separate phases.
+// Values that cannot fit the bounded intrinsic-JSON projection remain opaque
+// native constraints instead of making an otherwise valid schema unimportable.
 func DiscoverJSONSchema(input []byte, limits schemajson.Limits) (*JSONSchema, error) {
 	doc, err := schemajson.Parse(input, limits)
 	if err != nil {
 		return nil, err
 	}
-	result := &JSONSchema{document: doc}
+	inputNodes := limits.Nodes
+	if inputNodes == 0 {
+		inputNodes = schemajson.DefaultNodes
+	}
+	maxNodes := 1000000
+	if inputNodes < 250000 {
+		maxNodes = inputNodes * 4
+	}
+	if maxNodes < 16 {
+		maxNodes = 16
+	}
+	result := &JSONSchema{document: doc, maxValueNodes: maxNodes, maxValueDepth: 508}
 	if err := result.walk(doc.Root(), ""); err != nil {
 		return nil, err
 	}
@@ -134,6 +163,137 @@ func canonicalBound(scope, operator, raw string) (string, error) {
 	return language.FormatExpression(expr), nil
 }
 
+const maxJSONValueSourceBytes = 16 * 1024 * 1024
+const maxJSONNumericExpansion = 65536
+
+func apply(name string, arg *language.Expr) *language.Expr {
+	return &language.Expr{Form: language.Apply{Function: &language.Expr{Form: language.Variable{Name: name}}, Argument: arg}}
+}
+
+// canonicalJSONValue projects a native JSON value into the intrinsic JSON
+// algebra without passing through encoding/json or floating point. Runtime
+// equality then supplies exact rational numbers, ordered arrays and
+// order-independent objects. Scalar Unicode is required because the
+// refinement String domain cannot carry an isolated UTF-16 surrogate.
+func (s *JSONSchema) chargeJSONValue(nodes, depth int) error {
+	if depth > s.maxValueDepth {
+		return &Error{Code: "native.value_limit", Message: "const/enum value exceeds the refinement expression depth limit"}
+	}
+	if nodes > s.maxValueNodes-s.valueNodes {
+		return &Error{Code: "native.value_limit", Message: "const/enum values exceed the refinement expression node limit"}
+	}
+	s.valueNodes += nodes
+	return nil
+}
+func (s *JSONSchema) canonicalJSONValue(node schemajson.Node, depth int) (*language.Expr, error) {
+	if err := s.chargeJSONValue(3, depth+2); err != nil {
+		return nil, err
+	}
+	raw := node.Raw()
+	switch schemajson.KindName(node.Kind()) {
+	case "null":
+		return &language.Expr{Form: language.Variable{Name: "JSONNull"}}, nil
+	case "boolean":
+		value := raw == "true"
+		return apply("JSONBoolean", &language.Expr{Form: language.BoolLiteral{Value: value}}), nil
+	case "number":
+		cost, err := jsonNumberExpansion(raw, maxJSONNumericExpansion)
+		if err != nil {
+			return nil, err
+		}
+		if cost > maxJSONNumericExpansion-s.numericExpansion {
+			return nil, &Error{Code: "native.value_limit", Message: "const/enum exact numbers exceed the aggregate expansion limit"}
+		}
+		s.numericExpansion += cost
+		numberExpression, err := language.ParseExpression(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.ContainsAny(raw, ".eE") {
+			numberExpression = &language.Expr{Form: language.Binary{Operator: "/", Left: numberExpression, Right: &language.Expr{Form: language.NumberLiteral{Text: "1"}}}}
+		}
+		return apply("JSONNumber", numberExpression), nil
+	case "string":
+		text, _ := node.Text()
+		if _, err := text.UTF8(); err != nil {
+			return nil, &Error{Code: "native.value_unicode", Message: "const/enum strings must contain Unicode scalar values"}
+		}
+		return apply("JSONString", &language.Expr{Form: language.TextLiteral{Quoted: text.Show()}}), nil
+	case "array":
+		if node.ElementCount() > s.maxValueNodes-s.valueNodes {
+			return nil, &Error{Code: "native.value_limit", Message: "const/enum array exceeds the remaining expression node limit"}
+		}
+		items := node.Elements()
+		expressions := make([]*language.Expr, len(items))
+		for i, item := range items {
+			expression, err := s.canonicalJSONValue(item, depth+2)
+			if err != nil {
+				return nil, err
+			}
+			expressions[i] = expression
+		}
+		return apply("JSONArray", &language.Expr{Form: language.ListLiteral{Elements: expressions}}), nil
+	case "object":
+		if node.MemberCount() > s.maxValueNodes-s.valueNodes {
+			return nil, &Error{Code: "native.value_limit", Message: "const/enum object exceeds the remaining expression node limit"}
+		}
+		members := node.Members()
+		entries := make([]language.MapValue, len(members))
+		for i, member := range members {
+			if _, err := member.Key.UTF8(); err != nil {
+				return nil, &Error{Code: "native.value_unicode", Message: "const/enum object keys must contain Unicode scalar values"}
+			}
+			expression, err := s.canonicalJSONValue(member.Value, depth+2)
+			if err != nil {
+				return nil, err
+			}
+			entries[i] = language.MapValue{Key: member.Key.Show(), Value: expression}
+		}
+		return apply("JSONObject", &language.Expr{Form: language.MapLiteral{Entries: entries}}), nil
+	}
+	panic("unreachable JSON kind")
+}
+
+func jsonNumberExpansion(raw string, limit int) (int, error) {
+	if len(raw) > limit {
+		return 0, &Error{Code: "native.value_limit", Message: "const/enum exact number token exceeds the expansion limit"}
+	}
+	exponent := ""
+	if index := strings.IndexAny(raw, "eE"); index >= 0 {
+		exponent = raw[index+1:]
+	}
+	if strings.HasPrefix(exponent, "+") || strings.HasPrefix(exponent, "-") {
+		exponent = exponent[1:]
+	}
+	magnitude := 0
+	for _, char := range exponent {
+		digit := int(char - '0')
+		if digit < 0 || digit > 9 {
+			return 0, &Error{Code: "native.value", Message: "const/enum contains an invalid exact JSON number"}
+		}
+		if magnitude > (limit-digit)/10 {
+			return 0, &Error{Code: "native.value_limit", Message: "const/enum exact number exponent exceeds the expansion limit"}
+		}
+		magnitude = magnitude*10 + digit
+	}
+	if magnitude > limit-len(raw) {
+		return 0, &Error{Code: "native.value_limit", Message: "const/enum exact number exceeds the expansion limit"}
+	}
+	return len(raw) + magnitude, nil
+}
+
+func (s *JSONSchema) addConstraint(path, where, key, scope, predicate, native string, builtins []string) error {
+	identity := fmt.Sprintf("%x", sha256.Sum256([]byte("jsonschema2020-12\x00"+where)))
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("jsonschema2020-12\x00"+where+"\x00"+scope+"\x00"+native)))
+	line := "type Native_" + identity + " = " + scope + " where " + predicate + "\n"
+	if len(line) > maxJSONValueSourceBytes-s.sourceBytes {
+		return &Error{Code: "native.value_limit", Pointer: where, Message: "canonical native constraint source exceeds the 16 MiB module limit"}
+	}
+	s.sourceBytes += len(line)
+	s.constraints = append(s.constraints, Constraint{Name: "Native_" + identity, Pointer: where, SchemaPointer: path, Keyword: key, Scope: scope, Predicate: predicate, Native: native, Fingerprint: fingerprint, Builtins: builtins})
+	return nil
+}
+
 func (s *JSONSchema) walk(node schemajson.Node, path string) error {
 	switch schemajson.KindName(node.Kind()) {
 	case "boolean":
@@ -155,6 +315,68 @@ func (s *JSONSchema) walk(node schemajson.Node, path string) error {
 			continue
 		} // retained native unknown key
 		where := pointer(path, key)
+		if handled, err := s.cardinalityConstraint(node, path, key, member.Value); handled {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if key == "const" || key == "enum" {
+			priorNodes, priorExpansion := s.valueNodes, s.numericExpansion
+			values := []schemajson.Node{member.Value}
+			if key == "enum" {
+				if schemajson.KindName(member.Value.Kind()) != "array" {
+					return &Error{Code: "native.enum", Pointer: where, Message: "enum must contain an array of JSON values"}
+				}
+				values = member.Value.Elements()
+			}
+			expressions := make([]*language.Expr, len(values))
+			projectable := true
+			// Draft 2020-12 recommends, but does not require, unique enum
+			// elements. Preserve duplicates exactly instead of strengthening
+			// the native schema during provenance projection.
+			for i, item := range values {
+				expression, err := s.canonicalJSONValue(item, 2)
+				if valueLimit(err) {
+					projectable = false
+					break
+				}
+				if problem, ok := err.(*Error); ok && problem.Pointer == "" {
+					problem.Pointer = where
+				}
+				if err != nil {
+					return err
+				}
+				expressions[i] = expression
+			}
+			if !projectable {
+				s.valueNodes = priorNodes
+				s.numericExpansion = priorExpansion
+				continue
+			}
+			var predicate *language.Expr
+			builtins := []string{}
+			if key == "const" {
+				predicate = &language.Expr{Form: language.Binary{Operator: "==", Left: &language.Expr{Form: language.Variable{Name: "it"}}, Right: expressions[0]}}
+			} else {
+				predicate = &language.Expr{Form: language.Apply{Function: &language.Expr{Form: language.Apply{Function: &language.Expr{Form: language.Variable{Name: "oneOf"}}, Argument: &language.Expr{Form: language.Variable{Name: "it"}}}}, Argument: &language.Expr{Form: language.ListLiteral{Elements: expressions}}}}
+				builtins = []string{"oneOf"}
+			}
+			formatted := language.FormatExpression(predicate)
+			if len(formatted) > maxJSONValueSourceBytes {
+				s.valueNodes = priorNodes
+				s.numericExpansion = priorExpansion
+				continue
+			}
+			if err := s.addConstraint(path, where, key, "JSON", formatted, member.Value.Raw(), builtins); err != nil {
+				if valueLimit(err) {
+					s.valueNodes = priorNodes
+					s.numericExpansion = priorExpansion
+					continue
+				}
+				return err
+			}
+		}
 		operator := ""
 		switch key {
 		case "minimum":
@@ -186,13 +408,16 @@ func (s *JSONSchema) walk(node schemajson.Node, path string) error {
 				if err != nil {
 					return err
 				}
-				identity := fmt.Sprintf("%x", sha256.Sum256([]byte("jsonschema2020-12\x00"+where)))
-				fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("jsonschema2020-12\x00"+where+"\x00"+scope+"\x00"+member.Value.Raw())))
 				builtins := []string{}
 				if key == "multipleOf" {
 					builtins = append(builtins, "isInteger")
 				}
-				s.constraints = append(s.constraints, Constraint{Name: "Native_" + identity, Pointer: where, SchemaPointer: path, Keyword: key, Scope: scope, Predicate: predicate, Native: member.Value.Raw(), Fingerprint: fingerprint, Builtins: builtins})
+				if err := s.addConstraint(path, where, key, scope, predicate, member.Value.Raw(), builtins); err != nil {
+					if valueLimit(err) {
+						continue
+					}
+					return err
+				}
 			}
 		}
 		switch key {

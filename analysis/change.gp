@@ -40,6 +40,7 @@ func CompareContractSyntax(baseline *language.Program,baselineRoot string,candid
     if old.Limits.Total!=next.Limits.Total||old.Limits.Clause!=next.Limits.Clause{result.Differences=append(result.Differences,SyntaxDifference{Kind:"limits"})}
     if old.Package!=next.Package{result.Differences=append(result.Differences,SyntaxDifference{Kind:"package"})}
     if !sameSyntaxImports(old.Imports,next.Imports){result.Differences=append(result.Differences,SyntaxDifference{Kind:"imports"})}
+    if language.FormatOpenAPI(old.OpenAPI)!=language.FormatOpenAPI(next.OpenAPI){result.Differences=append(result.Differences,SyntaxDifference{Kind:"openapi"})}
     oldTypes,nextTypes:=map[string]string{},map[string]string{};for _,decl:=range old.Types{oldTypes[decl.Name]=language.Format(&language.Module{Types:[]language.TypeDecl{decl}})};for _,decl:=range next.Types{nextTypes[decl.Name]=language.Format(&language.Module{Types:[]language.TypeDecl{decl}})}
     oldFunctions,nextFunctions:=map[string]string{},map[string]string{};for _,fn:=range old.Functions{oldFunctions[fn.Name]=language.Format(&language.Module{Functions:[]language.Function{fn}})};for _,fn:=range next.Functions{nextFunctions[fn.Name]=language.Format(&language.Module{Functions:[]language.Function{fn}})}
     result.Differences=append(result.Differences,namedSyntaxDifferences("type",oldTypes,nextTypes)...);result.Differences=append(result.Differences,namedSyntaxDifferences("function",oldFunctions,nextFunctions)...)

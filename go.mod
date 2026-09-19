@@ -3,11 +3,11 @@ module goforge.dev/refine
 go 1.26.0
 
 require (
-	github.com/dlclark/regexp2 v1.12.0
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/hamba/avro/v2 v2.31.0
 	github.com/oasdiff/yaml3 v0.0.14
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/tetratelabs/wazero v1.12.0
 )
 
 require (

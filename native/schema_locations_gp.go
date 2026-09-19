@@ -6,6 +6,7 @@ package native
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"goforge.dev/refine/schemajson"
@@ -32,10 +33,14 @@ func (p *Project) JSONSchemaKeywordLocations(keywords ...string) ([]string, erro
 		}
 		return nil
 	})
+	sort.Strings(locations)
 	return locations, err
 }
 
 func (p *Project) walkJSONSchemaLocations(resources []Resource, visit func(string, string, schemajson.Node) error) error {
+	if p.Format() == JSONSchema {
+		return walkCatalogJSONSchemaLocations(resources, visit)
+	}
 	docs := map[string]schemajson.Document{}
 	for _, resource := range resources {
 		doc, err := schemajson.Parse([]byte(resource.Source), schemajson.Limits{})

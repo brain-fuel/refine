@@ -1,0 +1,38 @@
+{
+  "format": "refine.ecma262-regex-guest/v1",
+  "quickjs": {
+    "version": "0.15.1",
+    "commit": "fd0a0210b7be00957751871e7e01b8291268fc29",
+    "url": "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.15.1.tar.gz",
+    "sha256": "c4e813951b7c46845096a948e978c620b11ab4cf5fd622ca09c727ec31f42623"
+  },
+  "regexpp": {
+    "version": "4.12.2",
+    "url": "https://registry.npmjs.org/@eslint-community/regexpp/-/regexpp-4.12.2.tgz",
+    "sha256": "b5cb22e604ad47f511e96b7aa57910995994f3e48744fbc507018da9efae0f12",
+    "integrity": "sha512-EriSTlt5OC9/7SXkRSCAhfSxxoSUgBm33OH+IkwbdpgoqsSsUg7y3uh+IICI/Qg4BBWr3U2i39RpmycbxMq4ew=="
+  },
+  "wasiSdk": {
+    "version": "33.0",
+    "commit": "c10c050",
+    "wasiLibcCommit": "161b3195fc2558d2b1ba3eb9ffae3b2b47407623",
+    "llvmCommit": "4434dabb69916856b824f68a64b029c67175e532",
+    "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz",
+    "sha256": "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78"
+  },
+  "artifact": {
+    "path": "../refine-ecma262.wasm",
+    "sha256": "ee1ff0212d3a3bd28a72f00033f51dad747c8b36e9302edbbbd35cf6a58bfe8f",
+    "bytes": 1202261,
+    "abi": 2,
+    "memoryInitialPages": 5,
+    "memoryMaximumPages": 512,
+    "onlyImport": "refine.should_interrupt(i32)->i32",
+    "resetStatuses": {
+      "1": "clean and reusable",
+      "3": "resource failure",
+      "4": "internal failure, including unexpected pending guest exceptions",
+      "5": "cleaned but exact watermark not restored; discard without changing the request outcome"
+    }
+  }
+}

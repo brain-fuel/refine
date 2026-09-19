@@ -1,0 +1,46 @@
+package native
+
+import (
+    "encoding/json"
+    "strings"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+    "goforge.dev/refine/schemajson"
+)
+
+// discoverAvroConstraintOrigins is best-effort after the complete Avro
+// resource closure has already passed native validation. Unsupported exact
+// provenance shapes stay opaque and never make a valid Avro project fail.
+func discoverAvroConstraintOrigins(resources []Resource)(map[string]nativeConstraintOrigin,map[string]string){
+    origins:=map[string]nativeConstraintOrigin{};units:=map[string]string{}
+    for _,resource:=range resources{projection,err:=provenance.DiscoverAvro([]byte(resource.Source),schemajson.Limits{});if err!=nil{continue};projection=projection.ForResource(resource.URI);if len(projection.Constraints())==0{continue};origins[resource.URI]=projection;units[resource.URI]=projection.ConstraintSource()}
+    return origins,units
+}
+
+func appendAvroConstraintDeclarations(source string,resources []Resource,units map[string]string)(string,error){
+    var addition strings.Builder
+    for _,resource:=range resources{unit:=units[resource.URI];if unit==""{continue};if addition.Len()>16<<20-len(unit){return "",&Error{Code:"native.limit",Format:Avro,Message:"Avro provenance declarations exceed the 16 MiB language source limit"}};addition.WriteString(unit)}
+    return appendNativeSourceDeclarations(source,addition.String())
+}
+
+// EffectiveResources returns the immutable, validated resource view consumed
+// by native runtimes, export and generated adapters. Resources() deliberately
+// remains the exact ingested baseline for recovery and bundle identity.
+func (p *Project)EffectiveResources()([]Resource,error){
+    if p==nil||p.document==nil{return nil,&Error{Code:"native.project",Message:"a project is required"}}
+    switch p.Format(){case JSONSchema:return p.CanonicalJSONResources();case OpenAPI:if strings.HasPrefix(p.Version(),"3.0."){return p.canonicalJSONResources()};return p.CanonicalJSONResources();case Avro:if len(p.effectiveResources)>0{return append([]Resource(nil),p.effectiveResources...),nil};resources,err:=p.effectiveAvroResources(p.resources);if err!=nil{return nil,err};return append([]Resource(nil),resources...),nil};return p.Resources(),nil
+}
+
+func (p *Project)effectiveAvroResources(resources []Resource)([]Resource,error){
+    out:=append([]Resource(nil),resources...);if p.Format()!=Avro||len(p.nativeUnitSources)==0{return out,nil}
+    for index,resource:=range resources{source,tracked:=p.nativeUnitSources[resource.URI];origin:=p.constraintOrigin(resource.URI);if !tracked||origin==nil{continue};effective,changed,err:=p.effectiveAvroResource(resource,source,origin);if err!=nil{return nil,err};if changed{out[index]=effective}}
+    return out,nil
+}
+
+func (p *Project)effectiveAvroResource(resource Resource,source string,origin nativeConstraintOrigin)(Resource,bool,error){
+    findings,err:=origin.AuditSource(source);if err!=nil{return Resource{},false,wrap(Avro,"native.provenance",resource.URI,err)};program,err:=language.Compile(source);if err!=nil{return Resource{},false,wrap(Avro,"native.provenance",resource.URI,err)};decls:=map[string]language.TypeDecl{};for _,decl:=range program.Syntax().Types{decls[decl.Name]=decl}
+    decoder:=json.NewDecoder(strings.NewReader(resource.Source));decoder.UseNumber();var root any;if err:=decoder.Decode(&root);err!=nil{return Resource{},false,wrap(Avro,"native.structure",resource.URI,err)};changed:=false
+    for _,finding:=range findings{status:=provenance.StatusName(finding.Status);decl,exists:=decls[finding.Constraint.Name];base,rules:=effectiveDeclarationShape(decl,exists);if status=="unchanged"{if rules!=1||base!=finding.Constraint.Scope{return Resource{},false,effectiveConstraintError(Avro,resource.URI,finding.Constraint,"an imported Avro constraint unit contains additional or structurally changed rules that cannot be scoped exactly",nil)};continue};if status=="changed"{if !exists||base!=finding.Constraint.Scope||rules!=1{return Resource{},false,effectiveConstraintError(Avro,resource.URI,finding.Constraint,"a changed Avro constraint unit must retain its scope and exactly one canonical rule",nil)}};schema,atErr:=effectiveSchemaObject(root,finding.Constraint.SchemaPointer);if atErr!=nil{return Resource{},false,effectiveConstraintError(Avro,resource.URI,finding.Constraint,"Avro constraint scope is no longer addressable",atErr)};delete(schema,finding.Constraint.Keyword);changed=true;if status=="changed"{raw,lowerErr:=provenance.LowerAvroConstraint(program,finding.Constraint);if lowerErr!=nil{return Resource{},false,effectiveConstraintError(Avro,resource.URI,finding.Constraint,"changed Avro constraint is not exactly representable: "+lowerErr.Error(),lowerErr)};token:=json.NewDecoder(strings.NewReader(raw));token.UseNumber();var value any;if err:=token.Decode(&value);err!=nil{return Resource{},false,effectiveConstraintError(Avro,resource.URI,finding.Constraint,"changed Avro constraint produced an invalid JSON token",err)};schema[finding.Constraint.Keyword]=value}}
+    if !changed{return resource,false,nil};encoded,err:=json.Marshal(root);if err!=nil{return Resource{},false,wrap(Avro,"native.structure",resource.URI,err)};doc,err:=schemajson.Parse(encoded,schemajson.Limits{});if err!=nil{return Resource{},false,wrap(Avro,"native.structure",resource.URI,err)};return Resource{URI:resource.URI,Source:doc.Raw()},true,nil
+}

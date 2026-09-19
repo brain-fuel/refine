@@ -292,6 +292,17 @@ dependency from release planning. Cross-format generation of opaque native
 constraints is likewise unsupported unless the requested output can be proven;
 configure the bundle's origin format for the exact supported path.
 
+A standalone OpenAPI declaration in a `.refine` family uses the same complete
+operation-catalog comparison without fabricating a payload root. Its derived
+native project is only the checked execution and generation view: comparison
+identity, release-policy authority, input preconditions, dependency pins, and
+promotion all remain bound to the original reachable `.refine` sources.
+Omitted `formats` and explicit `["openapi"]` have the same effective policy
+identity for this target; any other format, configured root, or competing
+`wire.openapi` authority rejects. Promotion writes `vX.Y.Z.refine`, rewrites
+same-batch imports to exact released `.refine` pins, and never substitutes a
+generated `.refined.json` bundle.
+
 `refine release promote [family...]` repeats planning against current bytes,
 requires every changed family in the batch to have explicitly accepted its
 suggested version, rewrites schema-family imports to exact releases, and calls

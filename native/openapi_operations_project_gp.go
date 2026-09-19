@@ -129,6 +129,7 @@ func ingestOpenAPIOperationResources(resources []Resource, options OpenAPIOperat
 		return nil, wrap(OpenAPI, "native.metadata", "", err)
 	}
 	project := &Project{document: document, target: operationProjectTarget(options.EntryResource), source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, languageEntry: languageEntry, languageFiles: languageFiles, jsonOrigins: map[string]*provenance.JSONSchema{}, nativeUnitSources: map[string]string{}, nativeUnitsInEditable: map[string]bool{}}
+	installOpenAPIConstraintOrigins(project, options.EntryResource)
 	if options.Metadata.OpenAPI != nil && options.Metadata.OpenAPI.Native != nil {
 		if len(options.OperationIDs) > 0 {
 			return nil, &Error{Code: "native.metadata", Format: OpenAPI, Pointer: options.EntryResource, Message: "OperationIDs cannot override embedded or configured authoritative native operation bindings"}

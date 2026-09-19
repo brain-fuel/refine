@@ -38,6 +38,12 @@ selection is evidence only for that selection, not a release-readiness claim.
 8. The coordinating agent owns whole-repository integration runs. Subagents
    hand off their exact commands, results, and covered source state. Do not
    repeat their checks on unchanged inputs merely to obtain a second report.
+9. External-runtime evidence must distinguish an executed test from a skipped
+   test. Set `REFINE_REQUIRE_JAVA=1` (and `REFINE_REQUIRE_MAVEN=1` for Maven),
+   provision the selected harness's pinned dependencies, and retain `-v` or
+   `-json` output for a new integration anchor. A package-level `ok` alone does
+   not establish that its JVM or Maven subprocess ran. A cached executed pass
+   remains reusable on unchanged inputs; a cached skip is not coverage.
 
 At an integration checkpoint, freeze source generation, then run generation
 consistency, `go test -race -timeout=20m ./...`, and `go vet ./...` once with required Java and
@@ -107,6 +113,10 @@ The integration gate still replays all seed corpora regardless of this plan.
 This is a repository-specific impact policy, not a proof of whole-program Go
 behavior. Register new filesystem fixture consumers in the reviewed inventory;
 do not assume a missing Go import proves a fixture cannot affect a package.
+The checked regex WASM artifact and `internal/ecmaregex/guest/` inputs have an
+explicit production owner, so guest-only changes select that package's reverse
+dependency closure. Its embedded `NOTICE.md` is not exempt as documentation.
+An absent owner or an unreviewed asset outside that inventory still selects all.
 With `--run`, stdout remains the JSON report; progress and test output go to
 stderr so the plan can be retained as machine-readable evidence.
 
@@ -120,6 +130,30 @@ targets from the working tree, not by compiling an arbitrary historical tree.
 
 These are development selections, not substitutes for the integration gate.
 Extend a selection when a change adds a new test or affects another behavior.
+
+Avro correspondence-core changes use the following selection. This does not
+cover effective native resources, serde generation, or the Maven lifecycle.
+
+```sh
+go test ./provenance -run '^(TestAvroFixedAndOrderedEnumExactInverse|TestAvroTraversalUsesOnlySchemaPositions|TestAvroIsolationShadowingAndOpaqueBounds|TestAvroFixedExpansionBudgetIsAggregate)$'
+```
+
+The collection-cardinality slice has these exact selections. Core discovery,
+OpenAPI lexical integration, and effective native edits have distinct coverage;
+the existing multiple-of test checks the neighboring builtin-authority fix.
+
+```sh
+go test ./provenance -run '^(TestCollectionCardinalityCanonicalRoundTripAndOracle|TestCollectionCardinalityIsolationShadowingAndBounds)$'
+go test ./provenance -run '^TestOpenAPICollectionCardinalityPreservesJSONAndYAMLTokens$'
+go test ./native -run '^(TestCollectionCardinalityLoweringAndScopedEdits|TestCollectionCardinalityDoesNotLowerStringLengthOrShadowedBuiltins|TestNumericBuiltinShadowingDoesNotAcquireNativeAuthority|TestLowerMultipleOfAndRepeatedBounds)$'
+```
+
+The shared-regex review fixes use
+`go test -race ./internal/ecmaregex -run '^TestFirstMatchDeadlineIsSerializedAndNilSafe$'`
+and the existing required-Java
+`^TestGeneratedNativeRegexECMA262AndBudgets$` harness. The latter contains a
+test-only initialization failure after lock acquisition and cross-thread
+recovery. An interrupted acquisition alone would not cover that failure path.
 
 The portable release-policy frontend changes the common module parser, formatter
 and offline import flattening. Its deterministic development selections are:
@@ -136,6 +170,45 @@ exercises the changed parse/format boundary, including new footer/comment seeds.
 These passing checks are reused while native-carrier and CLI integration proceed;
 they are not rerun for documentation changes. A coherent shared-parser checkpoint
 still needs the full integration gate once, including generated-code consumers.
+
+The subsequent standalone OpenAPI frontend uses these exact selections. The
+first covers its new grammar and import ownership; the second covers affected
+existing footer/import consumers and seeds. The final campaign runs once after
+adding a complete authored API seed, not after every native/project edit.
+
+```sh
+go test ./language -run '^(TestOpenAPIDeclarationParseFormatAndOwnsDetachedMetadata|TestOpenAPIDeclarationRejectsMalformedAndInvalidTypes|TestOpenAPIDeclarationImportsRetainEntryAndReleasePolicy)$'
+go test ./language -run '^(TestReleasePolicyFooterPreservesContractBytesAndSpans|TestReleasePolicyImportsKeepOnlyEntryAuthority|TestOfflineSourceImports|TestImportedSchemaLimitsUseExplicitComponentMinimum|FuzzParseFormat)$'
+go test ./language -run '^$' -fuzz '^FuzzParseFormat$' -fuzztime=1000x -fuzzminimizetime=1000x -timeout=2m
+```
+
+The standalone author's downstream development selections are separate from
+the frontend campaign. The native boundedness correction reruns only its two
+affected anchors, not unchanged authority/error cases. Project and CLI tests
+exercise source authority and promotion without launching Maven.
+
+```sh
+go test ./native -run '^(TestAuthorOpenAPIProjectBuildsExactRootlessBoundary|TestAuthorOpenAPITypeResolutionIsLazyAndAggregateBounded)$'
+go test ./project -run '^(TestGenerateNormalizesAuthoredOpenAPIWithoutPayloadRoot|TestGenerateAuthoredOpenAPIRejectsCompetingTargets)$'
+go test ./cli -run '^(TestProjectCLIDiscoversAuthoredOpenAPIOperations|TestProjectCLIAuthoredOpenAPIRejectsCompetingConfiguration|TestReleasePlansAuthoredOpenAPIOperationsFromExactSource|TestReleasePromotesAuthoredOpenAPIRefineImportsExactly)$'
+go test ./analysis -run '^TestContractSyntaxNamesStandaloneOpenAPIChanges$'
+REFINE_REQUIRE_JAVA=1 REFINE_JAVA_HOME=/opt/homebrew/opt/openjdk@25 REFINE_JETCHECK_DIR=/tmp/refine-jetcheck-sfZEQ7 REFINE_NETWORKNT_DIR=/tmp/refine-networknt-jars go test -v ./java -run '^TestGeneratedStandaloneOpenAPIAuthoringFacadeAndProperties$'
+```
+
+The Java directory values above identify the local evidence inputs, not portable
+installation defaults. The harness checks dependency digests. Its first executed
+run exposed targeted-invalid property exhaustion; follow-up execution is scoped
+to that anchor after the relevant fix. A previous skipped package-level `ok`
+does not count as JVM evidence. Add distinct replay/occurrence regressions when
+the property-generation fix affects those contracts.
+
+The subsequent native source-composition fix inserts generated declarations
+before an existing release footer. Its exact selection covers new footer cases
+and existing annotation/operation-derivation callers without a JVM subprocess:
+
+```sh
+go test ./native -run '^(TestNativeAnnotationRootAliasesPreserveReleaseFooter|TestDerivedOpenAPISourceKeepsEntryReleaseFooterAndImportBytes|TestNativeSourceCompositionRejectsInvalidFooterAndBounds|TestRootAnnotationSeedsEditableSourceWithoutChangingSelector|TestWithDerivedOpenAPIOperationsBuildsAuthoritativeCheckedBoundary|TestWithDerivedOpenAPIOperationsRemainsEditableAndHasNoInferredContext)$'
+```
 
 The schema-limit, diagnostic-path, and operations-only OpenAPI batch uses the
 following focused checks. Commands already run by the owning agent are reused;
@@ -181,7 +254,7 @@ The implementation fix selected the three new failed anchors plus
 `^TestNativeIntegerPrimitiveNamesDoNotCaptureRecordAliases$`.
 
 The generated-code owners use these separate required-Java selections (with the
-pinned Jackson, JetCheck, NetworkNT and Graal directories as applicable):
+pinned Jackson, JetCheck, NetworkNT and Chicory directories as applicable):
 
 ```sh
 REFINE_REQUIRE_JAVA=1 go test ./java -run '^TestGeneratedJSONExtraFieldPoliciesArePerOccurrence$'
@@ -249,11 +322,11 @@ Maven lifecycle is scheduled; CI still covers it on both platforms.
 | Native OpenAPI operation index and Go boundary | `go test ./native -run '^(TestOpenAPIOperationIndexAndSemanticBoundary|TestOpenAPIOperationNativeFailuresStatusAndTokens|TestOpenAPIOperationMetadataAndAggregateLimitsFailClosed|TestOpenAPIOperation30SchemaSeedsAreAdapted)$'`; `go test ./openapi -run '^TestNativeBindingsAreImmutableInRefineOnlyContract$'` | Schema-object scope, canonical adapted resources, semantic part native gates, status/context/token behavior, aggregate limits and defensive copies |
 | Published-version identity immutability | `go test ./release -run '^(TestPromotionRejectsAlreadyPublishedVersionIdentityBeforeWrites|TestPromotionValidationLeavesEverythingUnpromoted|TestPromotionRejectsSymlinkAndImmutableCollision|TestPromoteMultiFamilyExactPinsAndRetainsSnapshots)$'` | Same/conflicting-content republish and duplicate published catalogs reject before writes; existing transaction and multi-family behavior |
 | No-codegen publication ledger | `go test ./release -run '^(TestPublicationGateDistinguishesPublishedAndUnpublishedInventory|TestPublicationGateFailsClosedOnUnknownOrStaleEvidence|TestPublicationGateDoesNotRequireLedgerForFreshGeneration)$'`; `go test ./project -run '^(TestWriteOwnedCheckedRejectsChangedPublicationInputBeforeDeletion|TestMavenSnippetAndNoCodegenPlan)$'`; `go test ./cli -run '^(TestProjectPublicationGateRequiresEffectiveMavenAndExactLedger|TestProjectPublicationLedgerStrictAndUnpublished|TestProjectCLIConfigNoCodegenAndOverrides|TestReleaseProspectiveNoCodegenVersionIsAllowedAndRemovesNoCurrentOutput|TestReleaseNoCodegenRemovalRequiresAndAppliesMavenArtifactPlan|TestMavenCLIIsOptInOutputOnly)$'` | Strict digest-bound published/unpublished inventories, Maven effective-model evidence, fresh/prospective behavior, under-lock preconditions, ordinary deletion and recoverable promotion |
-| Explicit JSON annotation before automatic projection | `go test ./native -run '^(TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema|TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains|TestJSONOrdinaryExtraFieldPoliciesRemainProjectable|TestSelectedJSONAnnotationIntentionallyBypassesOnlyAutoProjection|TestInvalidSelectedJSONAnnotationsFailAtomically)$'`; `go test -race ./native -run '^(TestRootAnnotationSeedsEditableSourceWithoutChangingSelector|TestNativeConstraintCommentLookalikeDoesNotGrantEditAuthority|TestVersionOneBundleWithoutConstraintSourceFieldRestoresCanonicalUnits|TestExplicitJSONSchemaResourceResolutionAndBundle|TestResourceAndBundleFailuresAreExplicit|TestProjectExportComposesEffectiveNativeAndEditableJSONSchema|TestRefinedLoweringCarriesCheckedWireMetadataAcrossFormats)$'`; `REFINE_REQUIRE_JAVA=1 REFINE_NETWORKNT_DIR=… REFINE_GRAALJS_DIR=… go test -race ./java -run '^TestGeneratedNativeRegexECMA262AndBudgets$'` | Homogeneous typed maps remain precise; heterogeneous domains use the JSON carrier. Both preserve native constraints. Deliberately authored views still preserve native enforcement, selected roots, annotations, resource scope, and generated pattern-properties coverage |
+| Explicit JSON annotation before automatic projection | `go test ./native -run '^(TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema|TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains|TestJSONOrdinaryExtraFieldPoliciesRemainProjectable|TestSelectedJSONAnnotationIntentionallyBypassesOnlyAutoProjection|TestInvalidSelectedJSONAnnotationsFailAtomically)$'`; `go test -race ./native -run '^(TestRootAnnotationSeedsEditableSourceWithoutChangingSelector|TestNativeConstraintCommentLookalikeDoesNotGrantEditAuthority|TestVersionOneBundleWithoutConstraintSourceFieldRestoresCanonicalUnits|TestExplicitJSONSchemaResourceResolutionAndBundle|TestResourceAndBundleFailuresAreExplicit|TestProjectExportComposesEffectiveNativeAndEditableJSONSchema|TestRefinedLoweringCarriesCheckedWireMetadataAcrossFormats)$'`; `REFINE_REQUIRE_JAVA=1 REFINE_NETWORKNT_DIR=… REFINE_CHICORY_DIR=… go test -race ./java -run '^TestGeneratedNativeRegexECMA262AndBudgets$'` | Homogeneous typed maps remain precise; heterogeneous domains use the JSON carrier. Both preserve native constraints. Deliberately authored views still preserve native enforcement, selected roots, annotations, resource scope, and generated pattern-properties coverage |
 | Explicit structural-only canonical reader | `go test ./language -run '^(TestStructuralReadBypassRetainsRepresentationAndResourceChecks|TestStructuralReadBypassClosedTargetsAndIsolation|TestTypedReadExecution|TestReadNeverExecutesExpressions|TestReadValueRevalidatesAndProtectsBudgets|TestReadTargetInsideGenericDeclaration|TestReadShowProperties|TestCanonicalValueConformanceFixtures|TestFiniteFloatPayloadReadShowAndArithmetic)$'` | Bypass skips only refinements, preserves exact representation and budgets, cannot execute expressions or mutate later validating reads; seeded integer properties and existing typed-read regressions cover the shared dispatch |
 | Shared project/promotion lock and recovery path safety | Commands below | Lock exclusion, reserved paths, inode-owned recovery, CLI promotion callers |
 | Native JSON composition | `go test ./java -run '^(TestGeneratedProjectJSONSerdeComposesNativeAndRefinements|TestGeneratedNativeJSONValidatorExactOfflineAndBounded|TestProjectJSONSerdeIncludesNativeRegexComposition|TestNativeJSONGeneratorHandlesPatternsAndGatesUnsupportedFormats)$'` | Native plus refined validation and fail-closed generation |
-| Bounded generated ECMA-262 regex | `REFINE_REQUIRE_JAVA=1 REFINE_NETWORKNT_DIR=… REFINE_GRAALJS_DIR=… go test ./java -run '^(TestNativeRegexEmissionIsConditional|TestGeneratedNativeRegexECMA262AndBudgets|TestGeneratedProjectJSONSerdeExposesRegexLimits)$'` | Conditional Graal linkage, lookaround/backreferences/Unicode, pattern properties, aggregate caps, cancellation, combinator propagation and composed read/write limit plumbing on stock Java 25 |
+| Bounded generated ECMA-262 regex | `REFINE_REQUIRE_JAVA=1 REFINE_NETWORKNT_DIR=… REFINE_CHICORY_DIR=… go test -v ./java -run '^(TestNativeRegexEmissionIsConditional|TestGeneratedNativeRegexECMA262AndBudgets|TestGeneratedProjectJSONSerdeExposesRegexLimits)$'` | Conditional Chicory linkage, checked shared WASM artifact, lookaround/backreferences/Unicode, pattern properties, aggregate caps, cancellation, combinator propagation and composed read/write limit plumbing on stock Java 25 |
 | CLI native JSON validation bridge | `go test ./cli -run '^(TestNativeArtifactWorkflow|TestNativeRefinedJSONValidationBoundary|TestNativeOfflineDependencyWorkflow|TestNativeWorkflowUsageAndPrivacy)$'` | Default native plus refined checks, native-only override, budgets, exit status and redaction |
 | Avro serde feature addition | Exact new/affected `TestGeneratedAvro…` names, recorded by its owner | Avoid rebuilding unrelated Java fixtures per feature |
 | Closed generic/native numeric lowering | `go test ./native -run '^(TestLowerClosedGenericAliasesAndTransformedParents|TestLowerRecursiveGenericAvroDefinesBeforeReference|TestLowerGenericTaggedUnionUsesOneClosedDefinition|TestLowerGenericNamesAvoidDeclarationsAndExpansionIsBounded|TestLowerRepeatedAvroScalarAliasStaysStructural|TestLowerNumericKeywordExpansionIsBoundedBeforeExactParse|TestLowerOpenAPIAndRecursiveReferences|TestAvroRepeatedNamedRecordUsesReference)$'` | Simultaneous substitution, transformed aliases, deterministic collision-safe names, recursive Avro order, structural scalar aliases, native payload validation, generic and exact-number expansion bounds, and existing nominal recursion |

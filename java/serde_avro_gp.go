@@ -55,7 +55,10 @@ func GenerateProjectAvroSerde(project *native.Project, contractName, serdeName s
 	if len(root.Parameters) > 0 {
 		return nil, &GenerationError{Message: "Avro serde root must be closed"}
 	}
-	resources := project.Resources()
+	resources, err := project.EffectiveResources()
+	if err != nil {
+		return nil, &GenerationError{Message: err.Error()}
+	}
 	if len(resources) == 0 {
 		return nil, &GenerationError{Message: "Avro project has no schema resource"}
 	}

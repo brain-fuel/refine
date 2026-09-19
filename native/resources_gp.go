@@ -58,6 +58,8 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	options.ResourceID = options.Root.Resource
 	var document *Document
 	source := ""
+	selectedAnnotation := Annotation{}
+	hasSelectedAnnotation := false
 	switch format {
 	case JSONSchema:
 		document, err = validateJSONResources(byURI, options.Root)
@@ -65,7 +67,7 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
 				source = annotated
 			} else {
-				source, err = projectJSONResourceRoot(byURI, options.Root, false)
+				source, err = projectJSONResources(ordered, options.Root)
 				if err == nil && document.ConstraintSource() != "" {
 					source += "\n" + document.ConstraintSource()
 				}
@@ -74,9 +76,10 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	case OpenAPI:
 		document, err = validateOpenAPIResources(byURI, options.Root)
 		if err == nil {
-			if annotated, _, ok := rootAnnotation(document, options.Root); ok {
-				source = annotated
-			} else {
+			selectedAnnotation, hasSelectedAnnotation, err = selectedOpenAPISchemaAnnotation(document, byURI, options.Root)
+			if err == nil && hasSelectedAnnotation {
+				source = selectedAnnotation.Source
+			} else if err == nil {
 				source, err = projectJSONResourceRoot(byURI, options.Root, true)
 			}
 		}
@@ -91,16 +94,31 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 	if err != nil {
 		return nil, err
 	}
-	if annotated, rootName, ok := rootAnnotation(document, options.Root); ok {
-		source = annotated
-		if rootName != options.Root.TypeName {
-			source += "\ntype " + options.Root.TypeName + " = " + rootName + "\n"
-		}
+	if format != OpenAPI {
+		selectedAnnotation, hasSelectedAnnotation = selectedRootAnnotation(document, options.Root)
 	}
-	if annotation, ok := selectedRootAnnotation(document, options.Root); ok {
-		options.Metadata, err = mergeAnnotationMetadata(format, options.Metadata, annotation)
+	if hasSelectedAnnotation {
+		source = selectedAnnotation.Source
+		if selectedAnnotation.Root != options.Root.TypeName {
+			source, err = appendNativeSourceDeclarations(source, "type "+options.Root.TypeName+" = "+selectedAnnotation.Root)
+			if err != nil {
+				return nil, wrap(format, "native.projection", options.Root.Pointer, err)
+			}
+		}
+		options.Metadata, err = mergeAnnotationMetadata(format, options.Metadata, selectedAnnotation)
 		if err != nil {
 			return nil, err
+		}
+	}
+	nativeOrigins := map[string]nativeConstraintOrigin{}
+	avroUnits := map[string]string{}
+	if format == Avro {
+		nativeOrigins, avroUnits = discoverAvroConstraintOrigins(ordered)
+		if !hasSelectedAnnotation {
+			source, err = appendAvroConstraintDeclarations(source, ordered, avroUnits)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	program, err := language.Compile(source)
@@ -131,8 +149,16 @@ func IngestProjectResources(format Format, resources []Resource, options Project
 			linked[options.Root.Resource] = true
 		}
 	}
+	for resource, unit := range avroUnits {
+		units[resource] = unit
+		linked[resource] = nativeConstraintUnitsUnchanged(nativeOrigins[resource], source)
+	}
 	_ = mainBytes
-	return validateProject(&Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeUnitSources: units, nativeUnitsInEditable: linked})
+	project := &Project{document: document, root: options.Root, source: source, program: program, metadata: copyMetadata(options.Metadata), resources: ordered, jsonOrigins: origins, nativeOrigins: nativeOrigins, nativeUnitSources: units, nativeUnitsInEditable: linked}
+	if format == OpenAPI {
+		installOpenAPIConstraintOrigins(project, options.Root.Resource)
+	}
+	return validateProject(project)
 }
 
 func sortedResourceURIs(resources map[string][]byte) []string {
@@ -145,13 +171,16 @@ func sortedResourceURIs(resources map[string][]byte) []string {
 }
 func validateJSONResources(resources map[string][]byte, root ResourceSelector) (document *Document, failure error) {
 	defer recoverRegexEvaluation(JSONSchema, &failure)
-	compiler := jsonoracle.NewCompiler()
+	scope := newRegexScope()
+	compiler := newOfflineJSONCompiler()
 	compiler.DefaultDraft(jsonoracle.Draft2020)
-	compiler.UseRegexpEngine(jsonRegexp)
+	compiler.UseRegexpEngine(scope.jsonRegexp)
 	var rootDoc schemajson.Document
 	numericExpansion := 0
+	ordered := make([]Resource, 0, len(resources))
 	for _, uri := range sortedResourceURIs(resources) {
 		input := resources[uri]
+		ordered = append(ordered, Resource{URI: uri, Source: string(input)})
 		doc, err := schemajson.Parse(input, schemajson.Limits{})
 		if err != nil {
 			return nil, wrap(JSONSchema, "native.syntax", uri, err)
@@ -173,12 +202,17 @@ func validateJSONResources(resources map[string][]byte, root ResourceSelector) (
 			rootDoc = doc
 		}
 	}
+	catalog, err := newJSONProjectionCatalog(ordered)
+	if err != nil {
+		return nil, err
+	}
+	compiler.UseLoader(jsonProjectionLoader{catalog: catalog})
 	location := root.Resource
 	if root.Pointer != "" {
 		location += "#" + root.Pointer
 	}
-	if _, err := compiler.Compile(location); err != nil {
-		return nil, wrap(JSONSchema, "native.structure", root.Pointer, err)
+	if err := scope.run(JSONSchema, true, func() error { _, compileErr := compiler.Compile(location); return compileErr }); err != nil {
+		return nil, wrapRegexResult(JSONSchema, "native.structure", root.Pointer, err)
 	}
 	annotations, err := jsonSchemaAnnotations(rootDoc.Root())
 	if err != nil {
@@ -209,6 +243,7 @@ func validateOpenAPIDocumentResources(resources map[string][]byte, entryResource
 	}
 	l, _ := limits(Options{})
 	var yamlRoot *yaml.Node
+	yamlRoots := []*yaml.Node{}
 	numericExpansion := 0
 	for _, uri := range sortedResourceURIs(resources) {
 		input := resources[uri]
@@ -216,6 +251,7 @@ func validateOpenAPIDocumentResources(resources map[string][]byte, entryResource
 		if err != nil {
 			return nil, wrap(OpenAPI, "native.syntax", uri, err)
 		}
+		yamlRoots = append(yamlRoots, node)
 		if strings.HasPrefix(strings.TrimSpace(string(input)), "{") {
 			doc, err := schemajson.Parse(input, l)
 			if err != nil {
@@ -252,8 +288,15 @@ func validateOpenAPIDocumentResources(resources map[string][]byte, entryResource
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.structure", "", err)
 	}
-	if err := parsed.Validate(context.Background(), openapi3.SetRegexCompiler(openAPIRegexp)); err != nil {
-		return nil, wrap(OpenAPI, "native.structure", "", err)
+	scope := newRegexScope()
+	if err := scope.run(OpenAPI, false, func() error {
+		validationOptions := []openapi3.ValidationOption{openapi3.SetRegexCompiler(scope.openAPIRegexp)}
+		if strings.HasPrefix(version, "3.0.") {
+			validationOptions = append(validationOptions, openapi3.AllowExtraSiblingFields(openAPI30IgnoredRefSiblingFields(yamlRoots...)...))
+		}
+		return parsed.Validate(context.Background(), validationOptions...)
+	}); err != nil {
+		return nil, wrapRegexResult(OpenAPI, "native.structure", "", err)
 	}
 	annotations, err := yamlRootAnnotation(yamlRoot)
 	if err != nil {

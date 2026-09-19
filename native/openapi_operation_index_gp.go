@@ -56,6 +56,8 @@ type openAPIOperationIndex struct {
 	operations      map[string]*indexedOpenAPIOperation
 	requestSchemas  map[string]*jsonoracle.Schema
 	responseSchemas map[string]*jsonoracle.Schema
+	requestRegex    *regexScope
+	responseRegex   *regexScope
 }
 type indexedOpenAPIOperation struct {
 	descriptor   OpenAPIOperation

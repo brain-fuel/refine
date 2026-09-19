@@ -408,11 +408,37 @@ func TestEditedNativeConstraintUnitsDriveEffectiveValidationIndependently(t *tes
 	}
 	unsupportedSource := strings.Replace(units[0].Source, minimumPredicate, "it + 1 >= 0", 1)
 	unsupported, err := project.WithEditedNativeConstraintSource(resource, unsupportedSource)
+	if unsupported != nil || problemCode(err) != "native.enforcement" {
+		t.Fatalf("unsupported scoped edit did not fail closed atomically: %v", err)
+	}
+}
+
+func TestLinkedNativeConstraintEditsFailAtomically(t *testing.T) {
+	resource := "https://example.test/linked.json"
+	project, err := IngestProject(JSONSchema, []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":0}`), ProjectOptions{ResourceID: resource, Root: ResourceSelector{TypeName: "Count"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unsupported.ValidateJSON([]byte(`5`)); problemCode(err) != "native.enforcement" {
-		t.Fatalf("unsupported scoped edit did not fail closed: %v", err)
+	predicate := ""
+	for _, item := range project.NativeConstraints() {
+		if item.Constraint.Keyword == "minimum" {
+			predicate = item.Constraint.Predicate
+		}
+	}
+	if predicate == "" || !strings.Contains(project.EditableSource(), predicate) {
+		t.Fatalf("native minimum was not linked into editable source: %q", project.EditableSource())
+	}
+	source := strings.Replace(project.EditableSource(), predicate, "it + 1 >= 0", 1)
+	edited, err := project.WithEditedSource(source)
+	if edited != nil || problemCode(err) != "native.enforcement" {
+		t.Fatalf("single-source linked edit did not fail atomically: %v", err)
+	}
+	edited, err = project.WithEditedSources("main.refine", map[string]string{"main.refine": source})
+	if edited != nil || problemCode(err) != "native.enforcement" {
+		t.Fatalf("source-bundle linked edit did not fail atomically: %v", err)
+	}
+	if err := project.ValidateJSON([]byte(`-1`)); problemCode(err) != "native.payload" {
+		t.Fatalf("failed edits mutated the original project: %v", err)
 	}
 }
 

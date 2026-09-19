@@ -1,0 +1,41 @@
+package native
+
+import (
+    "encoding/json"
+    "reflect"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    "goforge.dev/refine/provenance"
+)
+
+func constraintByKeyword(t *testing.T,project *Project,keyword string)provenance.Constraint{t.Helper();for _,item:=range project.NativeConstraints(){if item.Constraint.Keyword==keyword{return item.Constraint}};t.Fatalf("missing %s constraint",keyword);return provenance.Constraint{}}
+
+func TestLowerExactJSONConstAndEnumRules(t *testing.T){
+    cases:=[]struct{name string;source string;keyword string;want any}{
+        {"const-object",`type Value = JSON where it == JSONObject (map {"b" = JSONArray [JSONNull, JSONNumber (1 / 1)], "a" = JSONString "x"})`,"const",map[string]any{"a":"x","b":[]any{nil,json.Number("1")}}},
+        {"enum-empty",`type Value = JSON where oneOf it []`,"enum",[]any{}},
+        {"enum-duplicates",`type Value = JSON where oneOf it [JSONNumber (1 / 1), JSONNumber 1.0]`,"enum",[]any{json.Number("1"),json.Number("1.0")}},
+    }
+    for _,tc:=range cases{t.Run(tc.name,func(t *testing.T){program,err:=language.Compile(tc.source);if err!=nil{t.Fatal(err)};payload,err:=program.PayloadType("Value");if err!=nil{t.Fatal(err)};lowered,err:=LowerPayload(JSONSchema,payload,LowerOptions{Mode:Ordinary});if err!=nil{t.Fatal(err)};var document map[string]any;decoder:=json.NewDecoder(strings.NewReader(lowered.String()));decoder.UseNumber();if err:=decoder.Decode(&document);err!=nil{t.Fatal(err)};root:=document;if ref,ok:=document["$ref"].(string);ok{root,err=effectiveSchemaObject(document,strings.TrimPrefix(ref,"#"));if err!=nil{t.Fatal(err)}};got,ok:=root[tc.keyword];if !ok||!reflect.DeepEqual(got,tc.want){t.Fatalf("%s: %#v",lowered.String(),got)}})}
+    unsupported:=[]string{
+        `type Value = JSON where it /= JSONNull`,
+        "oneOf :: JSON -> [JSON] -> Bool\noneOf _ _ = True\ntype Value = JSON where oneOf it [JSONNull]",
+        `type Value = JSON where it == (if True then JSONNull else JSONNull)`,
+    }
+    for _,source:=range unsupported{program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};payload,err:=program.PayloadType("Value");if err!=nil{t.Fatal(err)};if _,err:=LowerPayload(JSONSchema,payload,LowerOptions{Mode:Ordinary});err==nil||problemCode(err)!="native.unrepresentable"{t.Fatalf("noncanonical JSON predicate lowered: %v",err)}}
+}
+
+func TestEditedConstEnumUnitsApplyIndependently(t *testing.T){
+    resource:="https://example.test/exact.json";original:=`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"integer","minimum":0,"const":5,"enum":[5,5.0]}`
+    project,err:=IngestProject(JSONSchema,[]byte(original),ProjectOptions{ResourceID:resource,Root:ResourceSelector{TypeName:"Value"}});if err!=nil{t.Fatal(err)};units:=project.NativeConstraintSources();if len(units)!=1{t.Fatalf("%+v",units)}
+    constant:=constraintByKeyword(t,project,"const");enumeration:=constraintByKeyword(t,project,"enum");if constraintByKeyword(t,project,"minimum").Pointer!="/minimum"{t.Fatal("minimum provenance absent")}
+    source:=units[0].Source;source=strings.Replace(source,constant.Predicate,`it == JSONNumber (6 / 1)`,1);source=strings.Replace(source,enumeration.Predicate,`oneOf it [JSONNumber (6 / 1), JSONNumber 6.0]`,1)
+    edited,err:=project.WithEditedNativeConstraintSource(resource,source);if err!=nil{t.Fatal(err)}
+    if err:=edited.ValidateJSON([]byte(`6`));err!=nil{t.Fatal(err)};for _,raw:=range []string{`5`,`-1`}{if err:=edited.ValidateJSON([]byte(raw));problemCode(err)!="native.payload"{t.Fatalf("%s accepted: %v",raw,err)}}
+    exported,err:=edited.Export(LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};text:=exported.Resources()[0].Source;if !strings.Contains(text,`"const": 6`)||!strings.Contains(text,`"enum": [`){t.Fatalf("edited exact constraints absent: %s",text)};if project.Resources()[0].Source!=original{t.Fatal("effective edit mutated immutable native origin")}
+    wrongKeyword:=strings.Replace(units[0].Source,constant.Predicate,`oneOf it [JSONNumber (6 / 1)]`,1);wrong,err:=project.WithEditedNativeConstraintSource(resource,wrongKeyword);if wrong!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("const unit changed keyword authority: %v",err)}
+    // Locate by declaration instead of relying on numeric spelling changes.
+    lines:=[]string{};for _,line:=range strings.Split(source,"\n"){if !strings.HasPrefix(line,"type "+constant.Name+" = "){lines=append(lines,line)}};removed,err:=project.WithEditedNativeConstraintSource(resource,strings.Join(lines,"\n"));if err!=nil{t.Fatal(err)};if err:=removed.ValidateJSON([]byte(`6`));err!=nil{t.Fatal(err)};if err:=removed.ValidateJSON([]byte(`-1`));problemCode(err)!="native.payload"{t.Fatalf("removing const invalidated minimum: %v",err)}
+}

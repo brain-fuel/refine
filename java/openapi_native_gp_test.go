@@ -68,7 +68,7 @@ func nativeOpenAPIProject(t *testing.T) *native.Project {
 
 func TestGeneratedNativeOpenAPIContextComposesAllBoundaries(t *testing.T) {
 	compiler, vm := javaTools(t)
-	classpath := networkntClasspath(t) + string(os.PathListSeparator) + graalJSClasspath(t)
+	classpath := networkntClasspath(t) + string(os.PathListSeparator) + chicoryClasspath(t)
 	files, err := GenerateProjectOpenAPIContext(nativeOpenAPIProject(t), "Contract", "Operations")
 	if err != nil {
 		t.Fatal(err)

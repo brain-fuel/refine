@@ -1,0 +1,36 @@
+package native
+
+import (
+    "strings"
+    "testing"
+)
+
+func TestOpenAPI30PairedBoundsEditStrictnessAndBoundAtomically(t *testing.T){
+    resource:="https://example.test/bounds.json";original:=`{"openapi":"3.0.4","info":{"title":"Bounds","version":"1"},"paths":{},"components":{"schemas":{"Value":{"type":"number","minimum":1,"exclusiveMinimum":false,"maximum":10,"exclusiveMaximum":true}}}}`
+    project,err:=IngestProject(OpenAPI,[]byte(original),ProjectOptions{ResourceID:resource,Root:ResourceSelector{Pointer:"/components/schemas/Value",TypeName:"Value"}});if err!=nil{t.Fatal(err)};minimum:=openAPIProvenanceConstraint(t,project,resource,"minimum");maximum:=openAPIProvenanceConstraint(t,project,resource,"maximum");if minimum.PairedNative!="false"||maximum.PairedNative!="true"{t.Fatalf("pair tokens absent: %+v %+v",minimum,maximum)}
+    source:=openAPIProvenanceUnit(t,project,resource);editedSource:=strings.Replace(source,minimum.Predicate,"(it > (2 / 1))",1);edited,err:=project.WithEditedNativeConstraintSource(resource,editedSource);if err!=nil{t.Fatal(err)}
+    for raw,valid:=range map[string]bool{"2":false,"2.5":true,"10":false}{err:=edited.ValidateJSON([]byte(raw));if (err==nil)!=valid{t.Fatalf("edited payload %s valid=%t: %v",raw,valid,err)}}
+    effective,err:=edited.EffectiveResources();if err!=nil{t.Fatal(err)};if len(effective)!=1||!strings.Contains(effective[0].Source,`"minimum":2`)||!strings.Contains(effective[0].Source,`"exclusiveMinimum":true`)||!strings.Contains(effective[0].Source,`"maximum":10`)||!strings.Contains(effective[0].Source,`"exclusiveMaximum":true`){t.Fatalf("paired effective resource is wrong: %+v",effective)}
+    if edited.Resources()[0].Source!=original||project.Resources()[0].Source!=original{t.Fatal("paired edit changed immutable OpenAPI bytes")};if err:=project.ValidateJSON([]byte(`1`));err!=nil{t.Fatalf("edit mutated original project: %v",err)}
+    if got,err:=edited.RecoverResourceNative(resource,maximum.Name,editedSource);err!=nil||got!="10"{t.Fatalf("untouched opposite bound recovery %q: %v",got,err)}
+    bundle,err:=edited.Bundle();if err!=nil{t.Fatal(err)};again,err:=ParseBundle(bundle);if err!=nil{t.Fatal(err)};againEffective,err:=again.EffectiveResources();if err!=nil||!strings.Contains(againEffective[0].Source,`"minimum":2`)||!strings.Contains(againEffective[0].Source,`"exclusiveMinimum":true`){t.Fatalf("bundle lost paired edit: %v %+v",err,againEffective)}
+    fractionalSource:=strings.Replace(source,minimum.Predicate,"(it >= (-1 / 2))",1);fractional,err:=project.WithEditedNativeConstraintSource(resource,fractionalSource);if err!=nil{t.Fatal(err)};fractionalResources,err:=fractional.EffectiveResources();if err!=nil||!strings.Contains(fractionalResources[0].Source,`"minimum":-0.5`)||!strings.Contains(fractionalResources[0].Source,`"exclusiveMinimum":false`){t.Fatalf("exact negative fraction was not retained as a decimal: %v %+v",err,fractionalResources)}
+    for _,predicate:=range []string{"(it > (1 / 3))","(it > ((1 / 1) + (1 / 1)))"}{invalid:=strings.Replace(source,minimum.Predicate,predicate,1);if changed,err:=project.WithEditedNativeConstraintSource(resource,invalid);changed!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("non-exact numeric expression %s acquired authority: %v",predicate,err)}}
+    reversed:=strings.Replace(source,minimum.Predicate,"(it <= (2 / 1))",1);if changed,err:=project.WithEditedNativeConstraintSource(resource,reversed);changed!=nil||problemCode(err)!="native.enforcement"{t.Fatalf("lower/upper direction change acquired native authority: %v",err)}
+}
+
+func TestOpenAPI30PairedBoundsRemainResourceScoped(t *testing.T){
+    entry:="https://example.test/api.yaml";external:="https://example.test/value.yaml";entrySource:="openapi: 3.0.4\ninfo: {title: External, version: '1'}\npaths: {}\ncomponents:\n  schemas:\n    Root: {$ref: './value.yaml#/schema'}\n";externalSource:="schema:\n  type: integer\n  minimum: 0x10\n  exclusiveMinimum: true\n"
+    project,err:=IngestProjectResources(OpenAPI,[]Resource{{URI:entry,Source:entrySource},{URI:external,Source:externalSource}},ProjectOptions{ResourceID:entry,Root:ResourceSelector{Resource:entry,Pointer:"/components/schemas/Root",TypeName:"Root"}});if err!=nil{t.Fatal(err)};constraint:=openAPIProvenanceConstraint(t,project,external,"minimum");if constraint.Native!="0x10"||constraint.PairedNative!="true"||constraint.Resource!=external{t.Fatalf("external pair changed: %+v",constraint)}
+    unit:=openAPIProvenanceUnit(t,project,external);editedUnit:=strings.Replace(unit,constraint.Predicate,"(it >= 20)",1);edited,err:=project.WithEditedNativeConstraintSource(external,editedUnit);if err!=nil{t.Fatal(err)};for raw,valid:=range map[string]bool{"19":false,"20":true}{err:=edited.ValidateJSON([]byte(raw));if (err==nil)!=valid{t.Fatalf("external edit %s valid=%t: %v",raw,valid,err)}}
+    effective,err:=edited.EffectiveResources();if err!=nil{t.Fatal(err)};if len(effective)!=2||!strings.Contains(effective[1].Source,`"minimum":20`)||!strings.Contains(effective[1].Source,`"exclusiveMinimum":false`)||effective[0].URI!=entry{t.Fatalf("external effective pair leaked resource scope: %+v",effective)};if edited.Resources()[0].Source!=entrySource||edited.Resources()[1].Source!=externalSource{t.Fatal("external edit changed immutable resource closure")}
+}
+
+func TestOpenAPI30ReferenceSiblingBoundIsIgnoredWithoutEditableAuthority(t *testing.T){
+    resource:="https://example.test/reference.json";source:=`{"openapi":"3.0.4","info":{"title":"Reference","version":"1"},"paths":{},"components":{"schemas":{"Base":{"type":"integer","minimum":1},"Alias":{"$ref":"#/components/schemas/Base","minimum":9,"exclusiveMinimum":true}}}}`
+    project,err:=IngestProject(OpenAPI,[]byte(source),ProjectOptions{ResourceID:resource,Root:ResourceSelector{Pointer:"/components/schemas/Alias",TypeName:"Alias"}});if err!=nil{t.Fatal(err)}
+    if err:=project.ValidateJSON([]byte(`0`));err==nil{t.Fatal("referenced minimum was not enforced")};if err:=project.ValidateJSON([]byte(`2`));err!=nil{t.Fatalf("ignored sibling minimum was enforced: %v",err)}
+    for _,item:=range project.NativeConstraints(){constraint:=item.Constraint;if constraint.SchemaPointer=="/components/schemas/Alias"&&(constraint.Keyword=="minimum"||constraint.Keyword=="exclusiveMinimum"){t.Fatalf("ignored Reference Object sibling acquired editable authority: %+v",constraint)}}
+    if project.Resources()[0].Source!=source{t.Fatal("reference adaptation changed immutable source bytes")}
+    catalog,err:=IngestProjectResources(OpenAPI,[]Resource{{URI:resource,Source:source}},ProjectOptions{ResourceID:resource,Root:ResourceSelector{Resource:resource,Pointer:"/components/schemas/Alias",TypeName:"Alias"}});if err!=nil{t.Fatalf("resource-catalog validation rejected ignored Reference Object sibling: %v",err)};if err:=catalog.ValidateJSON([]byte(`2`));err!=nil{t.Fatalf("resource-catalog adapter enforced ignored sibling: %v",err)}
+}

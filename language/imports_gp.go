@@ -116,6 +116,11 @@ func CompileSources(entry string, sources map[string]string) (*SourceBundle, err
 	if err := r.visit(entry, 0); err != nil {
 		return nil, err
 	}
+	for _, file := range r.files {
+		if file.ID != entry && r.modules[file.ID].OpenAPI != nil {
+			return nil, &ImportError{Code: "language.import_openapi", SourceID: file.ID, Message: "only the entry source may declare OpenAPI operations; import reusable types and functions instead"}
+		}
+	}
 	minimum := func(current, next uint64) uint64 {
 		if current == 0 || next != 0 && next < current {
 			return next
@@ -142,6 +147,10 @@ func CompileSources(entry string, sources map[string]string) (*SourceBundle, err
 			flattened.WriteString(" clause " + fmt.Sprint(effective.Clause))
 		}
 		flattened.WriteString("\n\n")
+	}
+	if declaration := r.modules[entry].OpenAPI; declaration != nil {
+		flattened.WriteString(FormatOpenAPI(declaration))
+		flattened.WriteByte('\n')
 	}
 	type segment struct {
 		id    string
@@ -178,6 +187,7 @@ func CompileSources(entry string, sources map[string]string) (*SourceBundle, err
 		clean.Imports = nil
 		clean.Limits = SchemaLimits{}
 		clean.ReleasePolicy = nil
+		clean.OpenAPI = nil
 		text := Format(&clean)
 		if len(text) > (16<<20)-flattened.Len() {
 			return nil, &ImportError{Code: "language.import_limit", SourceID: file.ID, Message: "flattened source exceeds 16 MiB"}

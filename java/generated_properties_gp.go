@@ -63,10 +63,18 @@ type PropertyTestOptions struct {
 	NativeJSONValidator string
 }
 
+// propertyRule retains both the authored clause identity and the exact checked
+// diagnostic paths for this occurrence. The same named refinement can be
+// instantiated at several fields, so code (and even source offset) alone is
+// not an occurrence identity.
 type propertyRule struct {
-	target string
-	code   string
-	offset int
+	target    string
+	code      string
+	predicate string
+	enclosing string
+	paths     []string
+	offset    int
+	automatic bool
 }
 type propertyEmitter struct {
 	declarations map[string]language.TypeDecl
@@ -173,25 +181,55 @@ func generatedRuleCode(path string, rule language.Where) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s", path, rule.At.Start.Offset, language.FormatExpression(rule.Predicate))))
 	return fmt.Sprintf("refine.%x", sum[:8])
 }
+
+// propertyAffectedPaths mirrors the emitted Java validator: extraction and
+// enclosing-path prefixing each have their own fixed diagnostic-construction
+// budget. This keeps occurrence matching exact even at the fallback boundary.
+func propertyAffectedPaths(predicate *language.Expr, enclosing string) []string {
+	relative := language.AffectedPaths(predicate, "")
+	if len(relative) == 0 || len(relative) > 1000000 {
+		return []string{enclosing}
+	}
+	limit := 1 << 20
+	if len(enclosing) > 0 && len(relative) > limit/len(enclosing) {
+		return []string{enclosing}
+	}
+	used := len(enclosing) * len(relative)
+	for _, item := range relative {
+		if len(item) > limit-used {
+			return []string{enclosing}
+		}
+		used += len(item)
+	}
+	out := make([]string, len(relative))
+	for i, item := range relative {
+		out[i] = enclosing + item
+	}
+	return out
+}
 func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]propertyRule, error) {
+	return e.rulesAt(target, path, path, t)
+}
+func (e *propertyEmitter) rulesAt(target, codePath, diagnosticPath string, t *language.Type) ([]propertyRule, error) {
 	result := []propertyRule{}
 	switch __gp_m3 := any(t.Form).(type) {
 	case language.RefinedType:
 		base := __gp_m3.Base
 		rules := __gp_m3.Rules
 
-		nested, err := e.rules(target, path, base)
+		nested, err := e.rulesAt(target, codePath, diagnosticPath, base)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, nested...)
 		for _, rule := range rules {
-			result = append(result, propertyRule{target: target, code: generatedRuleCode(path, rule), offset: rule.At.Start.Offset})
+			result = append(result, propertyRule{target: target, code: generatedRuleCode(codePath, rule), predicate: language.FormatExpression(rule.Predicate), enclosing: diagnosticPath, paths: propertyAffectedPaths(rule.Predicate, diagnosticPath), offset: rule.At.Start.Offset, automatic: rule.Code == ""})
 		}
 	case language.RecordType:
 		fields := __gp_m3.Fields
 		for _, field := range fields {
-			nested, err := e.rules(target, path+"/"+strings.ReplaceAll(strings.ReplaceAll(field.Name, "~", "~0"), "/", "~1"), field.Type)
+			escaped := "/" + strings.ReplaceAll(strings.ReplaceAll(field.Name, "~", "~0"), "/", "~1")
+			nested, err := e.rulesAt(target, codePath+escaped, diagnosticPath+escaped, field.Type)
 			if err != nil {
 				return nil, err
 			}
@@ -199,7 +237,7 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 		}
 	case language.ListType:
 		element := __gp_m3.Element
-		nested, err := e.rules(target, path+"/0", element)
+		nested, err := e.rulesAt(target, codePath+"/0", diagnosticPath+"/"+OpenAPIPropertyElementPathSegment, element)
 		if err != nil {
 			return nil, err
 		}
@@ -212,7 +250,7 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 			}
 			e.visiting[name] = true
 			if decl.Body != nil {
-				nested, err := e.rules(target, path, decl.Body)
+				nested, err := e.rulesAt(target, codePath, diagnosticPath, decl.Body)
 				if err != nil {
 					return nil, err
 				}
@@ -220,7 +258,8 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 			} else {
 				for _, variant := range decl.Variants {
 					for index, argument := range variant.Arguments {
-						nested, err := e.rules(target, fmt.Sprintf("%s/%d", path, index), argument)
+						suffix := fmt.Sprintf("/%d", index)
+						nested, err := e.rulesAt(target, codePath+suffix, diagnosticPath+suffix, argument)
 						if err != nil {
 							return nil, err
 						}
@@ -236,20 +275,20 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 			if len(args) != 1 {
 				return nil, fmt.Errorf("%s requires one payload type", name)
 			}
-			return e.rules(target, path, args[0])
+			return e.rulesAt(target, codePath, diagnosticPath, args[0])
 		}
 		if name == "Map" {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("Map requires String keys and one value type")
 			}
-			return e.rules(target, path+"/0", args[1])
+			return e.rulesAt(target, codePath+"/0", diagnosticPath+"/"+OpenAPIPropertyElementPathSegment, args[1])
 		}
 		if name == "Result" {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("Result requires two payload types")
 			}
 			for _, argument := range args {
-				nested, err := e.rules(target, path+"/0", argument)
+				nested, err := e.rulesAt(target, codePath+"/0", diagnosticPath+"/0", argument)
 				if err != nil {
 					return nil, err
 				}
@@ -277,7 +316,8 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 					if err != nil {
 						return nil, err
 					}
-					nested, err := e.rules(target, fmt.Sprintf("%s/%d", path, index), closed)
+					suffix := fmt.Sprintf("/%d", index)
+					nested, err := e.rulesAt(target, codePath+suffix, diagnosticPath+suffix, closed)
 					if err != nil {
 						return nil, err
 					}
@@ -289,7 +329,7 @@ func (e *propertyEmitter) rules(target, path string, t *language.Type) ([]proper
 			if err != nil {
 				return nil, err
 			}
-			return e.rules(target, path, closed)
+			return e.rulesAt(target, codePath, diagnosticPath, closed)
 		}
 	case language.ArrowType:
 		return nil, fmt.Errorf("function payloads cannot be generated")
@@ -582,6 +622,9 @@ func seededPropertyGenerator(raw string, seeds []string) string {
 // GeneratePropertyTests emits an executable Java property suite using JetCheck
 // 0.3.0. Unsupported strategies reject the complete output.
 func GeneratePropertyTests(program *language.Program, namespace, contractName string, options PropertyTestOptions) ([]File, error) {
+	return generatePropertyTests(program, namespace, contractName, options, nil)
+}
+func generatePropertyTests(program *language.Program, namespace, contractName string, options PropertyTestOptions, rawOverrides map[string]string) ([]File, error) {
 	if program == nil {
 		return nil, fmt.Errorf("property tests require a checked program")
 	}
@@ -697,9 +740,13 @@ func GeneratePropertyTests(program *language.Program, namespace, contractName st
 		if targetType == nil {
 			targetType = &language.Type{Form: language.NamedType{Name: target.Name}, At: decl.At}
 		}
-		raw, err := emitter.boundedGenerator(targetType)
-		if err != nil {
-			return nil, fmt.Errorf("property target %s: %w", target.Name, err)
+		raw, overridden := rawOverrides[target.Name]
+		if !overridden {
+			var err error
+			raw, err = emitter.boundedGenerator(targetType)
+			if err != nil {
+				return nil, fmt.Errorf("property target %s: %w", target.Name, err)
+			}
 		}
 		rules, err := emitter.rules(target.Name, "", targetType)
 		if err != nil {

@@ -1,0 +1,31 @@
+package native
+
+import (
+    "encoding/json"
+    "net/url"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
+)
+
+func offlineSchemaFile(t *testing.T)string{t.Helper();path:=filepath.Join(t.TempDir(),"external.schema.json");if err:=os.WriteFile(path,[]byte(`{"type":"boolean"}`),0600);err!=nil{t.Fatal(err)};return (&url.URL{Scheme:"file",Path:filepath.ToSlash(path)}).String()}
+func offlineReference(t *testing.T,uri string)string{t.Helper();source,err:=json.Marshal(map[string]any{"$ref":uri});if err!=nil{t.Fatal(err)};return string(source)}
+
+func TestNativeJSONCompilersNeverFallBackToFilesystem(t *testing.T){
+    uri:=offlineSchemaFile(t);source:=offlineReference(t,uri)
+    if document,err:=ParseJSONSchema([]byte(source),Options{});document!=nil||err==nil||!strings.Contains(err.Error(),"external loading is disabled"){t.Fatalf("standalone schema used an unprovided filesystem resource: %v",err)}
+    resources:=[]Resource{{URI:"https://example.test/root.json",Source:source}}
+    targets:=[]OpenAPISchemaTarget{{ID:"body",Resource:resources[0].URI}}
+    if _,_,err:=compileOpenAPIDirectionalSchemas(resources,targets);err==nil||!strings.Contains(err.Error(),"external loading is disabled"){t.Fatalf("operation compiler used an unprovided filesystem resource: %v",err)}
+}
+
+func TestJSONProjectUsesExplicitFileURIResourceWithoutReadingFile(t *testing.T){
+    uri:=offlineSchemaFile(t);root:="https://example.test/root.json"
+    resources:=[]Resource{{URI:root,Source:offlineReference(t,uri)},{URI:uri,Source:`{"type":"integer"}`}}
+    project,err:=IngestProjectResources(JSONSchema,resources,ProjectOptions{Root:ResourceSelector{Resource:root,TypeName:"Value"}});if err!=nil{t.Fatal(err)}
+    if err:=project.ValidateJSON([]byte(`1`));err!=nil{t.Fatalf("explicit in-memory file URI was not authoritative: %v",err)}
+    if err:=project.ValidateJSON([]byte(`true`));problemCode(err)!="native.payload"{t.Fatalf("filesystem content replaced the explicit schema: %v",err)}
+    missing:=[]Resource{{URI:root,Source:offlineReference(t,uri)}}
+    if project,err:=IngestProjectResources(JSONSchema,missing,ProjectOptions{Root:ResourceSelector{Resource:root,TypeName:"Value"}});project!=nil||err==nil{t.Fatalf("missing file resource was loaded implicitly: %v",err)}
+}

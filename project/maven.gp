@@ -21,7 +21,7 @@ func MavenSnippetForProject(input GenerateInput,options MavenOptions)(string,err
 // deploys/signs an artifact. The caller must provide the actual CLI invocation.
 func MavenSnippet(options MavenOptions)string{
     layout:=layouts(Layout{SourceDir:options.SourceDir,ResourceDir:options.ResourceDir,TestDir:options.TestDir});executable:=strings.TrimSpace(options.CLIExecutable);arguments:=append([]string(nil),options.CLIArguments...);if executable==""{executable="refine"};if len(arguments)==0{arguments=[]string{"project","generate","--maven-group-id","${project.groupId}","--maven-artifact-id","${project.artifactId}","--maven-version","${project.version}"}};var argumentXML strings.Builder;argumentXML.WriteString("<arguments>");for _,argument:=range arguments{argumentXML.WriteString("<argument>"+xml(argument)+"</argument>")};argumentXML.WriteString("</arguments>")
-    regexDependency:="";if options.NativeRegex{regexDependency="  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>polyglot</artifactId><version>25.0.1</version></dependency>\n  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>js</artifactId><version>25.0.1</version><type>pom</type><scope>runtime</scope></dependency>\n"}
+    regexDependency:="";if options.NativeRegex{regexDependency="  <dependency><groupId>com.dylibso.chicory</groupId><artifactId>runtime</artifactId><version>1.7.5</version></dependency>\n  <dependency><groupId>com.dylibso.chicory</groupId><artifactId>wasm</artifactId><version>1.7.5</version></dependency>\n"}
     return fmt.Sprintf(`<properties>
   <maven.compiler.release>25</maven.compiler.release>
   <project.build.outputTimestamp>1980-01-01T00:00:02Z</project.build.outputTimestamp>

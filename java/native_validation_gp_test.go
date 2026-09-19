@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestProjectJSONSerdeIncludesNativeRegexComposition(t *testing.T) {
 	}
 	found := false
 	for _, file := range files {
-		if strings.Contains(file.Source, "regularExpressionFactory(new BoundedRegexFactory())") {
+		if strings.Contains(file.Source, "regularExpressionFactory(new BoundedRegexFactory(regexScope))") {
 			found = true
 		}
 	}
@@ -188,6 +189,123 @@ func TestGeneratedNativeJSONValidatorExactOfflineAndBounded(t *testing.T) {
 	}
 }
 
+func TestGeneratedNativeJSONValidatorLoadsCanonicalNestedIDsOffline(t *testing.T) {
+	compiler, vm := javaTools(t)
+	classpath := networkntClasspath(t)
+	resources := []native.Resource{
+		{URI: "https://example.test/root.json", Source: `{"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"https://schemas.test/tree#node"}`},
+		{URI: "https://cdn.test/defs.json", Source: `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://schemas.test/base","$defs":{"Node":{"$id":"tree","$anchor":"node","type":"object","properties":{"leaf":{"type":"integer","minimum":1}},"required":["leaf"],"additionalProperties":false}}}`},
+	}
+	project, err := native.IngestProjectResources(native.JSONSchema, resources, native.ProjectOptions{ResourceID: resources[0].URI, Root: native.ResourceSelector{Resource: resources[0].URI, TypeName: "Root"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.ValidateJSON([]byte(`{"leaf":1}`)); err != nil {
+		t.Fatalf("Go oracle rejected canonical valid value: %v", err)
+	}
+	if err := project.ValidateJSON([]byte(`{"leaf":0}`)); err == nil {
+		t.Fatal("Go oracle accepted canonical invalid value")
+	}
+	files, err := GenerateProjectNativeJSONValidator(project, "CanonicalCheck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	sources := []string{}
+	for _, file := range files {
+		target := filepath.Join(dir, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(file.Source), 0644); err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, target)
+	}
+	harness := filepath.Join(dir, "CanonicalHarness.java")
+	if err := os.WriteFile(harness, []byte(canonicalNestedIDHarnessJava), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sources = append(sources, harness)
+	classes := filepath.Join(dir, "classes")
+	args := append([]string{"--release", "25", "-encoding", "UTF-8", "-Xlint:all", "-Werror", "-cp", classpath, "-d", classes}, sources...)
+	if output, err := exec.Command(compiler, args...).CombinedOutput(); err != nil {
+		t.Fatalf("canonical native validator javac: %v\n%s", err, output)
+	}
+	if output, err := exec.Command(vm, "-cp", classes+string(os.PathListSeparator)+classpath, "CanonicalHarness").CombinedOutput(); err != nil {
+		t.Fatalf("canonical native validator runtime: %v\n%s", err, output)
+	}
+}
+
+func canonicalAliasProject(t *testing.T, physical, padding int) *native.Project {
+	t.Helper()
+	rootURI := "https://example.test/root.json"
+	root := `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://schemas.test/base","type":"string","$defs":{"Child":{"$id":"child","type":"string","description":"` + strings.Repeat("a", padding) + `"}}}`
+	resources := []native.Resource{{URI: rootURI, Source: root}}
+	for index := 1; index < physical; index++ {
+		resources = append(resources, native.Resource{URI: "https://example.test/extra-" + strconv.Itoa(index) + ".json", Source: "true"})
+	}
+	project, err := native.IngestProjectResources(native.JSONSchema, resources, native.ProjectOptions{ResourceID: rootURI, Root: native.ResourceSelector{Resource: rootURI, TypeName: "Root"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
+func canonicalAliasBytes(t *testing.T, project *native.Project) int {
+	t.Helper()
+	resources, err := project.CanonicalJSONResources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := project.JSONSchemaResourceAliases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, resource := range append(resources, aliases...) {
+		total += len(resource.Source)
+	}
+	return total
+}
+
+func TestNativeJSONCanonicalAliasEmissionIsBounded(t *testing.T) {
+	atCount := canonicalAliasProject(t, 126, 0)
+	if aliases, err := atCount.JSONSchemaResourceAliases(); err != nil || len(aliases) != 2 {
+		t.Fatalf("unexpected canonical alias inventory: %v %+v", err, aliases)
+	}
+	if _, err := GenerateProjectNativeJSONValidator(atCount, "AtCount"); err != nil {
+		t.Fatalf("128 physical and alias entries were rejected: %v", err)
+	}
+	overCount := canonicalAliasProject(t, 127, 0)
+	if _, err := GenerateProjectNativeJSONValidator(overCount, "OverCount"); err == nil || !strings.Contains(err.Error(), "at most 128 project resources and canonical aliases") {
+		t.Fatalf("129 physical and alias entries were not rejected clearly: %v", err)
+	}
+	empty := canonicalAliasProject(t, 1, 0)
+	one := canonicalAliasProject(t, 1, 1)
+	base, step := canonicalAliasBytes(t, empty), canonicalAliasBytes(t, one)-canonicalAliasBytes(t, empty)
+	limit := 4 << 20
+	if step <= 0 || base >= limit {
+		t.Fatalf("invalid alias byte fixture: base=%d step=%d", base, step)
+	}
+	padding := (limit - base) / step
+	atBytes := canonicalAliasProject(t, 1, padding)
+	used := canonicalAliasBytes(t, atBytes)
+	if used > limit || limit-used >= step {
+		t.Fatalf("fixture did not reach the exact aggregate boundary: used=%d step=%d", used, step)
+	}
+	if _, err := GenerateProjectNativeJSONValidator(atBytes, "AtBytes"); err != nil {
+		t.Fatalf("combined alias bytes at the limit were rejected: %v", err)
+	}
+	overBytes := canonicalAliasProject(t, 1, padding+1)
+	if canonicalAliasBytes(t, overBytes) <= limit {
+		t.Fatal("one-byte fixture did not cross the aggregate alias boundary")
+	}
+	if _, err := GenerateProjectNativeJSONValidator(overBytes, "OverBytes"); err == nil || !strings.Contains(err.Error(), "exceed 4 MiB") {
+		t.Fatalf("combined alias bytes above the limit were not rejected clearly: %v", err)
+	}
+}
+
 func TestGeneratedProjectJSONSerdeComposesNativeAndRefinements(t *testing.T) {
 	compiler, vm := javaTools(t)
 	classpath := networkntClasspath(t)
@@ -243,6 +361,13 @@ public final class NativeHarness {
  static void unicode(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(UnicodeCheck.NativeValidationException expected){if(expected.getCause()!=null||expected.isIndeterminate())throw new AssertionError("escaped unpaired Unicode classification");}}
  static void resource(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(NativeCheck.NativeValidationException expected){if(expected.getCause()!=null||!expected.isResourceLimit()||!expected.isIndeterminate()||expected.code()!=NativeCheck.Code.RESOURCE_LIMIT)throw new AssertionError("resource classification");}}
  public static void main(String[] args){var check=new NativeCheck();check.validate("99999999999999999999999999999999999999999999999999");invalid(()->check.validate("99999999999999999999999999999999999999999999999998"));invalid(()->check.validate("{\"n\":3,\"n\":3}"));invalid(()->check.validate("3 null"));invalid(()->check.validate("-".repeat(70000)));invalid(()->check.validate("1e+"));resource(()->check.validate("1e1000000000"));invalid(()->check.validate("\ud800"));var unicode=new UnicodeCheck();unicode(()->unicode.validate("{\"\\ud800\":3}"));unicode(()->unicode.validate("{\"value\":\"\\ud800\"}"));var tiny=new NativeCheck(new NativeCheck.Limits(100,2,10,10,10,10,8));resource(()->tiny.validate("[[[0]]]"));resource(()->tiny.validate("[1e2,1e2]"));try{new NativeCheck(new NativeCheck.Limits((1<<20)+1,128,10000,10000,1<<20,10000,65536));throw new AssertionError("relaxed hard limit accepted");}catch(IllegalArgumentException expected){}try{new NativeCheck(new NativeCheck.Limits(1<<20,128,10000,10000,1<<20,10000,65537));throw new AssertionError("relaxed generated numeric limit accepted");}catch(IllegalArgumentException expected){}}
+}
+`
+
+const canonicalNestedIDHarnessJava = `
+public final class CanonicalHarness {
+ static void invalid(Runnable action){try{action.run();throw new AssertionError("accepted");}catch(CanonicalCheck.NativeValidationException expected){if(expected.code()!=CanonicalCheck.Code.INVALID||expected.isIndeterminate())throw new AssertionError("invalid classification",expected);}}
+ public static void main(String[] args){var check=new CanonicalCheck();check.validate("{\"leaf\":1}");invalid(()->check.validate("{\"leaf\":0}"));}
 }
 `
 

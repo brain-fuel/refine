@@ -78,15 +78,9 @@ func ParseBundle(input []byte) (*Project, error) {
 		if err != nil {
 			return nil, err
 		}
-		project, err = applyBundledSource(project, wire)
+		project, err = applyBundledSourceAndNativeConstraintSources(project, wire)
 		if err != nil {
 			return nil, err
-		}
-		for _, unit := range wire.NativeConstraintSources {
-			project, err = project.WithEditedNativeConstraintSource(unit.URI, unit.Source)
-			if err != nil {
-				return nil, err
-			}
 		}
 		project, err = project.WithMetadata(wire.Metadata)
 		if err != nil {
@@ -101,9 +95,6 @@ func ParseBundle(input []byte) (*Project, error) {
 	if wire.Format != OpenAPI || wire.Root != nil || wire.Target == nil || wire.Target.Kind != OpenAPIOperationsProject || wire.Target.Resource == "" {
 		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "version 2 operations bundle requires an OpenAPI target resource and forbids root"}
 	}
-	if len(wire.NativeConstraintSources) > 0 {
-		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "OpenAPI operations bundle cannot contain unrelated native constraint source units"}
-	}
 	bundled, err := compileBundledOperationSource(wire)
 	if err != nil {
 		return nil, err
@@ -112,28 +103,51 @@ func ParseBundle(input []byte) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	project, err = applyBundledNativeConstraintSources(project, wire)
+	if err != nil {
+		return nil, err
+	}
 	project.releasePolicy = copyNativeReleasePolicy(checkedPolicy)
 	return project, nil
 }
 
-func applyBundledSource(project *Project, wire bundleFile) (*Project, error) {
-	var err error
-	if wire.LanguageEntry != "" {
-		sources := make(map[string]string)
-		for _, file := range wire.LanguageFiles {
-			if _, duplicate := sources[file.ID]; duplicate {
-				return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "duplicate language source ID"}
-			}
-			sources[file.ID] = file.Source
+func applyBundledNativeConstraintSources(project *Project, wire bundleFile) (*Project, error) {
+	seen := map[string]bool{}
+	for _, unit := range wire.NativeConstraintSources {
+		if seen[unit.URI] {
+			return nil, &Error{Code: "native.bundle", Format: wire.Format, Pointer: unit.URI, Message: "duplicate native constraint source resource"}
 		}
-		project, err = project.WithEditedSources(wire.LanguageEntry, sources)
-		if err == nil && project.EditableSource() != wire.EditableSource {
-			return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "editableSource does not match the bundled language import graph"}
-		}
-	} else {
-		project, err = project.WithEditedSource(wire.EditableSource)
+		seen[unit.URI] = true
 	}
-	return project, err
+	return project.withEditedNativeConstraintSources(wire.NativeConstraintSources)
+}
+
+func applyBundledSourceAndNativeConstraintSources(project *Project, wire bundleFile) (*Project, error) {
+	seen := map[string]bool{}
+	for _, unit := range wire.NativeConstraintSources {
+		if seen[unit.URI] {
+			return nil, &Error{Code: "native.bundle", Format: wire.Format, Pointer: unit.URI, Message: "duplicate native constraint source resource"}
+		}
+		seen[unit.URI] = true
+	}
+	if wire.LanguageEntry == "" {
+		return project.WithEditedSourceAndNativeConstraintSources(wire.EditableSource, wire.NativeConstraintSources)
+	}
+	sources := make(map[string]string)
+	for _, file := range wire.LanguageFiles {
+		if _, duplicate := sources[file.ID]; duplicate {
+			return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "duplicate language source ID"}
+		}
+		sources[file.ID] = file.Source
+	}
+	bundle, err := language.CompileSources(wire.LanguageEntry, sources)
+	if err != nil {
+		return nil, wrap(wire.Format, "native.refinement", "", err)
+	}
+	if bundle.Program().Source() != wire.EditableSource {
+		return nil, &Error{Code: "native.bundle", Format: wire.Format, Message: "editableSource does not match the bundled language import graph"}
+	}
+	return project.withEditedProgramAndNativeConstraintSources(wire.EditableSource, bundle.Program(), bundle.Entry(), bundle.Files(), wire.NativeConstraintSources)
 }
 
 func compileBundledOperationSource(wire bundleFile) (*openAPIOperationSource, error) {

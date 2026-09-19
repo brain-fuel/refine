@@ -34,6 +34,12 @@ func (p *Project) exportOpenAPIOperations(options LowerOptions, mode ExportMode)
 		return nil, &Error{Code: "native.unrepresentable", Format: OpenAPI, Message: fmt.Sprintf("%d refinement rule(s) require documented-loss permission in an ordinary operations export", len(losses))}
 	}
 	resources := p.Resources()
+	if len(p.nativeUnitSources) > 0 {
+		resources, err = p.CanonicalJSONResources()
+		if err != nil {
+			return nil, err
+		}
+	}
 	entryIndex := -1
 	for i, resource := range resources {
 		if resource.URI == p.EntryResource() {
@@ -87,5 +93,5 @@ func (p *Project) exportOpenAPIOperations(options LowerOptions, mode ExportMode)
 	if err != nil {
 		return nil, &Error{Code: "native.export-invalid", Format: OpenAPI, Message: "exported operation resource set failed native validation: " + err.Error(), Cause: err}
 	}
-	return &ProjectExport{format: OpenAPI, version: p.Version(), target: operationProjectTarget(p.EntryResource()), metadata: p.Metadata(), resources: resources, companion: companion, losses: append([]Loss(nil), losses...)}, nil
+	return &ProjectExport{format: OpenAPI, version: p.Version(), target: operationProjectTarget(p.EntryResource()), metadata: p.Metadata(), resources: resources, nativeConstraintSources: p.NativeConstraintSources(), companion: companion, losses: append([]Loss(nil), losses...)}, nil
 }

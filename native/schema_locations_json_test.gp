@@ -1,0 +1,26 @@
+package native
+
+import (
+    "reflect"
+    "testing"
+)
+
+func TestJSONSchemaKeywordLocationsUseCanonicalReferencesAndStablePhysicalLocations(t *testing.T){
+    entry:="https://example.test/root.json";external:="https://example.test/text.json"
+    resources:=[]Resource{
+        {URI:entry,Source:`{"$id":"https://schemas.test/root","type":"object","properties":{"name":{"$ref":"https://schemas.test/text#letters"},"alias":{"$ref":"https://schemas.test/text"}},"examples":[{"pattern":"ignored","$anchor":"fake"}]}`},
+        {URI:external,Source:`{"$id":"https://schemas.test/text","$anchor":"letters","type":"string","pattern":"^[a-z]+$","maxLength":8,"$defs":{"unused":{"type":"string","pattern":"^x$"}},"default":{"pattern":"ignored"}}`},
+    }
+    expected:=[]string{external+"#/$defs/unused/pattern",external+"#/maxLength",external+"#/pattern"}
+    for _,ordered:=range [][]Resource{resources,{resources[1],resources[0]}}{
+        project,err:=IngestProjectResources(JSONSchema,ordered,ProjectOptions{Root:ResourceSelector{Resource:entry,TypeName:"Root"}});if err!=nil{t.Fatal(err)}
+        locations,err:=project.JSONSchemaKeywordLocations("pattern","maxLength","pattern");if err!=nil{t.Fatal(err)};if !reflect.DeepEqual(locations,expected){t.Fatalf("keyword scan lost canonical scope or stable physical identity: got %v want %v",locations,expected)}
+    }
+}
+
+func TestJSONSchemaKeywordLocationsResolveNestedResourcePointerScopes(t *testing.T){
+    resource:="https://example.test/nested.json"
+    source:=`{"$id":"https://schemas.test/root","type":"object","properties":{"name":{"$ref":"https://schemas.test/inner#/$defs/Text"}},"$defs":{"Inner":{"$id":"inner","$defs":{"Text":{"type":"string","pattern":"^x$"}}}}}`
+    project,err:=IngestProject(JSONSchema,[]byte(source),ProjectOptions{ResourceID:resource,Root:ResourceSelector{TypeName:"Root"}});if err!=nil{t.Fatal(err)}
+    locations,err:=project.JSONSchemaKeywordLocations("pattern");if err!=nil{t.Fatal(err)};expected:=[]string{resource+"#/$defs/Inner/$defs/Text/pattern"};if !reflect.DeepEqual(locations,expected){t.Fatalf("nested logical-resource pointer scan: got %v want %v",locations,expected)}
+}

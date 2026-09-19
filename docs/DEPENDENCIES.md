@@ -41,48 +41,42 @@ release gate.
   private schema cache. The project was archived in 2026, which is a maintenance/replacement
   risk and makes independent Apache conformance coverage especially important.
   Upstream license: [MIT](https://github.com/hamba/avro/blob/v2.31.0/LICENSE).
-- `github.com/dlclark/regexp2 v1.12.0`: production ECMAScript-mode syntax engine
-  supplied to JSON Schema and OpenAPI validators instead of silently treating
-  Go RE2 syntax as native `pattern` syntax. A 250 ms match timeout bounds schema
-  default/example checks. Timeout or engine failure propagates as
-  `native.enforcement`; it is never converted to a false match result.
-  ECMAScript mode is a compatibility implementation,
-  not proof of complete parity with every ECMA-262 edition or JavaScript host.
-  Upstream license: [MIT](https://github.com/dlclark/regexp2/blob/v1.12.0/LICENSE).
+- `github.com/tetratelabs/wazero v1.12.0`: pure-Go WebAssembly interpreter for
+  the checked native ECMA-262 regex guest. Runtime configuration fixes guest
+  memory to at most 512 pages and closes trapped instances; the guest has one
+  interrupt import and no WASI or ambient capabilities. Upstream license:
+  [Apache-2.0](https://github.com/tetratelabs/wazero/blob/v1.12.0/LICENSE).
+- Checked `internal/ecmaregex/refine-ecma262.wasm`: one reproducibly built
+  regex-only ABI shared by Go and generated Java. Its manifest pins QuickJS-NG
+  0.15.1 (`fd0a0210b7be00957751871e7e01b8291268fc29`) and
+  `@eslint-community/regexpp` 4.12.2, wasi-sdk 33.0 and every input SHA-256.
+  Refine carries the interrupt patch, build script, exact 1,202,261-byte guest,
+  full MIT/Apache/LLVM-exception texts, and aggregate NOTICE. Generated copies
+  carry the guest, manifest, and same notices. The guest SHA-256 is
+  `ee1ff0212d3a3bd28a72f00033f51dad747c8b36e9302edbbbd35cf6a58bfe8f`.
 - `com.networknt:json-schema-validator:3.0.7`: generated Java's Jackson 3
   JSON Schema Draft 2020-12/OpenAPI 3.1 validation engine. Generated code
   supplies an exact `BigDecimal` node factory, a resource loader that cannot
   fall back to classpath/files/network, strict duplicate/trailing-token parsing,
   and caller limits, including a whole-request numeric-expansion preflight
   before either Jackson or networknt can expand a compact exponent. Schemas
-  without `pattern` or `patternProperties` do not link or load GraalJS.
+  without `pattern` or `patternProperties` do not link Chicory or load the
+  checked regex guest.
   Runtime tests pin this artifact and its Jackson 3.2.1, ITU 1.14.0, and SLF4J
   2.0.17 dependencies by SHA-256. Upstream license:
   [Apache-2.0](https://github.com/networknt/json-schema-validator/blob/3.0.7/LICENSE).
-- `org.graalvm.polyglot:js:25.0.1` (Community): conditionally supplies the
-  GraalJS `RegExp` implementation configured for ECMA-262 2020 for generated
-  Java validators whose native schemas contain `pattern` or
-  `patternProperties`. Refine does not use
-  networknt's process-wide Graal context. Each validation gets a locked-down
-  context, deterministic aggregate evaluation/work/UTF-16-unit limits, and a
-  watchdog deadline that cancels guest execution. A separate fixed 10-second
-  deployment-startup phase evaluates the cached matcher source and warms only a
-  fixed empty pattern on an empty subject; the caller's aggregate payload
-  deadline starts afterward. Context construction is checked against that
-  ceiling after it returns because there is no cancellable context beforehand;
-  subsequent initialization work is actively watched. Startup failure is a
-  fatal enforcement/deployment outcome and is neither retried nor reported as
-  an invalid payload. Patterns and subjects cross
-  the host boundary only as values to a fixed generated program; host classes,
-  IO, environment, processes, native access, polyglot access, and guest-created
-  threads are disabled. Resource exhaustion remains indeterminate and is never
-  converted into a non-match inside `not`, `anyOf`, or `patternProperties`.
-  The runtime closure consists of the 25.0.1 `js-language`, `regex`, `polyglot`,
-  `truffle-api`, `truffle-runtime`, `truffle-compiler`, `collections`,
-  `jniutils`, `nativeimage`, `word`, and shadowed `icu4j`/`xz` jars. Java tests
-  verify SHA-256 for every jar before execution. Upstream licenses are
-  [UPL-1.0 and MIT](https://github.com/oracle/graaljs/blob/vm-25.0.1/LICENSE);
-  the shadowed ICU data retains its upstream Unicode/ICU notices.
+- `com.dylibso.chicory:runtime:1.7.5` and
+  `com.dylibso.chicory:wasm:1.7.5`: conditionally execute and parse that exact
+  checked guest in generated Java validators. The generated host exposes only
+  the interrupt import, enforces the declared 32 MiB memory maximum, transfers
+  exact UTF-16 units, verifies resource size/SHA-256, and applies the same
+  typed initialization, compilation, matching, work, evaluation, and queue
+  limits as the Go host. Tests pin runtime SHA-256
+  `cdbb2bd4e353eacff78da5dd3454694316eaa6d2950aab3d1517dca41ae4a0b2`
+  and wasm-parser SHA-256
+  `16558a66bac04f7e00ea06950f52d87ce2cfff535a54bac2115f2c13e0b3050b`.
+  Upstream license:
+  [Apache-2.0](https://github.com/dylibso/chicory/blob/1.7.5/LICENSE).
 - `golang.org/x/text v0.14.0`: a transitive dependency, under Go's BSD-style
   license. Other `golang.org/x/*` entries support the pinned GoPlus module tool;
   see `go.mod`/`go.sum` for the exact graph. `kin-openapi` and `hamba/avro` also
@@ -99,8 +93,7 @@ release gate.
   establishing its SHA-256 pin; jetCheck publishes its SHA-256 directly.
 
 Dependency declarations are not evidence that an upstream component supplies
-the full Refine contract. In particular, native ingestion's regexp2 syntax
-oracle does not yet admit every valid ECMA-262 2020 Unicode-property spelling,
-even when GraalJS would execute it. Complete regex-language parity, translation
-bijections, and Java conformance still require Refine-owned implementation and
-verification.
+the full Refine contract. Refine owns the fixed regex ABI, pinned guest build,
+host capability inventory, typed failure mapping, bounded lifecycle, and
+cross-host vectors; neither wazero nor Chicory alone establishes native regex
+conformance.

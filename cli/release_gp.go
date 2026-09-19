@@ -249,7 +249,11 @@ func entryPolicy(entry *releaseSchemaEntry, config projectConfig) string {
 	settings := config.Families[entry.family]
 	formats := append([]native.Format(nil), settings.Formats...)
 	if len(formats) == 0 {
-		formats = []native.Format{native.JSONSchema, native.Avro, native.OpenAPI}
+		if authoredOpenAPIEntry(entry) {
+			formats = []native.Format{native.OpenAPI}
+		} else {
+			formats = []native.Format{native.JSONSchema, native.Avro, native.OpenAPI}
+		}
 	}
 	sort.Slice(formats, func(i, j int) bool { return formats[i] < formats[j] })
 	formatNames := []string{}
@@ -259,7 +263,11 @@ func entryPolicy(entry *releaseSchemaEntry, config projectConfig) string {
 	noCodegen := append([]string(nil), settings.NoCodegen...)
 	sort.Strings(noCodegen)
 	wire, _ := json.Marshal(settings.Wire)
-	return strings.Join([]string{string(wire), entry.family, settings.Root, config.Package, settings.Package, settings.JavaPackage, strings.Join(formatNames, ","), strings.Join(noCodegen, ","), strconv.FormatBool(versionCodegen(settings, entry.basename)), strconv.FormatBool(config.Release.EnforceForward)}, "\x00")
+	policy := strings.Join([]string{string(wire), entry.family, settings.Root, config.Package, settings.Package, settings.JavaPackage, strings.Join(formatNames, ","), strings.Join(noCodegen, ","), strconv.FormatBool(versionCodegen(settings, entry.basename)), strconv.FormatBool(config.Release.EnforceForward)}, "\x00")
+	if authoredOpenAPIEntry(entry) {
+		policy += "\x00target=openapi-operations"
+	}
+	return policy
 }
 
 func comparisonContent(bundle *language.SourceBundle, catalog releaseCatalog, config projectConfig) (release.ContentID, release.ContentID, error) {
@@ -355,13 +363,20 @@ func compileReleaseEntry(root *os.Root, entry *releaseSchemaEntry, catalog relea
 	if err != nil {
 		return err
 	}
+	entry.bundle = bundle
+	entry.program = bundle.Program()
+	entry.releasePolicy = bundle.ReleasePolicy()
+	if entry.program.OpenAPI() != nil {
+		authored, _, authorErr := authoredOpenAPIProject(entry.program, entry.family, config.Families[entry.family])
+		if authorErr != nil {
+			return authorErr
+		}
+		entry.nativeProject = authored
+	}
 	content, policy, err := comparisonContent(bundle, catalog, config)
 	if err != nil {
 		return err
 	}
-	entry.bundle = bundle
-	entry.program = bundle.Program()
-	entry.releasePolicy = bundle.ReleasePolicy()
 	entry.content = content
 	entry.policyContent = policy
 	return nil
@@ -478,7 +493,7 @@ type releaseEntryImports struct {
 }
 
 func entryImports(root *os.Root, entry *releaseSchemaEntry, catalog releaseCatalog, config projectConfig, intended map[string]release.Version, allowSnapshot bool) (releaseEntryImports, error) {
-	if entry.nativeProject != nil {
+	if entry.kind == nativeBundleSchema {
 		for _, file := range entry.nativeProject.LanguageFiles() {
 			for _, resolved := range file.Imports {
 				if dependency := catalog.entries[resolved]; dependency != nil {
@@ -984,6 +999,18 @@ func promoteReleaseWorkflow(workflow releaseWorkflow) (release.PromotionResult, 
 				basename = "v" + version.String()
 			}
 			javaPackage := settings.JavaPackage
+			if releaseOperationsEntry(entry) {
+				formats := settings.Formats
+				if authoredOpenAPIEntry(entry) {
+					var formatErr error
+					formats, formatErr = authoredOpenAPIFormats(family, settings)
+					if formatErr != nil {
+						return formatErr
+					}
+				}
+				generated.Contracts = append(generated.Contracts, project.Contract{Family: family, Version: version, NativeProject: entry.nativeProject, LogicalNamespace: settings.Package, JavaPackage: javaPackage, NoCodegen: !versionCodegen(settings, basename), Formats: formats})
+				return nil
+			}
 			if entry.kind == nativeBundleSchema {
 				generated.Contracts = append(generated.Contracts, project.Contract{Family: family, Version: version, NativeProject: entry.nativeProject, RootType: settings.Root, LogicalNamespace: settings.Package, JavaPackage: javaPackage, NoCodegen: !versionCodegen(settings, basename), Formats: settings.Formats})
 				return nil

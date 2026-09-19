@@ -96,6 +96,7 @@ func Format(module *Module) string {
     for _, entry := range module.Imports { b.WriteString("import " + quote(entry.Path) + "\n") }
     if len(module.Imports) > 0 { b.WriteByte('\n') }
     if module.Limits.Total!=0||module.Limits.Clause!=0{b.WriteString("@limits");if module.Limits.Total!=0{b.WriteString(" total "+strconv.FormatUint(module.Limits.Total,10))};if module.Limits.Clause!=0{b.WriteString(" clause "+strconv.FormatUint(module.Limits.Clause,10))};b.WriteString("\n\n")}
+    if module.OpenAPI!=nil{b.WriteString(FormatOpenAPI(module.OpenAPI));b.WriteByte('\n')}
     for _, declaration := range module.Types {
         name := declaration.Name
         if len(declaration.Parameters) > 0 { name += " " + strings.Join(declaration.Parameters," ") }

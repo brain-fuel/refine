@@ -84,10 +84,7 @@ func (p *Project) canonicalJSONResources() ([]Resource, error) {
 		}
 		resources[i] = Resource{URI: resource.URI, Source: doc.Raw()}
 	}
-	if p.Format() == JSONSchema {
-		return p.effectiveJSONSchemaResources(resources)
-	}
-	return resources, nil
+	return p.effectiveJSONSchemaResources(resources)
 }
 
 func (p *Project) validateOpenAPIJSON(input []byte) (failure error) {
@@ -103,39 +100,46 @@ func (p *Project) validateOpenAPIJSON(input []byte) (failure error) {
 	if err != nil {
 		return wrap(OpenAPI, "native.payload", "", err)
 	}
-	compiler := jsonoracle.NewCompiler()
-	compiler.DefaultDraft(jsonoracle.Draft2020)
-	compiler.UseRegexpEngine(jsonRegexp)
-	dialect, err := jsonoracle.UnmarshalJSON(strings.NewReader(openAPIBaseDialectAdapter))
-	if err != nil {
-		panic(err)
-	}
-	if err := compiler.AddResource(openAPIBaseDialect, dialect); err != nil {
-		panic(err)
-	}
 	resources, err := p.CanonicalJSONResources()
 	if err != nil {
 		return err
 	}
-	for _, resource := range resources {
-		schemaValue, err := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
-		if err != nil {
-			return wrap(OpenAPI, "native.structure", resource.URI, err)
+	scope := newRegexScope()
+	err = scope.run(OpenAPI, false, func() error {
+		compiler := newOfflineJSONCompiler()
+		compiler.DefaultDraft(jsonoracle.Draft2020)
+		compiler.UseRegexpEngine(scope.jsonRegexp)
+		dialect, parseErr := jsonoracle.UnmarshalJSON(strings.NewReader(openAPIBaseDialectAdapter))
+		if parseErr != nil {
+			panic(parseErr)
 		}
-		if err := compiler.AddResource(resource.URI, schemaValue); err != nil {
-			return wrap(OpenAPI, "native.structure", resource.URI, err)
+		if addErr := compiler.AddResource(openAPIBaseDialect, dialect); addErr != nil {
+			panic(addErr)
 		}
-	}
-	location := p.root.Resource
-	if p.root.Pointer != "" {
-		location += "#" + p.root.Pointer
-	}
-	schema, err := compiler.Compile(location)
+		for _, resource := range resources {
+			schemaValue, parseErr := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
+			if parseErr != nil {
+				return wrap(OpenAPI, "native.structure", resource.URI, parseErr)
+			}
+			if addErr := compiler.AddResource(resource.URI, schemaValue); addErr != nil {
+				return wrap(OpenAPI, "native.structure", resource.URI, addErr)
+			}
+		}
+		location := p.root.Resource
+		if p.root.Pointer != "" {
+			location += "#" + p.root.Pointer
+		}
+		schema, compileErr := compiler.Compile(location)
+		if compileErr != nil {
+			return wrap(OpenAPI, "native.enforcement", p.root.Pointer, compileErr)
+		}
+		if validateErr := schema.Validate(value); validateErr != nil {
+			return wrap(OpenAPI, "native.payload", p.root.Pointer, validateErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return wrap(OpenAPI, "native.enforcement", p.root.Pointer, err)
-	}
-	if err := schema.Validate(value); err != nil {
-		return wrap(OpenAPI, "native.payload", p.root.Pointer, err)
+		return wrapRegexResult(OpenAPI, "native.enforcement", p.root.Pointer, err)
 	}
 	return nil
 }
@@ -248,11 +252,11 @@ func openAPI30At(root any, pointer string) (map[string]any, error) {
 }
 
 func adaptOpenAPI30Schema(schema map[string]any) error {
+	// OAS 3.0 Reference Objects ignore every sibling of $ref. Do not reject a
+	// valid document or accidentally reinterpret a sibling as a JSON Schema
+	// adjacent applicator; retain only the authoritative reference.
 	if _, hasRef := schema["$ref"]; hasRef {
 		for key := range schema {
-			if key != "$ref" && key != "x-refine" && !strings.HasPrefix(key, "x-") {
-				return fmt.Errorf("OpenAPI 3.0 Reference Object contains a non-extension sibling")
-			}
 			if key != "$ref" {
 				delete(schema, key)
 			}
@@ -293,6 +297,50 @@ func adaptOpenAPI30Schema(schema map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// openAPI30IgnoredRefSiblingFields returns the field names that kin-openapi
+// must allow while checking an OAS 3.0 document. The 3.0 Reference Object says
+// every sibling of $ref is ignored; the library otherwise rejects those
+// documents before our schema-position adapter can discard the ignored data.
+// The caller has already applied syntax depth/node limits and rejected aliases.
+func openAPI30IgnoredRefSiblingFields(roots ...*yaml.Node) []string {
+	found := map[string]bool{}
+	var walk func(*yaml.Node)
+	walk = func(node *yaml.Node) {
+		if node == nil {
+			return
+		}
+		if node.Kind == yaml.MappingNode {
+			hasRef := false
+			for i := 0; i < len(node.Content); i += 2 {
+				if node.Content[i].Value == "$ref" {
+					hasRef = true
+					break
+				}
+			}
+			if hasRef {
+				for i := 0; i < len(node.Content); i += 2 {
+					name := node.Content[i].Value
+					if name != "$ref" {
+						found[name] = true
+					}
+				}
+			}
+		}
+		for _, child := range node.Content {
+			walk(child)
+		}
+	}
+	for _, root := range roots {
+		walk(root)
+	}
+	out := make([]string, 0, len(found))
+	for name := range found {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *Project) validateOpenAPIDialects(resources []Resource) error {

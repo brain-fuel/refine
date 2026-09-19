@@ -26,20 +26,33 @@ requires that operation.
 
 ## Confirmed unfinished first-release work
 
-- Complete OpenAPI operations authored directly in Haskell-like source, without
-  a companion native API document. Current payload lowering and metadata-bound
-  operation execution do not implement this authoring path.
-- Per-constraint native correspondence beyond the documented JSON Schema numeric
-  subset, including OpenAPI/Avro adapters. Exact whole-document retention does
-  not itself satisfy editable, per-constraint bijection.
-- Native ECMA-262 regex conformance: the Go ingestion oracle and generated
-  GraalJS matcher are different engines. The current oracle both rejects valid
-  Unicode-property patterns and accepts non-ECMA syntax; generated Java support
-  does not repair ingestion. A replacement must match syntax, matching semantics
-  and Unicode data across both boundaries, not just accept one extra spelling.
+- Finish the checkpoint integration gate for complete OpenAPI operations authored directly in
+  Haskell-like source without a companion native API document. The frontend,
+  native assembly, project/release workflow and first real generated-Java
+  authoring anchor are implemented. Repeated/inherited clause identities and
+  the affected operation-property replay contracts passed their required-Java
+  anchors and the Java integration package. The unsigned Maven lifecycle passed
+  all four phases in 72.26s; pushed-checkpoint CI remains pending.
+- Per-constraint native correspondence beyond the documented JSON Schema and
+  OpenAPI numeric, `const`/`enum`, and collection-count subsets, Avro fixed sizes
+  and ordered enum symbols. Paired OpenAPI 3.0 bounds are now implemented.
+  Resource-scoped edits now
+  rebuild effective validation/export/bundle views; exact whole-document
+  retention alone does not satisfy editable, per-constraint bijection.
+- Complete the shared native ECMA-262 regex integration gate. Go and generated
+  Java now use the same pinned guest artifact, syntax and Unicode data through
+  Wazero and Chicory respectively. Go race, Java lifecycle/adversarial,
+  native-consumer, resource, serde and operation-catalog checks pass. The final
+  Maven lifecycle passes; pushed-checkpoint CI remains pending.
 - Remaining native projection/annotation and scoped-edit boundaries documented
-  in [NATIVE.md](NATIVE.md), including general reference projection, per-OpenAPI-
-  object annotations, and unsupported scoped changes beneath applicators.
+  in [NATIVE.md](NATIVE.md), including general OpenAPI reference projection, per-OpenAPI-
+  object annotation composition beneath nested fields/applicators, and
+  unsupported scoped changes beneath applicators. Selected Schema Objects and
+  direct operation-part annotations are implemented and fail closed on
+  unsupported reachable annotations. JSON Schema external recursive references,
+  canonical IDs and static anchors are implemented across Go projection,
+  validation and generated Java offline loaders; dynamic-reference projection
+  remains explicitly unsupported.
 
 General satisfiability and compatibility may correctly remain `unknown` under
 the agreed contract. A sound unknown result, enforced through the existing
@@ -52,8 +65,10 @@ application-owned Java adaptation beyond serde are explicitly deferred.
 The current goal excludes Maven deployment. Maven coordinates remain a user
 choice; that does not block implementation or unsigned artifact verification.
 No product tag should be represented as release-ready until the required gaps
-above and the final integration audit are resolved. Prepared sibling Hugo edits
-do not imply that those edits have been pushed or deployed.
+above and the final integration audit are resolved. The sibling Hugo page and
+vanity imports were explicitly approved, pushed as `8537d17` in
+`brain-fuel/dev.goforge`, and verified live on 2026-09-19. That page describes an
+unreleased development checkpoint, not a completed product release.
 
 ## Test evidence policy
 

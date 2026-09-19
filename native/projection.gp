@@ -18,6 +18,7 @@ func checkedTypeName(name string)bool{if name==""{return false};for i,r:=range n
 func safeTypeName(raw string)string{var b strings.Builder;for i,r:=range raw{if unicode.IsLetter(r)||i>0&&unicode.IsDigit(r)||r=='_'{b.WriteRune(r)}else{b.WriteByte('_')}};name:=b.String();if name==""||!unicode.IsUpper([]rune(name)[0]){name="Native_"+name};if !checkedTypeName(name){sum:=sha256.Sum256([]byte(raw));name=fmt.Sprintf("Native_%x",sum[:6])};return name}
 
 func projectJSON(doc schemajson.Document,selector ResourceSelector,openAPI bool)(string,error){
+    if !openAPI{return projectJSONResources([]Resource{{URI:selector.Resource,Source:doc.Raw()}},selector)}
     p:=&sourceProjector{format:JSONSchema,root:doc,names:make(map[string]string),definitionNodes:make(map[string]schemajson.Node),definitionPaths:make(map[string]string),emitted:make(map[string]bool),openAPI:openAPI};if openAPI{p.format=OpenAPI}
     defsPointer:="/$defs";refPrefix:="#/$defs/";if openAPI{defsPointer="/components/schemas";refPrefix="#/components/schemas/"}
     if defs,err:=doc.At(defsPointer);err==nil&&schemajson.KindName(defs.Kind())=="object"{used:=map[string]bool{selector.TypeName:true};for _,member:=range defs.Members(){raw,_:=member.Key.UTF8();reference:=refPrefix+escapePointer(raw);name:=safeTypeName(raw);if used[name]{sum:=sha256.Sum256([]byte(raw));name=fmt.Sprintf("%s_%x",name,sum[:4])};used[name]=true;p.names[reference]=name;p.definitionNodes[reference]=member.Value;p.definitionPaths[reference]=defsPointer+"/"+escapePointer(raw)}}

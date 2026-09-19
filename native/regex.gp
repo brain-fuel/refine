@@ -1,25 +1,49 @@
 package native
 
 import (
+    "context"
+    "errors"
     "fmt"
+    "sync"
     "time"
 
-    "github.com/dlclark/regexp2"
     "github.com/getkin/kin-openapi/openapi3"
     jsonoracle "github.com/santhosh-tekuri/jsonschema/v6"
+    "goforge.dev/refine/internal/ecmaregex"
 )
 
-// regexp2 is substantially closer to JSON Schema/OpenAPI's ECMA-262 pattern
-// syntax than Go regexp. It is still an implementation oracle, not a proof of
-// parity with every edition/host behavior of ECMAScript RegExp.
-type ecmaRegexp struct { compiled *regexp2.Regexp }
+// regexScope binds every schema compilation, lazy external-reference compile,
+// and match in one validation to a single bounded guest request. Cached schema
+// objects retain their own scope; unrelated schemas never share mutable request
+// state. The one-place gate is acquired within the caller's aggregate budget.
+type regexScope struct {gate chan struct{};limits ecmaregex.Limits;state sync.Mutex;active bool;requestLimits ecmaregex.Limits;request *ecmaregex.Request;handles map[string]ecmaregex.Handle}
+type ecmaRegexp struct {scope *regexScope;source string}
 type regexEvaluationFailure struct { cause error }
-func (r *ecmaRegexp) MatchString(input string)bool{matched,err:=r.compiled.MatchString(input);if err!=nil{panic(regexEvaluationFailure{cause:err})};return matched}
-func (r *ecmaRegexp) String()string{return r.compiled.String()}
 
-var ecmaMatchTimeout=250*time.Millisecond
-func compileECMA(source string)(*ecmaRegexp,error){compiled,err:=regexp2.Compile(source,regexp2.ECMAScript);if err!=nil{return nil,err};compiled.MatchTimeout=ecmaMatchTimeout;return &ecmaRegexp{compiled:compiled},nil}
-func jsonRegexp(source string)(jsonoracle.Regexp,error){return compileECMA(source)}
-func openAPIRegexp(source string)(openapi3.RegexMatcher,error){return compileECMA(source)}
+var sharedRegexEngineOnce sync.Once
+var sharedRegexEngine *ecmaregex.Engine
+var sharedRegexEngineFailure error
 
-func recoverRegexEvaluation(format Format,failure *error){if caught:=recover();caught!=nil{if problem,ok:=caught.(regexEvaluationFailure);ok{*failure=&Error{Code:"native.enforcement",Format:format,Message:"ECMA-262 regular expression evaluation did not complete",Cause:fmt.Errorf("regular expression engine: %w",problem.cause)};return};panic(caught)}}
+func regexEngine()(*ecmaregex.Engine,error){sharedRegexEngineOnce.Do(func(){sharedRegexEngine,sharedRegexEngineFailure=ecmaregex.New(context.Background(),ecmaregex.DefaultInitLimits())});return sharedRegexEngine,sharedRegexEngineFailure}
+func newRegexScope()*regexScope{return newRegexScopeWithLimits(ecmaregex.DefaultLimits())}
+func newRegexScopeWithLimits(limits ecmaregex.Limits)*regexScope{gate:=make(chan struct{},1);gate<-struct{}{};return &regexScope{gate:gate,limits:limits}}
+
+func (s *regexScope)run(format Format,construction bool,action func()error)(failureResult error){
+    if s==nil{return regexNativeError(format,errors.New("nil ECMA-262 request scope"))};limits:=s.limits;wait:=limits.MaxDuration;if construction{wait=limits.MaxCompilationDuration};if wait<=0{return regexResourceError(format)};started:=time.Now();timer:=time.NewTimer(wait);defer timer.Stop();select{case <-s.gate:case <-timer.C:return regexResourceError(format)};defer func(){s.gate<-struct{}{}}();remaining:=wait-time.Since(started);if remaining<=0{return regexResourceError(format)};if construction{limits.MaxCompilationDuration=remaining}else{limits.MaxDuration=remaining}
+    s.state.Lock();s.active=true;s.requestLimits=limits;s.request=nil;s.handles=map[string]ecmaregex.Handle{};s.state.Unlock();defer func(){s.state.Lock();request:=s.request;s.active=false;s.requestLimits=ecmaregex.Limits{};s.request=nil;s.handles=nil;s.state.Unlock();if request!=nil{if cleanup:=request.Close();cleanup!=nil{mapped:=regexNativeError(format,cleanup);if failureResult==nil{failureResult=mapped}else if nativeFailure,ok:=failureResult.(*Error);ok&&nativeFailure.Cause==nil{nativeFailure.Cause=mapped}}}}()
+    if err:=action();err!=nil{if mapped:=regexFailureIn(format,err);mapped!=nil{return mapped};return err};return nil
+}
+
+func (s *regexScope)current()(*ecmaregex.Request,map[string]ecmaregex.Handle,error){s.state.Lock();defer s.state.Unlock();if !s.active{return nil,nil,errors.New("ECMA-262 callback escaped its request")};if s.request==nil{engine,err:=regexEngine();if err!=nil{return nil,nil,err};request,err:=engine.Begin(context.Background(),s.requestLimits);if err!=nil{return nil,nil,err};s.request=request};return s.request,s.handles,nil}
+func (s *regexScope)compile(source string)(ecmaregex.Handle,error){request,handles,err:=s.current();if err!=nil{return 0,err};if handle,ok:=handles[source];ok{return handle,nil};handle,err:=request.Compile(source);if err!=nil{return 0,err};s.state.Lock();if s.request!=request{s.state.Unlock();return 0,errors.New("ECMA-262 request changed during compilation")};s.handles[source]=handle;s.state.Unlock();return handle,nil}
+func (s *regexScope)match(source,input string)(bool,error){handle,err:=s.compile(source);if err!=nil{return false,err};request,_,err:=s.current();if err!=nil{return false,err};return request.Test(handle,input)}
+func (s *regexScope)jsonRegexp(source string)(jsonoracle.Regexp,error){if _,err:=s.compile(source);err!=nil{return nil,err};return &ecmaRegexp{scope:s,source:source},nil}
+func (s *regexScope)openAPIRegexp(source string)(openapi3.RegexMatcher,error){if _,err:=s.compile(source);err!=nil{return nil,err};return &ecmaRegexp{scope:s,source:source},nil}
+func (r *ecmaRegexp)MatchString(input string)bool{matched,err:=r.scope.match(r.source,input);if err!=nil{panic(regexEvaluationFailure{cause:err})};return matched}
+func (r *ecmaRegexp)String()string{return r.source}
+
+func regexResourceError(format Format)error{return &Error{Code:"native.limit",Format:format,Message:"ECMA-262 regular expression resource limit exceeded"}}
+func regexNativeError(format Format,err error)error{if ecmaregex.IsFailure(err,ecmaregex.ResourceFailure){return regexResourceError(format)};if ecmaregex.IsFailure(err,ecmaregex.SyntaxFailure){return &Error{Code:"native.structure",Format:format,Message:"checked native schema contains an invalid ECMA-262 regular expression"}};return &Error{Code:"native.enforcement",Format:format,Message:"ECMA-262 regular expression execution could not complete",Cause:fmt.Errorf("checked regex engine: %w",err)}}
+func regexFailureIn(format Format,err error)error{var failure *ecmaregex.Failure;if errors.As(err,&failure){return regexNativeError(format,failure)};return nil}
+func wrapRegexResult(format Format,code,pointer string,err error)error{var nativeFailure *Error;if errors.As(err,&nativeFailure){return nativeFailure};return wrap(format,code,pointer,err)}
+func recoverRegexEvaluation(format Format,failure *error){if caught:=recover();caught!=nil{if problem,ok:=caught.(regexEvaluationFailure);ok{*failure=regexNativeError(format,problem.cause);return};panic(caught)}}

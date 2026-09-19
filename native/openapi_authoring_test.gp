@@ -1,0 +1,76 @@
+package native
+
+import (
+    "encoding/json"
+    "strings"
+    "testing"
+
+    "goforge.dev/refine/language"
+    refineopenapi "goforge.dev/refine/openapi"
+    "goforge.dev/refine/validation"
+)
+
+const standaloneOpenAPISource=`type Optional a = Maybe a
+type Positive = Int where it > 0
+type Request = {parameters :: {id :: Positive}, headers :: {key :: String}, body :: Optional Positive}
+type Response = {headers :: {tag :: String}, body :: Positive}
+type Context = {request :: Request, response :: Response} where it.response.body > it.request.parameters.id
+
+openapi "3.2.1" {
+  title "Inventory"
+  version "1.0.0"
+  operation createItem "POST" "/items/{id}" {
+    request Request {
+      parameter path "id" at parameters.id required
+      parameter header "X-Key" at headers.key
+      body "application/json" at body optional
+    }
+    response "201" Response "Created" {
+      header "ETag" at headers.tag
+      body "application/json" at body
+      context Context
+    }
+  }
+}
+`
+
+func TestAuthorOpenAPIProjectBuildsExactRootlessBoundary(t *testing.T){
+    program,err:=language.Compile(standaloneOpenAPISource);if err!=nil{t.Fatal(err)};project,err:=AuthorOpenAPIProject(program,AuthorOpenAPIOptions{Metadata:WireMetadata{PublicationNamespace:"org.example.inventory",NumericExpansion:8192}});if err!=nil{t.Fatal(err)}
+    if project.Kind()!=OpenAPIOperationsProject||project.HasPayloadRoot()||project.EntryResource()!=defaultAuthoredOpenAPIResource||project.EditableSource()!=standaloneOpenAPISource||project.ReleasePolicy()!=nil{t.Fatalf("standalone project authority changed: %+v",project.Target())};if project.Metadata().PublicationNamespace!="org.example.inventory"||project.Metadata().NumericExpansion!=8192||!project.HasOpenAPINativeBindings(){t.Fatal("wire metadata or native bindings were lost")}
+    resources:=project.Resources();if len(resources)!=1||resources[0].URI!=defaultAuthoredOpenAPIResource{t.Fatalf("wrong resource identity: %+v",resources)};var document map[string]any;if err:=json.Unmarshal([]byte(resources[0].Source),&document);err!=nil{t.Fatal(err)};if _,exists:=document["components"];!exists{t.Fatal("referenced checked schemas were omitted")};if _,exists:=document["x-refine"];!exists{t.Fatal("checked source authority was omitted")};description:=document["info"].(map[string]any)["description"].(string);if !strings.Contains(description,"Header Object does not require response-header presence")||!strings.Contains(description,"response content describes a supplied body"){t.Fatal("required response presence loss was not explained")}
+    request:=OpenAPIRequestJSON{Parameters:[]OpenAPIParameterJSON{{In:"path",Name:"id",Value:[]byte(`2`)}},Headers:[]OpenAPIHeaderJSON{{Name:"X-Key",Value:[]byte(`"secret"`)}}};token,report,err:=project.DecodeAndValidateOpenAPIRequest("createItem",request,OpenAPILimits{},validation.Limits{});if err!=nil||token==nil||validation.StateName(report.State())!="valid"{t.Fatalf("valid authored request failed: %v %+v",err,report)}
+    invalid:=request;invalid.Parameters[0].Value=[]byte(`0`);if _,_,err:=project.DecodeAndValidateOpenAPIRequest("createItem",invalid,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("lowered native minimum was bypassed: %v",err)}
+    missingHeader:=OpenAPIRequestJSON{Parameters:request.Parameters};if _,_,err:=project.DecodeAndValidateOpenAPIRequest("createItem",missingHeader,OpenAPILimits{},validation.Limits{});problemCode(err)!="native.payload"{t.Fatalf("inferred required request header was bypassed: %v",err)}
+    response:=OpenAPIResponseJSON{Status:"201",Headers:[]OpenAPIHeaderJSON{{Name:"ETag",Value:[]byte(`"v1"`)}},Body:&OpenAPIMediaJSON{MediaType:"application/json",Value:[]byte(`3`)}};_,report,err=project.DecodeAndValidateOpenAPIResponse("createItem",response,token,OpenAPILimits{},validation.Limits{});if err!=nil||validation.StateName(report.State())!="valid"{t.Fatalf("valid authored response/context failed: %v %+v",err,report)}
+    response.Headers=nil;if _,_,err:=project.DecodeAndValidateOpenAPIResponse("createItem",response,token,OpenAPILimits{},validation.Limits{});err==nil{t.Fatal("checked required response header absence was accepted")};response.Headers=[]OpenAPIHeaderJSON{{Name:"ETag",Value:[]byte(`"v1"`)}};response.Body=nil;if _,_,err:=project.DecodeAndValidateOpenAPIResponse("createItem",response,token,OpenAPILimits{},validation.Limits{});err==nil{t.Fatal("checked required response body absence was accepted")}
+    bundle,err:=project.Bundle();if err!=nil{t.Fatal(err)};again,err:=ParseBundle(bundle);if err!=nil||again.EditableSource()!=standaloneOpenAPISource||again.EntryResource()!=defaultAuthoredOpenAPIResource{t.Fatalf("standalone project bundle changed authority: %v",err)}
+}
+
+func TestAuthorOpenAPIProjectRetainsReleaseFooterOnlyInSource(t *testing.T){
+    comparison:=language.ReleaseComparison{Baseline:"1.2.3",BaselineSHA256:strings.Repeat("a",64),SnapshotSHA256:strings.Repeat("b",64),Direction:"backward"};policy:=&language.ReleasePolicy{Version:1,Overrides:[]language.CompatibilityApproval{{ReleaseComparison:comparison,Reason:"reviewed"}}};source,err:=language.AppendReleasePolicyFooter(standaloneOpenAPISource,policy);if err!=nil{t.Fatal(err)};program,err:=language.Compile(source);if err!=nil{t.Fatal(err)};project,err:=AuthorOpenAPIProject(program,AuthorOpenAPIOptions{EntryResource:"https://example.test/authored.json"});if err!=nil{t.Fatal(err)};if project.EditableSource()!=source||project.ReleasePolicy()!=nil||!strings.Contains(project.Resources()[0].Source,"@releasePolicy"){t.Fatal("language release footer migrated or was lost")};refined,err:=project.Export(LowerOptions{Mode:Refined});if err!=nil{t.Fatal(err)};again,err:=IngestOpenAPIOperationResources(refined.Resources(),OpenAPIOperationIngestOptions{EntryResource:refined.EntryResource()});if err!=nil||again.EditableSource()!=source||again.ReleasePolicy()!=nil{t.Fatalf("refined round trip changed release authority: %v",err)}
+}
+
+func TestAuthorOpenAPIProjectRejectsIncompleteOrCompetingAuthority(t *testing.T){
+    cases:=[]struct{name,old,new string; options AuthorOpenAPIOptions; code string}{
+        {name:"required-mismatch",old:`at body optional`,new:`at body required`,code:"native.metadata"},
+        {name:"path-optional",old:`at parameters.id required`,new:`at parameters.id optional`,code:"native.metadata"},
+        {name:"wrong-prefix",old:`at headers.key`,new:`at parameters.key`,code:"native.metadata"},
+        {name:"unmapped-field",old:`headers :: {key :: String}`,new:`headers :: {key :: String, other :: Int}`,code:"native.metadata"},
+        {name:"undeclared-body",old:`body "application/json" at body optional`,new:``,code:"native.metadata"},
+        {name:"unrepresentable",old:`body :: Optional Positive}`,new:`body :: Optional Timestamp}`,code:"native.unrepresentable"},
+        {name:"unsupported-version",old:`openapi "3.2.1"`,new:`openapi "3.0.4"`,code:"native.unrepresentable"},
+        {name:"relative-resource",old:``,new:``,options:AuthorOpenAPIOptions{EntryResource:"relative"},code:"native.resource"},
+        {name:"competing-metadata",old:``,new:``,options:AuthorOpenAPIOptions{Metadata:WireMetadata{OpenAPI:&refineopenapi.Schema{Version:refineopenapi.SchemaVersion}}},code:"native.metadata"},
+    }
+    for _,item:=range cases{t.Run(item.name,func(t *testing.T){source:=standaloneOpenAPISource;if item.old!=""{source=strings.Replace(source,item.old,item.new,1)};program,err:=language.Compile(source);if err!=nil{t.Fatal("fixture must reach native bridge:",err)};project,err:=AuthorOpenAPIProject(program,item.options);if project!=nil||problemCode(err)!=item.code{t.Fatalf("invalid standalone authoring returned project: %v",err)}})}
+}
+
+func TestAuthorOpenAPITypeResolutionIsLazyAndAggregateBounded(t *testing.T){
+    named:=func(name string)*language.Type{return &language.Type{Form:language.NamedType(name)}};apply:=func(fn,arg *language.Type)*language.Type{return &language.Type{Form:language.AppliedType(fn,arg)}}
+    maybeInt:=apply(named("Maybe"),named("Int"));declarations:=map[string]language.TypeDecl{"Ignore":{Name:"Ignore",Parameters:[]string{"a"},Body:maybeInt},"Id":{Name:"Id",Parameters:[]string{"a"},Body:named("a")}}
+    shared:=named("Int");for i:=0;i<24;i++{shared=&language.Type{Form:language.RecordType([]language.Field{{Name:"left",Type:shared},{Name:"right",Type:shared}})}}
+    lazy:=&authoredOpenAPITypeResolver{declarations:declarations,remaining:64,paths:map[string]*authoredOpenAPITypeView{}};optional,inner,err:=lazy.optionalType(lazy.view(apply(named("Ignore"),shared),nil),map[string]bool{},0);if err!=nil||!optional{t.Fatalf("ignored shared type DAG was expanded: %v",err)};materialized,err:=lazy.materialize(inner,0);if err!=nil||language.FormatType(materialized)!="Int"{t.Fatalf("lazy result changed: %v %v",materialized,err)}
+    nested:=apply(named("Id"),apply(named("Id"),maybeInt));finite:=&authoredOpenAPITypeResolver{declarations:declarations,remaining:64,paths:map[string]*authoredOpenAPITypeView{}};optional,_,err=finite.optionalType(finite.view(nested,nil),map[string]bool{},0);if err!=nil||!optional{t.Fatalf("finite repeated generic specialization was treated as a cycle: %v",err)}
+    bounded:=&authoredOpenAPITypeResolver{declarations:declarations,remaining:9,paths:map[string]*authoredOpenAPITypeView{}};candidate:=bounded.view(apply(named("Ignore"),named("Int")),nil);if optional,_,err=bounded.optionalType(candidate,map[string]bool{},0);err!=nil||!optional{t.Fatalf("first bounded specialization failed: %v",err)};if _,_,err=bounded.optionalType(candidate,map[string]bool{},0);err==nil||!strings.Contains(err.Error(),"work limit"){t.Fatalf("repeated specialization reset aggregate work: %v",err)}
+    refined:=&language.Type{Form:language.RefinedType(named("Int"),[]language.Where{{Code:"kept"}})};preserve:=&authoredOpenAPITypeResolver{declarations:declarations,remaining:16,paths:map[string]*authoredOpenAPITypeView{}};optional,view,err:=preserve.optionalType(preserve.view(refined,nil),map[string]bool{},0);if err!=nil||optional||view.typ!=refined{t.Fatalf("nonoptional refinement was dropped or hoisted: %v",err)};materialized,err=preserve.materialize(view,0);match materialized.Form{case language.RefinedType(_,rules):if err!=nil||len(rules)!=1||rules[0].Code!="kept"{t.Fatal("refinement disappeared")};case _:t.Fatal("refined type changed form")}
+}

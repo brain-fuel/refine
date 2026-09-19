@@ -59,7 +59,7 @@ func MavenSnippet(options MavenOptions) string {
 	argumentXML.WriteString("</arguments>")
 	regexDependency := ""
 	if options.NativeRegex {
-		regexDependency = "  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>polyglot</artifactId><version>25.0.1</version></dependency>\n  <dependency><groupId>org.graalvm.polyglot</groupId><artifactId>js</artifactId><version>25.0.1</version><type>pom</type><scope>runtime</scope></dependency>\n"
+		regexDependency = "  <dependency><groupId>com.dylibso.chicory</groupId><artifactId>runtime</artifactId><version>1.7.5</version></dependency>\n  <dependency><groupId>com.dylibso.chicory</groupId><artifactId>wasm</artifactId><version>1.7.5</version></dependency>\n"
 	}
 	return fmt.Sprintf(`<properties>
   <maven.compiler.release>25</maven.compiler.release>

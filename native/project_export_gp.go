@@ -155,12 +155,9 @@ func (p *Project) Export(options LowerOptions) (*ProjectExport, error) {
 	if mode == Ordinary && len(losses) > 0 && !options.AllowDocumentedLoss {
 		return nil, &Error{Code: "native.unrepresentable", Format: p.Format(), Message: fmt.Sprintf("%d refinement rule(s) require documented-loss permission in an ordinary project export", len(losses))}
 	}
-	resources := p.Resources()
-	if p.Format() == JSONSchema {
-		resources, err = p.CanonicalJSONResources()
-		if err != nil {
-			return nil, err
-		}
+	resources, err := p.EffectiveResources()
+	if err != nil {
+		return nil, err
 	}
 	rootIndex := -1
 	for i, resource := range resources {
@@ -330,7 +327,7 @@ func projectUncomposedPayloadLoss(p *Project) Loss {
 	return Loss{Owner: p.root.TypeName, Location: "$payload", Predicate: "the complete edited payload type and structure", Explanation: "This same-format export retains the native " + string(p.Format()) + " resource but cannot compose the edited payload structure into that format exactly. A refinement-aware consumer must load the embedded checked source, root selector, wire metadata, and native sidecar together."}
 }
 func projectUncomposedCompanion(companion string, p *Project) string {
-	notice := "## Same-format enforcement boundary\n\nThe exported " + string(p.Format()) + " resource retains its native wire schema, but this format path cannot compose the complete edited payload structure. The embedded Refine source and checked wire metadata remain authoritative and must be enforced together with the native sidecar.\n"
+	notice := "## Same-format enforcement boundary\n\nThe exported " + string(p.Format()) + " resource retains its effective native wire schema, including exactly representable native constraint edits, but this format path cannot compose the complete edited payload structure. The embedded Refine source and checked wire metadata remain authoritative and must be enforced together with the native sidecar.\n"
 	if companion == "" {
 		return notice
 	}

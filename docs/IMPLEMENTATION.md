@@ -2013,3 +2013,311 @@ current implementation still performs no Maven deployment or product release.
   lifecycle reused its earlier 24.661s result; no second Maven invocation or
   integration retry followed. The earlier `ce77cf8` CI run remained queued and
   is not represented as green.
+- Pushed `443e36c7306e8b5a4b9dac8309283b36bb1a510b`.
+  [CI run 34739135690](https://github.com/brain-fuel/refine/actions/runs/34739135690)
+  completed successfully on both Linux and macOS, including their required
+  integration and selected fuzz gates. That terminal run is not retried.
+  The earlier `ce77cf8` run 34737539642 subsequently completed successfully too;
+  neither terminal run needs further polling or reruns.
+
+## Standalone OpenAPI authoring and shared native regex — in progress
+
+- The language frontend accepts a contextual `openapi` declaration alongside
+  ordinary request/response/context types. Existing functions named `openapi`
+  or `operation` remain valid. Compilation checks closed named entrypoint types;
+  native assembly separately checks protocol, envelope paths and wire semantics.
+  Presence can be inferred or explicitly written `required`/`optional`.
+- The three new declaration anchors passed in 0.504s. They cover stable
+  parse/format, detached nested metadata, malformed syntax/types/limits,
+  unchanged positions with a release footer, and entry-only API ownership across
+  imports. Existing footer/import/limit callers and parser seeds passed in
+  0.300s. One `FuzzParseFormat` campaign requested and completed 1,000 iterations
+  in 0.296s, seeded with a complete authored API; no campaign was repeated.
+- Native complete-document assembly and project/CLI normalization are being
+  connected to this frontend. Source `.refine` bytes and imports remain release
+  authority; a generated rootless native project is an execution view, not a
+  substitute versioned source or an invented payload root.
+- The production shared regex core is being implemented separately from the
+  successful isolated prototype. Its intended Go/Java switch is atomic; current
+  native matcher parity is not claimed until both hosts and consumers pass.
+- Native standalone assembly now produces an operation-only document with exact
+  source authority, inferred presence, explicit response-presence gotchas and a
+  bounded lazy checked-type resolver. Its final lowering/budget selection passed
+  in 0.333s; unchanged authority/error anchors reuse their earlier 0.278s result.
+  Project normalization passed its two anchors in 0.315s; four CLI discovery,
+  planning and exact-import promotion anchors passed in 0.671s. The standalone
+  operation syntax-change anchor passed in 0.301s. These are scoped Go results,
+  not yet a claim about the generated JVM facade.
+- CI's native-regex provisioning now selects the two pinned Chicory 1.7.5 JARs
+  for the pending shared-runtime switch. YAML parsing and `bash -n` of the
+  changed provisioning step passed; this workflow-only check did not launch
+  another Java or Maven test. The final paired-runtime gate remains pending.
+- Review invalidated a reported 0.456s standalone Java result: it had skipped
+  without required runtime settings. The single actual required-runtime anchor,
+  `TestGeneratedStandaloneOpenAPIAuthoringFacadeAndProperties`, then failed in
+  2.351s with targeted-invalid request generation exhaustion. Native lowering
+  rejects the invalid body before the facade emits a Refine diagnostic. A second
+  identified issue rejects reused refinement clauses as ambiguous property
+  selectors even when no replay is supplied. Both are implementation failures
+  to correct, not reasons to waive mandatory properties or repeat the full
+  integration suite. The skipped run is not reused as evidence.
+- Exact Draft 2020-12 `const`/`enum` provenance and structural inverse lowering
+  passed seven focused anchors: provenance 0.272s, native 0.334s. The cases cover
+  rational equality, unordered objects, ordered arrays, non-normalized strings,
+  empty/duplicate enum recommendations, independent edit/removal, and builtin
+  shadow protection. Oversized projections remain opaque rather than weakening
+  native enforcement. Generated-source consistency passed. No unrelated
+  Java/Maven or whole-suite test was run for this slice.
+- Native source composition now inserts generated root aliases and operation
+  declarations before the exact existing release footer. It leaves approval
+  hashes unchanged and never promotes embedded source metadata into outer
+  native-bundle authority. Six focused ingestion/derivation anchors passed in
+  0.425s, including all three formats, both single/explicit-resource entrypoints,
+  unchanged import bytes, bundle reload, malformed footer rejection and source
+  bounds. This source-composition fix did not rerun the JVM or Maven.
+- The corrected standalone Java anchor executed with required Java 25,
+  JetCheck and NetworkNT dependencies and passed in 2.06s (package 2.380s).
+  It uses the same explicit-code refinement in both a request parameter and
+  body, proves targeted logical failure separately from real native-first
+  rejection, and checks explicit occurrence replay selection. Subsequent review
+  identified further automatic-code context-inheritance and repeated predicate
+  identity cases; this focused result does not cover those pending corrections.
+- The final automatic-code/map/list correction passed the required-Java
+  `TestGeneratedStandaloneOpenAPIAuthoringFacadeAndProperties` anchor in 2.31s
+  (package 2.754s). The affected
+  `TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding` anchor passed in
+  166.83s (package 167.261s), with Java 25 and checksum-verified JetCheck,
+  NetworkNT and Chicory dependencies. Together these cover concrete collection
+  paths, context inheritance, repeated-code occurrence selectors, legacy replay
+  ambiguity rejection and real native-first rejection. These successful JVM
+  results are retained for unchanged inputs, not repeated for documentation.
+
+## Approved website publication — 2026-09-19
+
+- Explicit user approval authorized the sibling `brain-fuel/dev.goforge` push.
+  Normal and minified production Hugo/vanity checks passed (2 tests, no skips);
+  the shared stylesheet rebuild produced no diff. Commit
+  `8537d17eb9e68f54696f5653b95faa6cbc1bc023` was pushed to `main`, leaving that
+  worktree clean.
+- The live `/refine/?go-get=1` page now serves the new template and correct
+  `goforge.dev/refine` import metadata. Deployed `css/refine.css` and
+  `images/refine-social.png` bytes match the committed SHA-256 hashes. GitHub's
+  status API was inaccessible to the integration; deployment confirmation came
+  from the live output, not an inferred CI result. The page remains explicitly
+  unreleased and pins its previously tested development checkpoint.
+
+## Shared-runtime and native-provenance integration — 2026-09-19
+
+- Rechecked `go list -m -json goforge.dev/goplus@latest`: the latest published
+  module remains `v0.158.0`, matching the tool pin. Local integration uses
+  Go 1.26.5 and Java 25.0.4.1.
+- Review found and corrected two shared-regex lifecycle defects: Go initialized
+  its first-match deadline before acquiring request ownership, and generated
+  Java could retain its scope lock when request initialization failed. The Go
+  nil/concurrent-first-match race anchor passed in 5.373s. The required-Java
+  regex anchor covers acquired-lock/open failure and subsequent cross-thread
+  recovery in addition to its existing adversarial cases. Its final completed
+  result is reused; no property-catalog JVM was repeated for these fixes.
+- Native regex/origin-adapter selection passed in 5.847s. The later lazy-scope
+  correction passed its regex pair in 2.152s, affected syntax/map callers in
+  1.720s, and bounded queue/recovery anchor in 0.297s. Conditional generated
+  resource/Maven dependency checks passed in 4.151s. These focused checks do not
+  replace the changed Maven lifecycle and coherent integration gate.
+- Exact array-item and object-property count adapters now discover
+  `minItems`, `maxItems`, `minProperties`, and `maxProperties`. Two JSON
+  provenance anchors passed in 0.246s; the OpenAPI JSON/YAML token anchor passed
+  in 0.541s. Native inverse lowering, independent scoped edits, bundle/export,
+  old-project immutability, and builtin-shadow protection passed four selected
+  anchors in 0.444s. String length is deliberately excluded because native
+  code-point counts differ from refinement UTF-16 counts.
+- An affected existing schema-position test still expected six constraints
+  after `const` became a supported seventh unit. The corrected test asserts the
+  entire `const` is one value and its contents are never traversed as schemas;
+  that single test passed in 0.419s. The unchanged numeric canonical-form and
+  deviation-isolation checks passed in the preceding selection. This was an
+  outdated expectation, not a change to native semantics.
+- The same lowering review found that a user-defined `isInteger` could acquire
+  the builtin's `multipleOf` export authority. Lowering now rejects that false
+  correspondence (or explicitly explains its loss), with the existing builtin
+  multiple-of regression retained in the four-test selection above.
+- The first whole-tree generation/vet attempt exposed the guest's standalone
+  `embed_source.go` build helper as an ordinary Go package containing C files.
+  The helper now has `//go:build ignore` (its explicit `go run` build-script
+  invocation remains available). Whole-tree generation consistency and vet then
+  passed. No runtime test was launched for the initial packaging error.
+- Cardinality review found attempted bigint work was charged only for projected
+  clauses and OpenAPI reset that meter per Schema Object. Work is now charged
+  before materialization and shared across OpenAPI count discovery. The new
+  aggregate/nonprojectable-work anchor passed in 0.301s; exhausted valid clauses
+  stay opaque rather than weakening native validation.
+- Started the coherent required-Java/Maven race gate with JSON evidence at
+  `/tmp/refine-integration-20260919.jFDS4A`. The non-Markdown tracked/untracked
+  input inventory was 765 files, framed SHA-256
+  `9a5ad82e24f805e8a35d7bebe055fce6c9c81eebee9146da9994929b934f7f67`.
+  Native completed successfully in 492.582s; the Java package was still running
+  when the following measured regression was investigated.
+- Maven's first lifecycle build spent over ten minutes in repeated fresh guest
+  initialization (the previous complete lifecycle had taken about 25 seconds).
+  Its verified test-only JVM was intentionally stopped; the Maven test reports
+  failure after 651.88s and the project package after 719.986s. This is an
+  incomplete verification, not an assertion failure or passing Maven evidence.
+  Other package checks were left running. A separate lifecycle correction is
+  now adding bounded reuse of clean initialized sessions, with fresh budgets
+  and no compiled handles retained across requests. It does not reduce property
+  case counts or relax validation limits.
+- The remaining required-runtime race gate completed: Java passed in 859.254s,
+  including the operation property catalog in 294.86s. Every package with tests
+  passed except the intentionally interrupted Maven-containing project package;
+  there were no test-level skips. The only package-level skips were the two
+  packages without tests. This establishes old-runtime correctness evidence,
+  not verification of the subsequent session-reuse changes.
+- Registered the checked regex artifact/guest inputs with their production
+  owner in the deterministic fuzz planner. Guest-only changes now follow the
+  runtime's reverse imports instead of selecting unrelated campaigns; embedded
+  NOTICE/license inputs are included and absent/unknown ownership remains
+  fail-closed. The exact selection
+  `^(TestSelectionScopesCheckedRegexGuestAndEmbeddedNotice|TestSelectionDocumentsBuildMetadataFixturesAndUnknowns|TestSelectionKeepsMarkdownFixturesAndUnknownConsumers|TestSelectionFollowsProductionAndBothTestImportKinds|TestSelectionIsStableUnderInputAndPackagePermutation)$`
+  passed in `internal/testplan` in 0.239s after package generation.
+- Added exact Avro provenance for fixed sizes and atomic ordered enum symbols,
+  with source audit/recovery and a separate structural edited-unit inverse.
+  Review hardened keyword-derived builtin/scope guards against mutable public
+  descriptions and bounded aggregate attempted numeric expansion. The final
+  four-anchor core selection passed in 0.326s; generation/diff checks passed.
+  Native effective-resource integration is a separate subsequent step, not
+  implied by these core tests.
+- Shared regex lifecycle now has a frozen ABI 2 guest: 1,202,261 bytes, SHA-256
+  `ee1ff0212d3a3bd28a72f00033f51dad747c8b36e9302edbbbd35cf6a58bfe8f`.
+  A fixed trusted Unicode warmup stays within initialization budgets. Reset
+  frees handles and checks the allocation watermark; uncertified but clean
+  sessions use a nonfault discard status, while pending exceptions remain
+  internal failures. Go reuses at most four initialized sessions, never compiled
+  handles, and charges only actual blocking acquisition to compilation time.
+  Fresh request budgets and timeout/cancel/trap/resource disposal passed the
+  exact race selection
+  `^(TestCheckedArtifactInventoryAndLimits|TestUTF16ECMA262SyntaxHandlesAndTypedFailures|TestRequestBudgetsBoundCompilationMatchingAndHandles|TestTrustedInitializationAndTrapFailuresFailClosed|TestFirstMatchDeadlineIsSerializedAndNilSafe|TestSessionsReuseOnlyAfterCleanBoundedReset)$`
+  in 44.649s. Package generation consistency and scoped diff checks passed.
+  OOM poisoning was tested through the zero-allocation-result boundary; this
+  selection did not force an actual 32 MiB guest OOM. Java and native-consumer
+  verification follow separately.
+- The required Java regex lifecycle/adversarial anchor passed in 29.52s
+  (package 29.954s) with Java 25, pinned NetworkNT and Chicory jars. Its owner
+  checks require both the current thread and the held scope lock. Native's
+  Unicode/lookaround/backreference, timeout and queue/recovery caller trio
+  passed under race detection in 13.281s. Conditional project resource
+  packaging passed in 1.313s; Java conditional emission passed in 0.46s.
+- The affected real Java Avro enum/fixed harness passed in 2.91s and asserts
+  effective symbol order and fixed width before binary/JSON round trips.
+  The regex serde-limit harness initially failed setup because the coordinating
+  command omitted `REFINE_NETWORKNT_DIR`; only that failed selector was rerun
+  with pinned NetworkNT/Chicory inputs and passed in 7.23s (package 7.721s).
+  Neither the successful Avro nor conditional-emission check was repeated.
+- The required operation-property catalog passed in 32.61s (package 33.061s)
+  on the new lifecycle, retaining its case counts. The earlier full race gate
+  recorded 294.86s for that test; the runs are cycle-time observations under
+  different surrounding workloads, not a controlled benchmark. Whole-tree
+  generation consistency, vet and diff checks also passed before the remaining
+  annotated-Avro atomic-edit follow-up.
+- Avro effective-resource integration passed its three new runtime/export/
+  bundle/immutability anchors in 0.369s and 21 selected existing Avro/native
+  callers under race detection in 43.805s. Native originals remain unchanged;
+  the effective view is revalidated and cached only on the new immutable
+  project. Review found that annotated source with separate units could not
+  atomically change both enum representations. The new
+  `WithEditedSourceAndNativeConstraintSources` transition and atomic version-1
+  bundle restoration close that gap: its new anchor passed in 0.491s and six
+  existing bundle callers passed under race detection in 1.578s. The unchanged
+  successful Java serde harness was not repeated.
+- Final source generation, vet and diff checks passed after that atomic-edit
+  follow-up. The one interrupted unsigned Maven lifecycle check is now rerunning
+  against the coherent source/artifact state, with evidence at
+  `/tmp/refine-maven-lifecycle-20260919.1inEL6`. No other whole-package or JVM
+  campaign is being repeated during that check.
+- The rerun progressed through its first three successful Maven builds. A
+  bounded 24-validation probe against the existing generated classes confirmed
+  one reused Java regex session and zero discards, with approximately 47–51 ms
+  per native validation. Parsing alone was approximately 0.0017 ms per input.
+  The default printable-ASCII generator accepts `^[a-z]+$` only about 1.51% of
+  the time, explaining roughly five minutes per 100-case target through rejection
+  sampling and fresh per-request pattern compilation. A native-aware candidate
+  strategy is being implemented separately; no cases or validation boundaries
+  have been removed from the running lifecycle gate.
+- The Maven harness now logs its four phases and shares one child-process
+  context ending five seconds before the Go package deadline. Future timeouts
+  can terminate the Maven JVM before Go's alarm abandons it. Project generation
+  and `go vet ./project` passed for this harness-only change; the already-running
+  test uses its original binary and is not evidence for the context change.
+- That Maven rerun reached the fourth, expected-exhaustion build but hit Go's
+  20-minute deadline (package 1200.483s). The preceding three phases passed;
+  the lifecycle gate as a whole failed by timeout and is not green. The exact
+  JVM and test PIDs were absent afterward. Only this failed gate will rerun
+  after the native-string generator optimization passes its focused checks.
+- Native-root string candidate specialization is now implemented for the narrow
+  anchored ASCII class/repetition grammar documented in GENERATED-TESTS. Its
+  grammar/bounds and source-boundary selectors
+  `^(TestNativeRootStringPropertyStrategyIsExactAndBounded|TestGeneratedNativeRootStringPropertyStrategyPreservesValidation)$`
+  passed in 0.977s. The required-Java
+  `^TestGeneratedNativeRootStringPropertyStrategyExecutesBoundaries$` passed in
+  7.314s with eight required cases and eight attempts per case, including actual
+  native/Refine validation and model/canonical/Jackson boundaries. Java/project
+  generation consistency and owned-file diff checks passed. Standalone and
+  complex-pattern strategies retain their existing bounded fallback.
+- The JSON Schema keyword scan now uses the same physical/logical resource
+  catalog as projection and sorts its output deterministically. Its two new
+  canonical-ID/anchor and nested-resource-pointer tests first exposed missing
+  oracle logical-ID loading and stale single-resource projection wiring; after
+  those corrections, their exact two-test selection passed in 0.527s. Review
+  also found that the oracle's default loader can read files. Explicit rejecting
+  or in-memory-only loaders and filesystem-fallback regressions are being added;
+  absence of a custom loader is not an offline guarantee.
+- Explicit offline loading regressions passed in 0.250s:
+  `^(TestNativeJSONCompilersNeverFallBackToFilesystem|TestJSONProjectUsesExplicitFileURIResourceWithoutReadingFile)$`.
+  The temporary filesystem fixture deliberately disagrees with the supplied
+  in-memory schema, proving that explicit content wins and a missing resource
+  cannot fall back to the file. The affected existing caller selection
+  `^(TestValidatedLosslessIngestion|TestStrictStructureVersionsAndOfflineRefs|TestOpenAPI31ExactJSONSchemaPayloadValidation|TestOpenAPIExactYAMLNumbersAndExternalResources|TestRootlessOpenAPIOperationsIngestAndBoundary)$`
+  passed under race detection in 4.595s. This check did not repeat the full
+  native, Java, or Maven suites.
+- A new required-Java two-resource regression confirmed that the old generated
+  loader could not resolve external canonical or nested `$id` identities even
+  when Go validation succeeded. The corrected loader consumes the project's
+  sorted, normalized offline alias inventory. The exact
+  `^TestGeneratedNativeJSONValidatorLoadsCanonicalNestedIDsOffline$` anchor
+  passed in 0.910s. Its JVM was not repeated for subsequent pure limit tests:
+  `^TestNativeJSONCanonicalAliasEmissionIsBounded$` passed in 0.967s and checks
+  exact/one-over combined physical-plus-alias resource and byte limits.
+  Java generation consistency and scoped diff checks passed.
+- External JSON Schema projection now shares an explicit-resource catalog with
+  ingestion, payload validation and keyword scans. It supports recursive
+  external references, canonical `$id`, static anchors and nested JSON Pointers.
+  Review corrections retain existing sibling `$defs` names/metadata and the
+  configured public name for a selected external root, and bound repeated
+  physical-path storage before map-key allocation. Six new tests passed in
+  0.298s:
+  `^(TestJSONProjectionResolvesNestedExternalRecursiveReferences|TestJSONProjectionResolvesCanonicalNestedIDAnchorAndPointer|TestJSONProjectionNamesExternalCollisionsDeterministically|TestJSONProjectionCatalogRejectsAmbiguousAndNonSchemaTargets|TestJSONProjectionSelectedDefinitionRetainsSiblingLocalNameAndMetadata|TestJSONProjectionCatalogPreflightsRetainedLocationAmplification)$`.
+  The exact affected existing-caller selection passed under race detection in
+  4.646s:
+  `^(TestJSONSchemaProjectEditBundleAndNativeEnforcement|TestApplicatorConstraintIsNotHoisted|TestLocalReferencesBecomeNamedRecursiveDeclarations|TestExplicitJSONSchemaResourceResolutionAndBundle|TestExternalJSONSchemaProvenanceRemainsResourceScoped|TestNativeConstraintUnitSourcesAreExplicitScopedAndBundled|TestResourceAndBundleFailuresAreExplicit|TestDecodeAndValidateJSONComposesNativeExactAndRefined|TestJSONCarrierDecoderPreservesNativeKindsAndPreflights|TestJSONTypedMapProjectionAndCheckedDecodePreserveNativeSchema|TestJSONMapProjectionUsesCarrierForHeterogeneousOrOpenValueDomains|TestJSONOrdinaryExtraFieldPoliciesRemainProjectable|TestJSONCarrierProjectionRetainsNativeApplicatorAndTupleAuthority|TestJSONCarrierReferenceSiblingsPreserveDeclaredMembers|TestProjectExportComposesEffectiveNativeAndEditableJSONSchema)$`.
+  Alias inventories normalize only loader copies, preserve original resources,
+  and use a conservative pre-materialization byte bound. OpenAPI's separate
+  general-reference projection remains a subsequent task.
+- OpenAPI 3.0 bounds now preserve numeric/exclusivity tokens as atomic
+  provenance pairs. Edited strictness and values rebuild effective resources;
+  untouched opposite bounds and OpenAPI 3.1/JSON Schema fingerprints retain
+  their identity. Exact terminating literal fractions lower without floating
+  point; nonterminating fractions and arbitrary arithmetic fail closed.
+  Reference Object siblings are ignored consistently by the native oracle,
+  3.0 adapter and provenance discovery. The selection
+  `go test -count=1 ./provenance ./native -run '^(TestOpenAPI30.*|TestOpenAPIProvenanceRejectsAmbiguousAuthorityAndBounds|TestOpenAPIProvenanceIdentityFramesResourceAndPointer|TestOpenAPIProvenanceJSONEditsValidationExportBundleAndImmutability)$'`
+  passed (provenance 0.485s, native 0.436s). After the final resource-catalog
+  parity hook, only
+  `^TestOpenAPI30ReferenceSiblingBoundIsIgnoredWithoutEditableAuthority$`
+  was rerun and passed in 0.365s, covering direct and explicit-resource ingestion.
+- Final coordinated generation, whole-tree `goplus gen --check`, `go vet`, and
+  diff checks passed. The optimized Maven lifecycle runs against staged source
+  tree `b4a3877e65c827689682705c5662e7b27d9f3d06`; only documentation changed
+  afterward. Its log is `/tmp/refine-maven-optimized-20260919.LL3fhd`.
+- The optimized Maven lifecycle passed all four phases in 72.26s (package
+  72.556s): unsigned artifact build/inventory, byte-for-byte reproducibility,
+  automatic regeneration after an edit, and expected failure on exhausted
+  generated properties. It retained the default 100 cases and all validation
+  boundaries. No previously green broad Java or native campaign was repeated.

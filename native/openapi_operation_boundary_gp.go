@@ -437,15 +437,18 @@ func (p *Project) validateOpenAPISchemaNode(target OpenAPISchemaTarget, instance
 		return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation schema index is absent"}
 	}
 	schemas := p.openAPIOperations.requestSchemas
+	scope := p.openAPIOperations.requestRegex
 	if direction == OpenAPIResponse {
 		schemas = p.openAPIOperations.responseSchemas
+		scope = p.openAPIOperations.responseRegex
 	}
 	schema := schemas[target.ID]
-	if schema == nil {
+	if schema == nil || scope == nil {
 		return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "checked operation schema target is absent for its fixed direction"}
 	}
-	if err := schema.Validate(nativeValue); err != nil {
-		return wrap(OpenAPI, "native.payload", target.ID, err)
+	err = scope.run(OpenAPI, false, func() error { return schema.Validate(nativeValue) })
+	if err != nil {
+		return wrapRegexResult(OpenAPI, "native.payload", target.ID, err)
 	}
 	return nil
 }
@@ -469,51 +472,58 @@ func (p *Project) compileOpenAPISchemaTargets() error {
 			responses = append(responses, response.Parts...)
 		}
 	}
-	p.openAPIOperations.requestSchemas, err = compileOpenAPIDirectionalSchemas(requestResources, requests)
+	p.openAPIOperations.requestSchemas, p.openAPIOperations.requestRegex, err = compileOpenAPIDirectionalSchemas(requestResources, requests)
 	if err != nil {
 		return err
 	}
-	p.openAPIOperations.responseSchemas, err = compileOpenAPIDirectionalSchemas(responseResources, responses)
+	p.openAPIOperations.responseSchemas, p.openAPIOperations.responseRegex, err = compileOpenAPIDirectionalSchemas(responseResources, responses)
 	return err
 }
-func compileOpenAPIDirectionalSchemas(resources []Resource, targets []OpenAPISchemaTarget) (map[string]*jsonoracle.Schema, error) {
-	compiler := jsonoracle.NewCompiler()
-	compiler.DefaultDraft(jsonoracle.Draft2020)
-	compiler.UseRegexpEngine(jsonRegexp)
-	dialect, err := jsonoracle.UnmarshalJSON(strings.NewReader(openAPIBaseDialectAdapter))
-	if err != nil {
-		panic(err)
-	}
-	if err := compiler.AddResource(openAPIBaseDialect, dialect); err != nil {
-		panic(err)
-	}
-	for _, resource := range resources {
-		schemaValue, err := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
-		if err != nil {
-			return nil, wrap(OpenAPI, "native.structure", resource.URI, err)
-		}
-		if err := compiler.AddResource(resource.URI, schemaValue); err != nil {
-			return nil, wrap(OpenAPI, "native.structure", resource.URI, err)
-		}
-	}
+func compileOpenAPIDirectionalSchemas(resources []Resource, targets []OpenAPISchemaTarget) (map[string]*jsonoracle.Schema, *regexScope, error) {
+	scope := newRegexScope()
 	schemas := map[string]*jsonoracle.Schema{}
 	locations := map[string]string{}
-	for _, target := range targets {
-		location := target.Resource
-		if target.Pointer != "" {
-			location += "#" + target.Pointer
+	err := scope.run(OpenAPI, true, func() error {
+		compiler := newOfflineJSONCompiler()
+		compiler.DefaultDraft(jsonoracle.Draft2020)
+		compiler.UseRegexpEngine(scope.jsonRegexp)
+		dialect, parseErr := jsonoracle.UnmarshalJSON(strings.NewReader(openAPIBaseDialectAdapter))
+		if parseErr != nil {
+			panic(parseErr)
 		}
-		if prior, exists := locations[target.ID]; exists && prior != location {
-			return nil, &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "stable operation part ID collision"}
+		if addErr := compiler.AddResource(openAPIBaseDialect, dialect); addErr != nil {
+			panic(addErr)
 		}
-		schema, err := compiler.Compile(location)
-		if err != nil {
-			return nil, wrap(OpenAPI, "native.enforcement", target.ID, err)
+		for _, resource := range resources {
+			schemaValue, parseErr := jsonoracle.UnmarshalJSON(strings.NewReader(resource.Source))
+			if parseErr != nil {
+				return wrap(OpenAPI, "native.structure", resource.URI, parseErr)
+			}
+			if addErr := compiler.AddResource(resource.URI, schemaValue); addErr != nil {
+				return wrap(OpenAPI, "native.structure", resource.URI, addErr)
+			}
 		}
-		locations[target.ID] = location
-		schemas[target.ID] = schema
+		for _, target := range targets {
+			location := target.Resource
+			if target.Pointer != "" {
+				location += "#" + target.Pointer
+			}
+			if prior, exists := locations[target.ID]; exists && prior != location {
+				return &Error{Code: "native.enforcement", Format: OpenAPI, Pointer: target.ID, Message: "stable operation part ID collision"}
+			}
+			schema, compileErr := compiler.Compile(location)
+			if compileErr != nil {
+				return wrap(OpenAPI, "native.enforcement", target.ID, compileErr)
+			}
+			locations[target.ID] = location
+			schemas[target.ID] = schema
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, wrapRegexResult(OpenAPI, "native.enforcement", "", err)
 	}
-	return schemas, nil
+	return schemas, scope, nil
 }
 
 func selectIndexedOpenAPIResponse(operation *indexedOpenAPIOperation, status string) (*indexedOpenAPIResponse, error) {

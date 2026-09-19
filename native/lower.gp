@@ -138,7 +138,7 @@ func (l *lowerer) typ(t *language.Type,field bool)(any,error){
         if name,args,ok:=genericApplication(t);ok&&name=="Map"&&len(args)==2{if language.FormatType(args[0])!="String"{return nil,l.unrepresentable(language.FormatType(args[0]),"native map keys must be exactly String")};value,err:=l.typ(args[1],false);if err!=nil{return nil,atLower(err,"map value")};if l.format==Avro{return map[string]any{"type":"map","values":value},nil};return map[string]any{"type":"object","additionalProperties":value},nil}
         return l.generic(t)
     case language.RefinedType(base,rules):
-        result,err:=l.typ(base,field);if err!=nil{return nil,err};for _,rule:=range rules{represented:=false;if l.format!=Avro{represented=l.numericRule(result,rule)};if !represented{if l.mode==Refined||l.allowLoss{l.lose(rule,language.FormatType(base))}else{l.lose(rule,language.FormatType(base))}}};return result,nil
+        result,err:=l.typ(base,field);if err!=nil{return nil,err};for _,rule:=range rules{represented:=false;if l.format!=Avro{represented=l.numericRule(result,rule)||l.jsonRule(result,rule)||l.cardinalityRule(result,rule)};if !represented{if l.mode==Refined||l.allowLoss{l.lose(rule,language.FormatType(base))}else{l.lose(rule,language.FormatType(base))}}};return result,nil
     case language.ArrowType(_,_):return nil,&Error{Code:"native.unrepresentable",Format:l.format,Message:"function types are not wire payloads"}
     }
     panic("unreachable type")
@@ -209,16 +209,55 @@ func (l *lowerer) unrepresentable(name,message string)*Error{return &Error{Code:
 func atLower(err error,where string)error{if problem,ok:=err.(*Error);ok{copy:=*problem;if copy.Pointer==""{copy.Pointer=where}else{copy.Pointer=where+" / "+copy.Pointer};return &copy};return err}
 
 func (l *lowerer) numericRule(schema any,rule language.Where)bool{object,ok:=schema.(map[string]any);if !ok{return false};op,raw,ok:=comparison(rule.Predicate);key:="";if ok{switch op{case ">=":key="minimum";case ">":key="exclusiveMinimum";case "<=":key="maximum";case "<":key="exclusiveMaximum"}}
-    if key==""{raw,ok=multiple(rule.Predicate);if ok{key="multipleOf"}}
+    if key==""&&!lowererHasFunction(l,"isInteger"){raw,ok=multiple(rule.Predicate);if ok{key="multipleOf"}}
     if key==""||!ok{return false};putConstraint(object,key,json.Number(raw));return true}
 
 func putConstraint(object map[string]any,key string,value any){if _,exists:=object[key];!exists{object[key]=value;return};clause:=map[string]any{key:value};if prior,ok:=object["allOf"].([]any);ok{object["allOf"]=append(prior,clause)}else{object["allOf"]=[]any{clause}}}
 
+type jsonRuleWork struct { nodes int; bytes int }
+const maxJSONRuleNodes=1000000
+const maxJSONRuleBytes=16*1024*1024
+const maxJSONRuleDepth=512
+
+// jsonRule recognizes only the canonical intrinsic JSON expression spine used
+// by native provenance. It does not evaluate aliases, helper functions or
+// arbitrary equivalent predicates. In particular a user-defined oneOf cannot
+// acquire native enum authority.
+func (l *lowerer) jsonRule(schema any,rule language.Where)bool{
+    object,ok:=schema.(map[string]any);if !ok{return false}
+    if constant,ok:=jsonConstRule(rule.Predicate);ok{work:=jsonRuleWork{};value,ok:=lowerJSONConstructor(constant,0,&work);if !ok{return false};putConstraint(object,"const",value);return true}
+    if lowererHasFunction(l,"oneOf"){return false};items,ok:=jsonEnumRule(rule.Predicate);if !ok{return false};work:=jsonRuleWork{};values:=make([]any,len(items));for i,item:=range items{value,ok:=lowerJSONConstructor(item,0,&work);if !ok{return false};values[i]=value};putConstraint(object,"enum",values);return true
+}
+
+func lowererHasFunction(l *lowerer,name string)bool{if l==nil||l.module==nil{return false};for _,function:=range l.module.Functions{if function.Name==name{return true}};return false}
+
+func jsonConstRule(expr *language.Expr)(*language.Expr,bool){match expr.Form{case language.Binary(op,left,right):if op=="=="&&isIt(left){return right,true};case _:};return nil,false}
+func jsonEnumRule(expr *language.Expr)([]*language.Expr,bool){match expr.Form{case language.Apply(call,list):match call.Form{case language.Apply(fn,subject):match fn.Form{case language.Variable(name):if name!="oneOf"||!isIt(subject){return nil,false};case _:return nil,false};case _:return nil,false};match list.Form{case language.ListLiteral(items):return items,true;case _:};case _:};return nil,false}
+
+func enterJSONRule(expr *language.Expr,depth int,work *jsonRuleWork)bool{if expr==nil||depth>maxJSONRuleDepth||work.nodes>=maxJSONRuleNodes{return false};work.nodes++;return true}
+func chargeJSONRule(text string,work *jsonRuleWork)bool{if len(text)>maxJSONRuleBytes-work.bytes{return false};work.bytes+=len(text);return true}
+func appliedConstructor(expr *language.Expr,name string)(*language.Expr,bool){match expr.Form{case language.Apply(fn,arg):match fn.Form{case language.Variable(actual):return arg,actual==name;case _:};case _:};return nil,false}
+
+func lowerJSONConstructor(expr *language.Expr,depth int,work *jsonRuleWork)(any,bool){
+    if !enterJSONRule(expr,depth,work){return nil,false}
+    match expr.Form{case language.Variable(name):if name=="JSONNull"{return nil,true};case _:}
+    if arg,ok:=appliedConstructor(expr,"JSONBoolean");ok{if !enterJSONRule(arg,depth+1,work){return nil,false};match arg.Form{case language.BoolLiteral(value):return value,true;case _:};return nil,false}
+    if arg,ok:=appliedConstructor(expr,"JSONNumber");ok{if !enterJSONRule(arg,depth+1,work){return nil,false};raw,ok:=jsonNumberExpression(arg);if !ok||!chargeJSONRule(raw,work){return nil,false};return json.Number(raw),true}
+    if arg,ok:=appliedConstructor(expr,"JSONString");ok{if !enterJSONRule(arg,depth+1,work){return nil,false};match arg.Form{case language.TextLiteral(raw):text,err:=value.ReadText(raw);if err!=nil{return nil,false};decoded,err:=text.UTF8();if err!=nil||!chargeJSONRule(decoded,work){return nil,false};return decoded,true;case _:};return nil,false}
+    if arg,ok:=appliedConstructor(expr,"JSONArray");ok{if !enterJSONRule(arg,depth+1,work){return nil,false};match arg.Form{case language.ListLiteral(items):if len(items)>maxJSONRuleNodes-work.nodes{return nil,false};values:=make([]any,len(items));for i,item:=range items{value,ok:=lowerJSONConstructor(item,depth+2,work);if !ok{return nil,false};values[i]=value};return values,true;case _:};return nil,false}
+    if arg,ok:=appliedConstructor(expr,"JSONObject");ok{if !enterJSONRule(arg,depth+1,work){return nil,false};match arg.Form{case language.MapLiteral(entries):if len(entries)>maxJSONRuleNodes-work.nodes{return nil,false};values:=make(map[string]any,len(entries));for _,entry:=range entries{text,err:=value.ReadText(entry.Key);if err!=nil{return nil,false};name,err:=text.UTF8();if err!=nil||!chargeJSONRule(name,work){return nil,false};if _,duplicate:=values[name];duplicate{return nil,false};value,ok:=lowerJSONConstructor(entry.Value,depth+2,work);if !ok{return nil,false};values[name]=value};return values,true;case _:};return nil,false}
+    return nil,false
+}
+
 func comparison(expr *language.Expr)(string,string,bool){match expr.Form{case language.Binary(op,left,right):
-    if isIt(left){if raw,ok:=loweringNumberLiteral(right);ok{return op,raw,true}}
-    if isIt(right){if raw,ok:=loweringNumberLiteral(left);ok{reverse:=map[string]string{"<":">",">":"<","<=":">=",">=":"<="};if flipped,exists:=reverse[op];exists{return flipped,raw,true}}}
+    if comparisonIt(left){if raw,ok:=jsonNumberExpression(right);ok{return op,raw,true}}
+    if comparisonIt(right){if raw,ok:=jsonNumberExpression(left);ok{reverse:=map[string]string{"<":">",">":"<","<=":">=",">=":"<="};if flipped,exists:=reverse[op];exists{return flipped,raw,true}}}
 case _:};return "","",false}
 func isIt(expr *language.Expr)bool{match expr.Form{case language.Variable(name):return name=="it";case _:return false}}
+// comparisonIt accepts only the exact Int-to-Real widening emitted by native
+// provenance. Division by one changes no value and lets fractional bounds on
+// integer instances retain their exact JSON numeric assertion.
+func comparisonIt(expr *language.Expr)bool{if isIt(expr){return true};match expr.Form{case language.Binary(op,left,right):if op!="/"||!isIt(left){return false};raw,ok:=numberLiteral(right);return ok&&raw=="1";case _:return false}}
 func numberLiteral(expr *language.Expr)(string,bool){match expr.Form{case language.NumberLiteral(raw):return raw,true;case language.Unary(op,operand):if op=="-"{if raw,ok:=numberLiteral(operand);ok{return "-"+raw,true}};case _:};return "",false}
 
 func multiple(expr *language.Expr)(string,bool){match expr.Form{case language.Apply(fn,arg):
@@ -228,4 +267,8 @@ func multiple(expr *language.Expr)(string,bool){match expr.Form{case language.Ap
     case _:return "",false}
 case _:};return "",false}
 
-func jsonNumberExpression(expr *language.Expr)(string,bool){if raw,ok:=loweringNumberLiteral(expr);ok{return raw,true};match expr.Form{case language.Binary(op,left,right):if op=="/"{a,okA:=loweringNumberLiteral(left);b,okB:=loweringNumberLiteral(right);if okA&&okB&&b=="1"{return a,true}};case _:};return "",false}
+// jsonNumberExpression recognizes only an exact literal or a structural
+// literal/literal division. It never evaluates user functions or general
+// arithmetic. A fraction is admitted only when it has an exact finite decimal
+// JSON spelling; nonterminating values and division by zero fail closed.
+func jsonNumberExpression(expr *language.Expr)(string,bool){if raw,ok:=loweringNumberLiteral(expr);ok{return raw,true};match expr.Form{case language.Binary(op,left,right):if op!="/"{return "",false};a,okA:=loweringNumberLiteral(left);b,okB:=loweringNumberLiteral(right);if !okA||!okB{return "",false};numerator,errA:=value.ParseNumber(a);denominator,errB:=value.ParseNumber(b);if errA!=nil||errB!=nil||denominator.Sign()==0{return "",false};quotient,err:=numerator.Divide(denominator);if err!=nil{return "",false};decimal,err:=quotient.Decimal();if err!=nil||!loweringNumberBounded(decimal){return "",false};return decimal,true;case _:return "",false}}

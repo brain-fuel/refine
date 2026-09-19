@@ -13,6 +13,11 @@ import (
 )
 
 func normalizeContract(c Contract) (Contract, error) {
+	var err error
+	c, err = normalizeAuthoredOpenAPI(c)
+	if err != nil {
+		return c, err
+	}
 	if c.NativeProject == nil {
 		return c, nil
 	}

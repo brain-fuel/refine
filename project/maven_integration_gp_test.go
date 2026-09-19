@@ -5,12 +5,14 @@ package project_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"goforge.dev/refine/native"
 	"goforge.dev/refine/project"
@@ -18,6 +20,14 @@ import (
 )
 
 func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
+	// Stop the actual JVM before Go's package alarm can abandon it. The same
+	// deadline covers all lifecycle phases; it is not renewed per build.
+	processContext := t.Context()
+	cancel := func() {}
+	if deadline, ok := t.Deadline(); ok {
+		processContext, cancel = context.WithDeadline(processContext, deadline.Add(-5*time.Second))
+	}
+	defer cancel()
 	mavenHome := os.Getenv("REFINE_MAVEN_HOME")
 	if mavenHome == "" {
 		if os.Getenv("REFINE_REQUIRE_MAVEN") == "1" {
@@ -31,7 +41,7 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	}
 	root := t.TempDir()
 	executable := filepath.Join(root, "refine")
-	build := exec.Command("go", "build", "-o", executable, "./cmd/refine")
+	build := exec.CommandContext(processContext, "go", "build", "-o", executable, "./cmd/refine")
 	build.Dir = ".."
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("CLI build: %v\n%s", err, output)
@@ -105,13 +115,13 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(root, "refine.project.json"), []byte(`{"families":{"multiple":{"formats":["json-schema"]},"code":{"formats":["json-schema"]},"health":{"formats":["openapi"]}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	fragment := exec.Command(executable, "project", "maven", "--root", root, "--executable", executable)
+	fragment := exec.CommandContext(processContext, executable, "project", "maven", "--root", root, "--executable", executable)
 	fragment.Dir = root
 	detected, err := fragment.Output()
 	if err != nil {
 		t.Fatal("Maven dependency detection", err)
 	}
-	if !strings.Contains(string(detected), "org.graalvm.polyglot") {
+	if !strings.Contains(string(detected), "com.dylibso.chicory") || strings.Contains(string(detected), "org.graalvm") {
 		t.Fatal("native regex dependency was not inferred")
 	}
 	pom = `<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example.test</groupId><artifactId>refine-fixture</artifactId><version>0.0.1</version>` + string(detected) + `</project>`
@@ -120,7 +130,7 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	}
 	run := func() {
 		t.Helper()
-		command := exec.Command(maven, "--batch-mode", "--no-transfer-progress", "package")
+		command := exec.CommandContext(processContext, maven, "--batch-mode", "--no-transfer-progress", "package")
 		command.Dir = root
 		command.Env = os.Environ()
 		if javaHome := os.Getenv("REFINE_JAVA_HOME"); javaHome != "" {
@@ -130,6 +140,7 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 			t.Fatalf("unsigned Maven build: %v\n%s", err, output)
 		}
 	}
+	t.Log("Maven phase 1/4: generate, validate and package")
 	run()
 	jar := filepath.Join(root, "target", "refine-fixture-0.0.1.jar")
 	first, err := os.ReadFile(jar)
@@ -165,6 +176,7 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err != nil || !strings.Contains(string(operationProperties), "request checkHealth") || !strings.Contains(string(operationProperties), "response checkHealth 204") {
 		t.Fatal("Maven did not generate complete rootless OpenAPI properties", err)
 	}
+	t.Log("Maven phase 2/4: verify unchanged artifact reproducibility")
 	run()
 	second, err := os.ReadFile(jar)
 	if err != nil {
@@ -182,6 +194,7 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(schemaDir, "SNAPSHOT.refine"), changed, 0600); err != nil {
 		t.Fatal(err)
 	}
+	t.Log("Maven phase 3/4: regenerate after schema edit")
 	run()
 	after, err := os.ReadFile(generated)
 	if err != nil || bytes.Equal(before, after) {
@@ -199,7 +212,8 @@ func TestMavenRegenerationAndReproducibleArtifact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(schemaDir, "SNAPSHOT.refine"), impossible, 0600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(maven, "--batch-mode", "--no-transfer-progress", "package")
+	t.Log("Maven phase 4/4: reject exhausted property generation")
+	command := exec.CommandContext(processContext, maven, "--batch-mode", "--no-transfer-progress", "package")
 	command.Dir = root
 	command.Env = os.Environ()
 	if javaHome := os.Getenv("REFINE_JAVA_HOME"); javaHome != "" {

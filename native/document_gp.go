@@ -154,11 +154,12 @@ func ParseJSONSchema(input []byte, options Options) (document *Document, failure
 	if err := checkJSONDraft(root, ""); err != nil {
 		return nil, err
 	}
-	compiler := jsonoracle.NewCompiler()
+	scope := newRegexScope()
+	compiler := newOfflineJSONCompiler()
 	compiler.DefaultDraft(jsonoracle.Draft2020)
-	compiler.UseRegexpEngine(jsonRegexp)
-	// No URLLoader is installed. Internal references work; external references
-	// fail closed instead of causing filesystem or network access.
+	compiler.UseRegexpEngine(scope.jsonRegexp)
+	// A rejecting loader overrides the library's default filesystem loader.
+	// Internal references work without allowing external file or network reads.
 	oracleInput, err := jsonoracle.UnmarshalJSON(strings.NewReader(doc.Raw()))
 	if err != nil {
 		return nil, wrap(JSONSchema, "native.syntax", "", err)
@@ -166,8 +167,11 @@ func ParseJSONSchema(input []byte, options Options) (document *Document, failure
 	if err := compiler.AddResource("https://refine.invalid/imported.schema.json", oracleInput); err != nil {
 		return nil, wrap(JSONSchema, "native.structure", "", err)
 	}
-	if _, err := compiler.Compile("https://refine.invalid/imported.schema.json"); err != nil {
-		return nil, wrap(JSONSchema, "native.structure", "", err)
+	if err := scope.run(JSONSchema, true, func() error {
+		_, compileErr := compiler.Compile("https://refine.invalid/imported.schema.json")
+		return compileErr
+	}); err != nil {
+		return nil, wrapRegexResult(JSONSchema, "native.structure", "", err)
 	}
 	annotations, err := jsonSchemaAnnotations(root)
 	if err != nil {
@@ -287,8 +291,15 @@ func ParseOpenAPI(input []byte, options Options) (document *Document, failure er
 	if err != nil {
 		return nil, wrap(OpenAPI, "native.structure", "", err)
 	}
-	if err := parsed.Validate(context.Background(), openapi3.SetRegexCompiler(openAPIRegexp)); err != nil {
-		return nil, wrap(OpenAPI, "native.structure", "", err)
+	scope := newRegexScope()
+	if err := scope.run(OpenAPI, false, func() error {
+		validationOptions := []openapi3.ValidationOption{openapi3.SetRegexCompiler(scope.openAPIRegexp)}
+		if strings.HasPrefix(version, "3.0.") {
+			validationOptions = append(validationOptions, openapi3.AllowExtraSiblingFields(openAPI30IgnoredRefSiblingFields(yamlRoot)...))
+		}
+		return parsed.Validate(context.Background(), validationOptions...)
+	}); err != nil {
+		return nil, wrapRegexResult(OpenAPI, "native.structure", "", err)
 	}
 	annotations, err := yamlRootAnnotation(yamlRoot)
 	if err != nil {

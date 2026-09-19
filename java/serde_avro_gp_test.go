@@ -274,6 +274,19 @@ func TestGeneratedAvroEnumBytesAndFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	source := strings.Replace(project.EditableSource(), "data Color = RED | Blue", "data Color = Blue | RED", 1)
+	for _, item := range project.NativeConstraints() {
+		switch item.Constraint.Keyword {
+		case "symbols":
+			source = strings.Replace(source, item.Constraint.Predicate, `oneOf it ["Blue", "RED"]`, 1)
+		case "size":
+			source = strings.Replace(source, item.Constraint.Predicate, "length it == 3", 1)
+		}
+	}
+	project, err = project.WithEditedSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
 	files, err := GenerateProjectAvroSerde(project, "Contract", "BlobAvroSerde")
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +524,7 @@ public final class BlobAvroGate {
  static void require(boolean value){if(!value)throw new AssertionError();}
  static Data bytes(int... values){var result=new ArrayList<Data>();for(int value:values)result.add(new Data.Number(Rational.of(BigInteger.valueOf(value)),"UInt8"));return new Data.Sequence(result);}
  public static void main(String[] args)throws Exception{
-  Data raw=new Data.Struct(List.of(new Data.Field("color",new Data.Variant("RED",List.of())),new Data.Field("bytes",bytes(0,127,128,255)),new Data.Field("fixed",bytes(1,2,3,4))));var model=BlobRoot.fromData(raw);var serde=new BlobAvroSerde();require(serde.readBinary(serde.writeBinary(model)).rawData().equals(raw));require(serde.readJson(serde.writeJson(model)).rawData().equals(raw));
+  var schema=BlobAvroSerde.schema();require(schema.getField("color").schema().getEnumSymbols().equals(List.of("Blue","RED")));require(schema.getField("fixed").schema().getFixedSize()==3);Data raw=new Data.Struct(List.of(new Data.Field("color",new Data.Variant("Blue",List.of())),new Data.Field("bytes",bytes(0,127,128,255)),new Data.Field("fixed",bytes(1,2,3))));var model=BlobRoot.fromData(raw);var serde=new BlobAvroSerde();require(serde.readBinary(serde.writeBinary(model)).rawData().equals(raw));require(serde.readJson(serde.writeJson(model)).rawData().equals(raw));
  }
 }
 `

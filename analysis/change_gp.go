@@ -66,6 +66,9 @@ func CompareContractSyntax(baseline *language.Program, baselineRoot string, cand
 	if !sameSyntaxImports(old.Imports, next.Imports) {
 		result.Differences = append(result.Differences, SyntaxDifference{Kind: "imports"})
 	}
+	if language.FormatOpenAPI(old.OpenAPI) != language.FormatOpenAPI(next.OpenAPI) {
+		result.Differences = append(result.Differences, SyntaxDifference{Kind: "openapi"})
+	}
 	oldTypes, nextTypes := map[string]string{}, map[string]string{}
 	for _, decl := range old.Types {
 		oldTypes[decl.Name] = language.Format(&language.Module{Types: []language.TypeDecl{decl}})

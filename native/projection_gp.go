@@ -69,6 +69,9 @@ func safeTypeName(raw string) string {
 }
 
 func projectJSON(doc schemajson.Document, selector ResourceSelector, openAPI bool) (string, error) {
+	if !openAPI {
+		return projectJSONResources([]Resource{{URI: selector.Resource, Source: doc.Raw()}}, selector)
+	}
 	p := &sourceProjector{format: JSONSchema, root: doc, names: make(map[string]string), definitionNodes: make(map[string]schemajson.Node), definitionPaths: make(map[string]string), emitted: make(map[string]bool), openAPI: openAPI}
 	if openAPI {
 		p.format = OpenAPI

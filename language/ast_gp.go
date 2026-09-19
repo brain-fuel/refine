@@ -32,6 +32,7 @@ type Module struct {
 	Imports       []Import
 	Limits        SchemaLimits
 	ReleasePolicy *ReleasePolicy
+	OpenAPI       *OpenAPIDeclaration
 	Types         []TypeDecl
 	Functions     []Function
 	// Immutable after Compile; deliberately absent from fresh Syntax() copies.

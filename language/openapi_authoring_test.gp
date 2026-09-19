@@ -1,0 +1,83 @@
+package language
+
+import (
+    "reflect"
+    "strings"
+    "testing"
+)
+
+const authoredOpenAPITypes = `type Request = {parameters :: {id :: Int}, headers :: {key :: String}, body :: Maybe Int}
+type Response = {headers :: {tag :: Maybe String}, body :: Maybe Int}
+type Context = {request :: Request, response :: Response} where it.request.parameters.id >= 0
+`
+const authoredOpenAPIBlock = `openapi "3.2.1" {
+  title "Inventory"
+  version "1.0.0"
+  operation createItem "POST" "/items/{id}" {
+    request Request {
+      parameter path "id" at parameters.id required
+      parameter header "X-Key" at headers.key
+      body "application/json" at body optional
+    }
+    response "201" Response "Created" {
+      header "ETag" at headers.tag optional
+      body "application/json" at body
+      context Context
+    }
+  }
+}
+`
+
+func TestOpenAPIDeclarationParseFormatAndOwnsDetachedMetadata(t *testing.T) {
+    source:=authoredOpenAPITypes+authoredOpenAPIBlock
+    program,err:=Compile(source);if err!=nil{t.Fatal(err)}
+    declaration:=program.OpenAPI();if declaration==nil||declaration.Title!="Inventory"||declaration.Version!="3.2.1"||declaration.APIVersion!="1.0.0"||len(declaration.Operations)!=1{t.Fatalf("missing declaration: %+v",declaration)}
+    operation:=declaration.Operations[0]
+    if operation.OperationID!="createItem"||operation.Method!="POST"||operation.Path!="/items/{id}"||operation.Request.TypeName!="Request"||operation.Responses[0].ContextType!="Context"{t.Fatalf("operation changed: %+v",operation)}
+    if operation.Request.Parameters[0].Required==nil||!*operation.Request.Parameters[0].Required||operation.Request.Parameters[1].Required!=nil||operation.Request.Body.Required==nil||*operation.Request.Body.Required{t.Fatal("explicit/inferred presence lost")}
+    declaration.Operations[0].Request.Parameters[0].FieldPath[0]="mutated";*declaration.Operations[0].Request.Parameters[0].Required=false
+    declaration.Operations[0].Request.Body.FieldPath[0]="mutated";*declaration.Operations[0].Request.Body.Required=true
+    declaration.Operations[0].Responses[0].Headers[0].FieldPath[0]="mutated";*declaration.Operations[0].Responses[0].Headers[0].Required=true
+    declaration.Operations[0].Responses[0].Body.FieldPath[0]="mutated"
+    fresh:=program.OpenAPI();if fresh.Operations[0].Request.Parameters[0].FieldPath[0]!="parameters"||!*fresh.Operations[0].Request.Parameters[0].Required||*fresh.Operations[0].Request.Body.Required||fresh.Operations[0].Responses[0].Body.FieldPath[0]!="body"||*fresh.Operations[0].Responses[0].Headers[0].Required{t.Fatal("mutable API metadata escaped")}
+    formatted:=program.Formatted();next,err:=Compile(formatted);if err!=nil||next.Formatted()!=formatted{t.Fatal("unstable OpenAPI formatting",err)}
+    annotated,err:=AppendReleasePolicyFooter(source,testReleasePolicy("reviewed API"));if err!=nil{t.Fatal(err)};withPolicy,err:=Compile(annotated);if err!=nil{t.Fatal(err)}
+    if !reflect.DeepEqual(fresh,withPolicy.OpenAPI()){t.Fatal("footer changed OpenAPI syntax or spans")}
+    if strings.Index(withPolicy.Formatted(),"@releasePolicy")<strings.Index(withPolicy.Formatted(),"openapi "){t.Fatal("release policy is not last")}
+    names:=`openapi :: String -> Int
+openapi "x" = 1
+openapi _ = 0
+operation :: Int -> Int
+operation n = n
+`
+    existing,err:=Compile(names);if err!=nil||existing.OpenAPI()!=nil{t.Fatal("contextual grammar broke ordinary function names",err)}
+}
+
+func TestOpenAPIDeclarationRejectsMalformedAndInvalidTypes(t *testing.T) {
+    cases:=[]struct{name string; source string}{
+        {"missing-request",strings.Replace(authoredOpenAPIBlock,"request Request {","response \"200\" Request \"Request\" {",1)},
+        {"duplicate-declaration",authoredOpenAPIBlock+authoredOpenAPIBlock},
+        {"duplicate-title",strings.Replace(authoredOpenAPIBlock,`title "Inventory"`,`title "Inventory"; title "other"`,1)},
+        {"duplicate-body",strings.Replace(authoredOpenAPIBlock,`body "application/json" at body optional`,`body "application/json" at body optional; body "application/json" at body`,1)},
+        {"invalid-presence",strings.Replace(authoredOpenAPIBlock,"at parameters.id required","at parameters.id sometimes",1)},
+        {"unknown-request",strings.Replace(authoredOpenAPIBlock,"request Request","request Missing",1)},
+        {"unknown-context",strings.Replace(authoredOpenAPIBlock,"context Context","context Missing",1)},
+        {"generic-root",strings.Replace(authoredOpenAPIBlock,"request Request","request Generic",1)+"type Generic a = a\n"},
+        {"missing-brace",strings.TrimSuffix(authoredOpenAPIBlock,"}\n")},
+        {"invalid-unicode",strings.Replace(authoredOpenAPIBlock,`title "Inventory"`,`title "\ud800"`,1)},
+        {"path-limit",strings.Replace(authoredOpenAPIBlock,"at parameters.id","at "+strings.Repeat("field.",128)+"last",1)},
+        {"text-limit",strings.Replace(authoredOpenAPIBlock,"Inventory",strings.Repeat("x",65537),1)},
+    }
+    for _,item:=range cases{t.Run(item.name,func(t *testing.T){if _,err:=Compile(authoredOpenAPITypes+item.source);err==nil{t.Fatal("invalid API accepted")}})}
+}
+
+func TestOpenAPIDeclarationImportsRetainEntryAndReleasePolicy(t *testing.T) {
+    entry:="import \"types.refine\"\n"+authoredOpenAPIBlock
+    annotated,err:=AppendReleasePolicyFooter(entry,testReleasePolicy("entry approval"));if err!=nil{t.Fatal(err)}
+    sources:=map[string]string{"api.refine":annotated,"types.refine":authoredOpenAPITypes}
+    bundle,err:=CompileSources("api.refine",sources);if err!=nil{t.Fatal(err)}
+    if bundle.Program().OpenAPI()==nil||bundle.ReleasePolicy().Overrides[0].Reason!="entry approval"||bundle.Sources()["api.refine"]!=annotated{t.Fatal("entry API or original source authority lost")}
+    if strings.Count(bundle.Program().Source(),"openapi ")!=1||strings.Count(bundle.Program().Source(),"@releasePolicy")!=1{t.Fatal("flattening duplicated authority")}
+    imported:=map[string]string{"entry.refine":"import \"api.refine\"\n","api.refine":authoredOpenAPITypes+authoredOpenAPIBlock}
+    if _,err:=CompileSources("entry.refine",imported);err==nil||!strings.Contains(err.Error(),"language.import_openapi"){t.Fatal("imported API declaration inherited",err)}
+}

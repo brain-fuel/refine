@@ -379,7 +379,7 @@ func (l *lowerer) typ(t *language.Type, field bool) (any, error) {
 		for _, rule := range rules {
 			represented := false
 			if l.format != Avro {
-				represented = l.numericRule(result, rule)
+				represented = l.numericRule(result, rule) || l.jsonRule(result, rule) || l.cardinalityRule(result, rule)
 			}
 			if !represented {
 				if l.mode == Refined || l.allowLoss {
@@ -698,7 +698,7 @@ func (l *lowerer) numericRule(schema any, rule language.Where) bool {
 			key = "exclusiveMaximum"
 		}
 	}
-	if key == "" {
+	if key == "" && !lowererHasFunction(l, "isInteger") {
 		raw, ok = multiple(rule.Predicate)
 		if ok {
 			key = "multipleOf"
@@ -724,20 +724,268 @@ func putConstraint(object map[string]any, key string, value any) {
 	}
 }
 
-func comparison(expr *language.Expr) (string, string, bool) {
+type jsonRuleWork struct {
+	nodes int
+	bytes int
+}
+
+const maxJSONRuleNodes = 1000000
+const maxJSONRuleBytes = 16 * 1024 * 1024
+const maxJSONRuleDepth = 512
+
+// jsonRule recognizes only the canonical intrinsic JSON expression spine used
+// by native provenance. It does not evaluate aliases, helper functions or
+// arbitrary equivalent predicates. In particular a user-defined oneOf cannot
+// acquire native enum authority.
+func (l *lowerer) jsonRule(schema any, rule language.Where) bool {
+	object, ok := schema.(map[string]any)
+	if !ok {
+		return false
+	}
+	if constant, ok := jsonConstRule(rule.Predicate); ok {
+		work := jsonRuleWork{}
+		value, ok := lowerJSONConstructor(constant, 0, &work)
+		if !ok {
+			return false
+		}
+		putConstraint(object, "const", value)
+		return true
+	}
+	if lowererHasFunction(l, "oneOf") {
+		return false
+	}
+	items, ok := jsonEnumRule(rule.Predicate)
+	if !ok {
+		return false
+	}
+	work := jsonRuleWork{}
+	values := make([]any, len(items))
+	for i, item := range items {
+		value, ok := lowerJSONConstructor(item, 0, &work)
+		if !ok {
+			return false
+		}
+		values[i] = value
+	}
+	putConstraint(object, "enum", values)
+	return true
+}
+
+func lowererHasFunction(l *lowerer, name string) bool {
+	if l == nil || l.module == nil {
+		return false
+	}
+	for _, function := range l.module.Functions {
+		if function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonConstRule(expr *language.Expr) (*language.Expr, bool) {
 	switch __gp_m4 := any(expr.Form).(type) {
 	case language.Binary:
 		op := __gp_m4.Operator
 		left := __gp_m4.Left
 		right := __gp_m4.Right
+		if op == "==" && isIt(left) {
+			return right, true
+		}
+	default:
+	}
+	return nil, false
+}
+func jsonEnumRule(expr *language.Expr) ([]*language.Expr, bool) {
+	switch __gp_m5 := any(expr.Form).(type) {
+	case language.Apply:
+		call := __gp_m5.Function
+		list := __gp_m5.Argument
+		switch __gp_m6 := any(call.Form).(type) {
+		case language.Apply:
+			fn := __gp_m6.Function
+			subject := __gp_m6.Argument
+			switch __gp_m7 := any(fn.Form).(type) {
+			case language.Variable:
+				name := __gp_m7.Name
+				if name != "oneOf" || !isIt(subject) {
+					return nil, false
+				}
+			default:
+				return nil, false
+			}
+		default:
+			return nil, false
+		}
+		switch __gp_m8 := any(list.Form).(type) {
+		case language.ListLiteral:
+			items := __gp_m8.Elements
+			return items, true
+		default:
+		}
+	default:
+	}
+	return nil, false
+}
 
-		if isIt(left) {
-			if raw, ok := loweringNumberLiteral(right); ok {
+func enterJSONRule(expr *language.Expr, depth int, work *jsonRuleWork) bool {
+	if expr == nil || depth > maxJSONRuleDepth || work.nodes >= maxJSONRuleNodes {
+		return false
+	}
+	work.nodes++
+	return true
+}
+func chargeJSONRule(text string, work *jsonRuleWork) bool {
+	if len(text) > maxJSONRuleBytes-work.bytes {
+		return false
+	}
+	work.bytes += len(text)
+	return true
+}
+func appliedConstructor(expr *language.Expr, name string) (*language.Expr, bool) {
+	switch __gp_m9 := any(expr.Form).(type) {
+	case language.Apply:
+		fn := __gp_m9.Function
+		arg := __gp_m9.Argument
+		switch __gp_m10 := any(fn.Form).(type) {
+		case language.Variable:
+			actual := __gp_m10.Name
+			return arg, actual == name
+		default:
+		}
+	default:
+	}
+	return nil, false
+}
+
+func lowerJSONConstructor(expr *language.Expr, depth int, work *jsonRuleWork) (any, bool) {
+	if !enterJSONRule(expr, depth, work) {
+		return nil, false
+	}
+	switch __gp_m11 := any(expr.Form).(type) {
+	case language.Variable:
+		name := __gp_m11.Name
+		if name == "JSONNull" {
+			return nil, true
+		}
+	default:
+	}
+	if arg, ok := appliedConstructor(expr, "JSONBoolean"); ok {
+		if !enterJSONRule(arg, depth+1, work) {
+			return nil, false
+		}
+		switch __gp_m12 := any(arg.Form).(type) {
+		case language.BoolLiteral:
+			value := __gp_m12.Value
+			return value, true
+		default:
+		}
+		return nil, false
+	}
+	if arg, ok := appliedConstructor(expr, "JSONNumber"); ok {
+		if !enterJSONRule(arg, depth+1, work) {
+			return nil, false
+		}
+		raw, ok := jsonNumberExpression(arg)
+		if !ok || !chargeJSONRule(raw, work) {
+			return nil, false
+		}
+		return json.Number(raw), true
+	}
+	if arg, ok := appliedConstructor(expr, "JSONString"); ok {
+		if !enterJSONRule(arg, depth+1, work) {
+			return nil, false
+		}
+		switch __gp_m13 := any(arg.Form).(type) {
+		case language.TextLiteral:
+			raw := __gp_m13.Quoted
+			text, err := value.ReadText(raw)
+			if err != nil {
+				return nil, false
+			}
+			decoded, err := text.UTF8()
+			if err != nil || !chargeJSONRule(decoded, work) {
+				return nil, false
+			}
+			return decoded, true
+		default:
+		}
+		return nil, false
+	}
+	if arg, ok := appliedConstructor(expr, "JSONArray"); ok {
+		if !enterJSONRule(arg, depth+1, work) {
+			return nil, false
+		}
+		switch __gp_m14 := any(arg.Form).(type) {
+		case language.ListLiteral:
+			items := __gp_m14.Elements
+			if len(items) > maxJSONRuleNodes-work.nodes {
+				return nil, false
+			}
+			values := make([]any, len(items))
+			for i, item := range items {
+				value, ok := lowerJSONConstructor(item, depth+2, work)
+				if !ok {
+					return nil, false
+				}
+				values[i] = value
+			}
+			return values, true
+		default:
+		}
+		return nil, false
+	}
+	if arg, ok := appliedConstructor(expr, "JSONObject"); ok {
+		if !enterJSONRule(arg, depth+1, work) {
+			return nil, false
+		}
+		switch __gp_m15 := any(arg.Form).(type) {
+		case language.MapLiteral:
+			entries := __gp_m15.Entries
+			if len(entries) > maxJSONRuleNodes-work.nodes {
+				return nil, false
+			}
+			values := make(map[string]any, len(entries))
+			for _, entry := range entries {
+				text, err := value.ReadText(entry.Key)
+				if err != nil {
+					return nil, false
+				}
+				name, err := text.UTF8()
+				if err != nil || !chargeJSONRule(name, work) {
+					return nil, false
+				}
+				if _, duplicate := values[name]; duplicate {
+					return nil, false
+				}
+				value, ok := lowerJSONConstructor(entry.Value, depth+2, work)
+				if !ok {
+					return nil, false
+				}
+				values[name] = value
+			}
+			return values, true
+		default:
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+func comparison(expr *language.Expr) (string, string, bool) {
+	switch __gp_m16 := any(expr.Form).(type) {
+	case language.Binary:
+		op := __gp_m16.Operator
+		left := __gp_m16.Left
+		right := __gp_m16.Right
+
+		if comparisonIt(left) {
+			if raw, ok := jsonNumberExpression(right); ok {
 				return op, raw, true
 			}
 		}
-		if isIt(right) {
-			if raw, ok := loweringNumberLiteral(left); ok {
+		if comparisonIt(right) {
+			if raw, ok := jsonNumberExpression(left); ok {
 				reverse := map[string]string{"<": ">", ">": "<", "<=": ">=", ">=": "<="}
 				if flipped, exists := reverse[op]; exists {
 					return flipped, raw, true
@@ -749,22 +997,44 @@ func comparison(expr *language.Expr) (string, string, bool) {
 	return "", "", false
 }
 func isIt(expr *language.Expr) bool {
-	switch __gp_m5 := any(expr.Form).(type) {
+	switch __gp_m17 := any(expr.Form).(type) {
 	case language.Variable:
-		name := __gp_m5.Name
+		name := __gp_m17.Name
 		return name == "it"
 	default:
 		return false
 	}
 }
+
+// comparisonIt accepts only the exact Int-to-Real widening emitted by native
+// provenance. Division by one changes no value and lets fractional bounds on
+// integer instances retain their exact JSON numeric assertion.
+func comparisonIt(expr *language.Expr) bool {
+	if isIt(expr) {
+		return true
+	}
+	switch __gp_m18 := any(expr.Form).(type) {
+	case language.Binary:
+		op := __gp_m18.Operator
+		left := __gp_m18.Left
+		right := __gp_m18.Right
+		if op != "/" || !isIt(left) {
+			return false
+		}
+		raw, ok := numberLiteral(right)
+		return ok && raw == "1"
+	default:
+		return false
+	}
+}
 func numberLiteral(expr *language.Expr) (string, bool) {
-	switch __gp_m6 := any(expr.Form).(type) {
+	switch __gp_m19 := any(expr.Form).(type) {
 	case language.NumberLiteral:
-		raw := __gp_m6.Text
+		raw := __gp_m19.Text
 		return raw, true
 	case language.Unary:
-		op := __gp_m6.Operator
-		operand := __gp_m6.Operand
+		op := __gp_m19.Operator
+		operand := __gp_m19.Operand
 		if op == "-" {
 			if raw, ok := numberLiteral(operand); ok {
 				return "-" + raw, true
@@ -776,34 +1046,34 @@ func numberLiteral(expr *language.Expr) (string, bool) {
 }
 
 func multiple(expr *language.Expr) (string, bool) {
-	switch __gp_m7 := any(expr.Form).(type) {
+	switch __gp_m20 := any(expr.Form).(type) {
 	case language.Apply:
-		fn := __gp_m7.Function
-		arg := __gp_m7.Argument
+		fn := __gp_m20.Function
+		arg := __gp_m20.Argument
 
-		switch __gp_m8 := any(fn.Form).(type) {
+		switch __gp_m21 := any(fn.Form).(type) {
 		case language.Variable:
-			name := __gp_m8.Name
+			name := __gp_m21.Name
 			if name != "isInteger" {
 				return "", false
 			}
 		default:
 			return "", false
 		}
-		switch __gp_m9 := any(arg.Form).(type) {
+		switch __gp_m22 := any(arg.Form).(type) {
 		case language.Binary:
-			op := __gp_m9.Operator
-			numerator := __gp_m9.Left
-			divisor := __gp_m9.Right
+			op := __gp_m22.Operator
+			numerator := __gp_m22.Left
+			divisor := __gp_m22.Right
 			if op != "/" {
 				return "", false
 			}
 			if !isIt(numerator) {
-				switch __gp_m10 := any(numerator.Form).(type) {
+				switch __gp_m23 := any(numerator.Form).(type) {
 				case language.Binary:
-					castOp := __gp_m10.Operator
-					castValue := __gp_m10.Left
-					one := __gp_m10.Right
+					castOp := __gp_m23.Operator
+					castValue := __gp_m23.Left
+					one := __gp_m23.Right
 					if castOp != "/" || !isIt(castValue) {
 						return "", false
 					}
@@ -832,23 +1102,42 @@ func multiple(expr *language.Expr) (string, bool) {
 	return "", false
 }
 
+// jsonNumberExpression recognizes only an exact literal or a structural
+// literal/literal division. It never evaluates user functions or general
+// arithmetic. A fraction is admitted only when it has an exact finite decimal
+// JSON spelling; nonterminating values and division by zero fail closed.
 func jsonNumberExpression(expr *language.Expr) (string, bool) {
 	if raw, ok := loweringNumberLiteral(expr); ok {
 		return raw, true
 	}
-	switch __gp_m11 := any(expr.Form).(type) {
+	switch __gp_m24 := any(expr.Form).(type) {
 	case language.Binary:
-		op := __gp_m11.Operator
-		left := __gp_m11.Left
-		right := __gp_m11.Right
-		if op == "/" {
-			a, okA := loweringNumberLiteral(left)
-			b, okB := loweringNumberLiteral(right)
-			if okA && okB && b == "1" {
-				return a, true
-			}
+		op := __gp_m24.Operator
+		left := __gp_m24.Left
+		right := __gp_m24.Right
+		if op != "/" {
+			return "", false
 		}
+		a, okA := loweringNumberLiteral(left)
+		b, okB := loweringNumberLiteral(right)
+		if !okA || !okB {
+			return "", false
+		}
+		numerator, errA := value.ParseNumber(a)
+		denominator, errB := value.ParseNumber(b)
+		if errA != nil || errB != nil || denominator.Sign() == 0 {
+			return "", false
+		}
+		quotient, err := numerator.Divide(denominator)
+		if err != nil {
+			return "", false
+		}
+		decimal, err := quotient.Decimal()
+		if err != nil || !loweringNumberBounded(decimal) {
+			return "", false
+		}
+		return decimal, true
 	default:
+		return "", false
 	}
-	return "", false
 }

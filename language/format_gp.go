@@ -230,6 +230,10 @@ func Format(module *Module) string {
 		}
 		b.WriteString("\n\n")
 	}
+	if module.OpenAPI != nil {
+		b.WriteString(FormatOpenAPI(module.OpenAPI))
+		b.WriteByte('\n')
+	}
 	for _, declaration := range module.Types {
 		name := declaration.Name
 		if len(declaration.Parameters) > 0 {
