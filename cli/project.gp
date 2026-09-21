@@ -56,12 +56,15 @@ func projectCommand(args []string,output,errorOutput io.Writer)int{
     packageFlag:=flags.String("package","","override all generated Java namespaces")
     outputFlag:=flags.String("output","","project-relative Java output directory")
     flat:=flags.Bool("flat",false,"omit package subdirectories from Java output")
+    formatPlan:=flags.Bool("java-format-plan",false,"emit Java formatting inputs without writing outputs")
+    formatInput:=flags.String("java-format-input","","project-relative prepared Java formatting plan")
     check:=flags.Bool("check",false,"verify generated outputs without writing")
     jsonMode:=flags.Bool("json",false,"emit machine-readable result")
     mavenGroup:=flags.String("maven-group-id","","Maven-evaluated project.groupId for publication-sensitive removal")
     mavenArtifact:=flags.String("maven-artifact-id","","Maven-evaluated project.artifactId for publication-sensitive removal")
     mavenVersion:=flags.String("maven-version","","Maven-evaluated project.version for publication-sensitive removal")
     if err:=flags.Parse(args[1:]);err!=nil||len(flags.Args())!=0{return 2}
+    if *formatPlan&&(*formatInput!=""||*check){fmt.Fprintln(errorOutput,"java-format-plan cannot be combined with java-format-input or check");return 2}
     root:=*rootFlag;if root==""{cwd,err:=os.Getwd();if err!=nil{fmt.Fprintln(errorOutput,err);return 2};root,err=project.DetectRoot(cwd);if err!=nil{fmt.Fprintln(errorOutput,"no Maven project found; specify --root explicitly");return 2}}
     absolute,err:=filepath.Abs(root);if err!=nil{fmt.Fprintln(errorOutput,err);return 2}
     input,err:=loadProject(absolute,*configFlag,*packageFlag)
@@ -70,6 +73,8 @@ func projectCommand(args []string,output,errorOutput io.Writer)int{
         input.Layout=project.Layout{SourceDir:*outputFlag,Flat:*flat}
         var bundle project.Bundle
         bundle,err=project.Generate(input)
+        if err==nil&&*formatPlan{if err=json.NewEncoder(output).Encode(javaFormattingPlan(bundle));err!=nil{return 2};return 0}
+        if err==nil&&*formatInput!=""{err=applyJavaFormatting(absolute,*formatInput,&bundle)}
         if err==nil{
             var owned project.OwnedAddition;owned,err=project.PlanOwnedAddition(absolute,bundle,"")
             if err==nil{var config projectConfig;var configRaw []byte;var catalog releaseCatalog;config,configRaw,catalog,err=loadProjectPublicationConfig(absolute,*configFlag);if err==nil{var gate release.PublicationPlan;var conditions []release.FilePrecondition;gate,conditions,err=planPublication(absolute,config,catalog,map[string]release.Version{},owned,release.MavenCoordinates{GroupID:*mavenGroup,ArtifactID:*mavenArtifact,Version:*mavenVersion});if configRaw!=nil{conditions=append(conditions,release.FilePrecondition{Path:filepath.ToSlash(*configFlag),Content:release.Digest(configRaw)})};if err==nil&&!gate.Ready{messages:=[]string{};for _,issue:=range gate.Issues{messages=append(messages,issue.Code+": "+issue.Message)};err=fmt.Errorf("publication gate: %s",strings.Join(messages,"; "))};if err==nil{if *check{err=project.CheckOwned(absolute,bundle,"")}else{err=project.WriteOwnedChecked(absolute,bundle,"",conditions)}}}}

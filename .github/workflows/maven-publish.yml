@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version (must match the checked-out tag)"
         required: true
-        default: "0.1.0"
+        default: "0.4.0"
   push:
     tags: ["v*"]
 
@@ -27,18 +27,23 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - name: Import signing key
-        env:
-          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-        run: echo "$MAVEN_GPG_PRIVATE_KEY" | gpg --batch --import
+      # Only the Refine producer compiles Go to the published JVM engine.
+      # Projects consuming refine-maven-plugin need Java/Maven only.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
       - name: Publish to Maven Central
         env:
+          MAVEN_OPTS: -Xmx3g
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_KEY_FINGERPRINT: ${{ secrets.MAVEN_GPG_KEY_ID }}
         run: |
           mkdir -p "$HOME/.m2"
           cat > "$HOME/.m2/settings.xml" <<'XML'
           <settings><servers><server><id>central</id><username>${env.MAVEN_USERNAME}</username><password>${env.MAVEN_PASSWORD}</password></server></servers></settings>
           XML
           mvn --batch-mode -s "$HOME/.m2/settings.xml" -f maven/pom.xml \
-            -Pcentral-release -DperformCentralRelease -Dgpg.keyname="${{ secrets.MAVEN_GPG_KEY_ID }}" clean deploy
+            -Pcentral-release -DperformCentralRelease -Dgpg.signer=bc clean deploy

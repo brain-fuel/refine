@@ -26,8 +26,11 @@ func captureOperationReplay(t *testing.T, compiler, vm, classpath string, facade
 	for _, file := range append(append([]File{}, facade...), properties...) {
 		source := file.Source
 		if strings.HasSuffix(file.Path, "ContractGeneratedProperties.java") {
-			needle := ".withIterationCount(CASES).silent().forAll(generator,property)"
-			source = strings.Replace(source, needle, ".withIterationCount(CASES).silent().forAll(generator,value->false)", 1)
+			needle := ".withIterationCount(requested).silent().forAll(generator,counted)"
+			if strings.Count(source, needle) != 1 {
+				t.Fatal("replay capture mutation did not match exactly one runner")
+			}
+			source = strings.Replace(source, needle, ".withIterationCount(requested).silent().forAll(generator,value->false)", 1)
 			main := strings.LastIndex(source, "    public static void main(String[] args){")
 			if main < 0 {
 				t.Fatal("generated operation property main absent")
@@ -480,8 +483,14 @@ func TestGeneratedProjectOpenAPIPropertiesExerciseEveryBinding(t *testing.T) {
 	if output, err := exec.Command(compiler, args...).CombinedOutput(); err != nil {
 		t.Fatalf("OpenAPI property javac: %v\n%s", err, output)
 	}
-	if output, err := exec.Command(vm, "-Xss256k", "-cp", classes+string(os.PathListSeparator)+classpath, "OpenAPIPropertyHarness").CombinedOutput(); err != nil {
-		t.Fatalf("OpenAPI property runtime: %v\n%s", err, output)
+	output, runErr := exec.Command(vm, "-Xss256k", "-cp", classes+string(os.PathListSeparator)+classpath, "OpenAPIPropertyHarness").CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("OpenAPI property runtime: %v\n%s", runErr, output)
+	}
+	for _, want := range []string{"REFINE_PROPERTY PASS request createItem", "REFINE_PROPERTY PASS invalid request createItem", "REFINE_PROPERTY PASS context createItem 201", "mode=replay", "REFINE_EXAMPLE PASS", "NOT_GENERATED refinement-negative request=ping", "REFINE_SUITE PASS"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("missing operation execution evidence %q: %s", want, output)
+		}
 	}
 }
 

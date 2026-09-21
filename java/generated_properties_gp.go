@@ -61,6 +61,7 @@ type PropertyTestOptions struct {
 	JSONModule          string
 	AvroSerde           string
 	NativeJSONValidator string
+	nativeInvalidJSON   []string
 }
 
 // propertyRule retains both the authored clause identity and the exact checked
@@ -731,9 +732,29 @@ func generatePropertyTests(program *language.Program, namespace, contractName st
 			}
 		}
 	}
+	modelEmitter := prepareModelEmitter(program, namespace, contractName, nil)
 	emitter := &propertyEmitter{declarations: declarations, visiting: map[string]bool{}}
 	var methods strings.Builder
 	usedReplays := map[string]bool{}
+	validWireChecks, invalidWireChecks, candidateGuard := "", "", ""
+	if options.JSONModule != "" {
+		validWireChecks += " && wireValid(data,model)"
+		invalidWireChecks += " || !wireInvalid(bypass,code)"
+	}
+	if options.AvroSerde != "" {
+		validWireChecks += " && avroWireValid(data,model)"
+		invalidWireChecks += " || !avroWireInvalid(bypass,code)"
+	}
+	if hasNative {
+		candidateGuard = "nativeCandidate(d) && "
+	}
+	hasNegative, hasNativeExamples := false, false
+	for _, example := range options.Examples {
+		if example.NativeExpected == ExampleNativeInvalid {
+			hasNativeExamples = true
+		}
+	}
+	var coverage strings.Builder
 	for i, target := range targets {
 		decl := declarations[target.Name]
 		targetType := decl.Body
@@ -762,12 +783,28 @@ func generatePropertyTests(program *language.Program, namespace, contractName st
 			factoryDecl = "var factory=new " + target.Name + "." + modelFactoryNameFor(declarations, contractName) + "(); "
 			receiver = "factory."
 		}
-		fmt.Fprintf(&methods, "    private static boolean validBoundary%d(Data data) {\n        try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.validate().state()==Validation.State.VALID && read.showWithoutValidation().equals(shown) && wireValid(data,model) && avroWireValid(data,model); } catch (ValidationException failure) { return false; }\n    }\n", i, factoryDecl, receiver, receiver)
-		fmt.Fprintf(&methods, "    private static boolean invalidBoundary%d(Data data,String code) {\n        %svar bypass=%sfromDataWithoutValidation(data); if (!bypass.rawData().equals(data) || !targeted(bypass.validate(),code) || !wireInvalid(bypass,code) || !avroWireInvalid(bypass,code)) return false; try { %sfromData(data); return false; } catch (ValidationException failure) { if (!targeted(failure.outcome(),code)) return false; } try { %sread(bypass.showWithoutValidation()); return false; } catch (ValidationException failure) { return targeted(failure.outcome(),code); }\n    }\n", i, factoryDecl, receiver, receiver, receiver)
-		if hasNative {
+		fmt.Fprintf(&methods, "    private static boolean validBoundary%d(Data data) {\n        try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.validate().state()==Validation.State.VALID && read.showWithoutValidation().equals(shown)"+validWireChecks+"; } catch (ValidationException failure) { return false; }\n    }\n", i, factoryDecl, receiver, receiver)
+		accessor, accessorOK := propertyAccessorMethod(modelEmitter, target.Name, i)
+		methods.WriteString(accessor)
+		targetNegative := len(rules) > 0
+		for _, example := range options.Examples {
+			if example.Target == target.Name && example.NativeExpected == ExampleNativeValid && example.Expected == ExampleInvalid {
+				targetNegative = true
+			}
+		}
+		if targetNegative {
+			hasNegative = true
+			fmt.Fprintf(&methods, "    private static boolean invalidBoundary%d(Data data,String code) {\n        %svar bypass=%sfromDataWithoutValidation(data); if (!bypass.rawData().equals(data) || !targeted(bypass.validate(),code)"+invalidWireChecks+") return false; try { %sfromData(data); return false; } catch (ValidationException failure) { if (!targeted(failure.outcome(),code)) return false; } try { %sread(bypass.showWithoutValidation()); return false; } catch (ValidationException failure) { return targeted(failure.outcome(),code); }\n    }\n", i, factoryDecl, receiver, receiver, receiver)
+		}
+		if hasNativeExamples {
 			fmt.Fprintf(&methods, "    private static boolean nativeInvalidBoundary%d(Data data,Validation.State expected) {\n        if (expected==Validation.State.VALID) { if (nativeCandidate(data)) return false; try { %svar model=%sfromData(data); if (!model.rawData().equals(data) || model.validate().state()!=Validation.State.VALID) return false; var shown=model.showWithoutValidation(); var read=%sread(shown); return read.rawData().equals(data) && read.showWithoutValidation().equals(shown) && nativeWireInvalid(data,model); } catch (ValidationException failure) { return false; } } try { %sfromData(data); return false; } catch (ValidationException failure) { if (failure.outcome().state()!=Validation.State.INVALID || failure.outcome().incomplete()) return false; } try { %s%sfromDataWithoutValidation(data); return false; } catch (ValidationException failure) { return structureOnly(failure.outcome()); }\n    }\n", i, factoryDecl, receiver, receiver, receiver, factoryDecl, receiver)
 		}
-		fmt.Fprintf(&methods, "    private static void target%d() {\n        var raw = %s;\n        var validRaw = %s;\n        var valid = requiring(validRaw, d -> nativeCandidate(d) && %s.validate(%s,d).state() == Validation.State.VALID, %d, %s);\n        check(valid, %sGeneratedProperties::validBoundary%d, %s);\n", i, raw, seededPropertyGenerator("raw", validSeeds[target.Name]), contractName, javaQuote(target.Name), attempts, javaQuote("valid "+target.Name), contractName, i, javaQuote(validReplay))
+		fmt.Fprintf(&methods, "    private static void target%d() {\n        var raw = %s;\n        var validRaw = %s;\n        var valid = requiring(validRaw, d -> "+candidateGuard+"%s.validate(%s,d).state() == Validation.State.VALID, %d, %s);\n        check(%s, valid, %sGeneratedProperties::validBoundary%d, %s);\n", i, raw, seededPropertyGenerator("raw", validSeeds[target.Name]), contractName, javaQuote(target.Name), attempts, javaQuote("valid "+target.Name), javaQuote("valid "+target.Name), contractName, i, javaQuote(validReplay))
+		if accessorOK {
+			fmt.Fprintf(&methods, "        check(%s,valid,d -> { %sreturn accessors%d(%sfromData(d)); },%s);\n", javaQuote("model-accessors "+target.Name), factoryDecl, i, receiver, javaQuote(validReplay))
+		} else {
+			fmt.Fprintf(&coverage, "        coverage(%s);\n", javaQuote("GAP model-accessors target="+target.Name+" reason=generic-or-union"))
+		}
 		for j, rule := range rules {
 			key := replayKey(target.Name, ReplayInvalid, rule.code)
 			replay := replays[key]
@@ -775,10 +812,23 @@ func generatePropertyTests(program *language.Program, namespace, contractName st
 				usedReplays[key] = true
 			}
 			invalidRaw := seededPropertyGenerator("raw", invalidSeeds[target.Name][rule.code])
-			fmt.Fprintf(&methods, "        var invalidRaw%d = %s;\n        var invalid%d = requiring(invalidRaw%d, d -> nativeCandidate(d) && targeted(%s.validate(%s,d),%s), %d, %s);\n        check(invalid%d, d -> invalidBoundary%d(d,%s), %s);\n", j, invalidRaw, j, j, contractName, javaQuote(target.Name), javaQuote(rule.code), attempts, javaQuote("invalid "+target.Name+" "+rule.code), j, i, javaQuote(rule.code), javaQuote(replay))
+			fmt.Fprintf(&methods, "        var invalidRaw%d = %s;\n        var invalid%d = requiring(invalidRaw%d, d -> "+candidateGuard+"targeted(%s.validate(%s,d),%s), %d, %s);\n        check(%s, invalid%d, d -> invalidBoundary%d(d,%s), %s);\n", j, invalidRaw, j, j, contractName, javaQuote(target.Name), javaQuote(rule.code), attempts, javaQuote("invalid "+target.Name+" "+rule.code), javaQuote("invalid "+target.Name+" "+rule.code), j, i, javaQuote(rule.code), javaQuote(replay))
 		}
 		methods.WriteString("    }\n")
+		if len(rules) == 0 {
+			fmt.Fprintf(&coverage, "        coverage(%s);\n", javaQuote("NOT_GENERATED refinement-negative target="+target.Name+" reason=no-refinement-predicates"))
+		}
 	}
+	if options.JSONModule == "" {
+		coverage.WriteString("        coverage(\"NOT_APPLICABLE json-wire reason=no-json-adapter\");\n")
+	}
+	if options.AvroSerde == "" {
+		coverage.WriteString("        coverage(\"NOT_APPLICABLE avro-wire reason=no-avro-adapter\");\n")
+	}
+	if hasNative && !hasNativeExamples {
+		coverage.WriteString("        coverage(\"GAP native-negative reason=no-native-invalid-examples\");\n")
+	}
+
 	for key := range replays {
 		if !usedReplays[key] {
 			return nil, fmt.Errorf("replay does not match a generated target property")
@@ -819,6 +869,7 @@ func generatePropertyTests(program *language.Program, namespace, contractName st
 				fmt.Fprintf(&examples, "        if (!invalidBoundary%d(exampleData%d,%s)) throw new AssertionError(\"embedded example %d invalid boundary\");\n", targetIndex, i, javaQuote(example.DiagnosticCodes[0]), i)
 			}
 		}
+		fmt.Fprintf(&examples, "        examplePassed(%s);\n", javaQuote(fmt.Sprintf("example %d target=%s expected=%d native=%d", i, example.Target, example.Expected, example.NativeExpected)))
 	}
 	header := "// Generated by Refine: JetCheck 0.3.0 property tests.\n"
 	if namespace != "" {
@@ -829,107 +880,30 @@ func generatePropertyTests(program *language.Program, namespace, contractName st
 	for i := range targets {
 		calls = append(calls, fmt.Sprintf("target%d();", i))
 	}
-	candidateFields := ""
-	jsonCandidate, avroCandidate := "true", "true"
-	if options.NativeJSONValidator != "" {
-		if options.JSONModule == "" {
-			return nil, fmt.Errorf("a native JSON candidate filter requires JSONModule")
-		}
-		if err := javaClassName(options.NativeJSONValidator); err != nil {
-			return nil, err
-		}
-		candidateFields = "    private static final " + options.JSONModule + " NATIVE_CANDIDATES=new " + options.JSONModule + "();\n"
-		jsonCandidate = "NATIVE_CANDIDATES.acceptsNativeCandidate(data)"
+	wireMethods, err := propertyWireMethods(options, targets, hasNegative, hasNativeExamples)
+	if err != nil {
+		return nil, err
 	}
-	if options.AvroSerde != "" {
-		if err := javaClassName(options.AvroSerde); err != nil {
-			return nil, err
-		}
-		avroCandidate = "AVRO.acceptsNativeCandidate(data)"
-	}
-	nativeCandidate := candidateFields + "    private static boolean jsonNativeCandidate(Data data) { return " + jsonCandidate + "; }\n    private static boolean avroNativeCandidate(Data data) { return " + avroCandidate + "; }\n    private static boolean nativeCandidate(Data data) { return jsonNativeCandidate(data) && avroNativeCandidate(data); }\n"
-	wireMethods := nativeCandidate + "    private static boolean wireValid(Data data,Object model) { return true; }\n    private static boolean wireInvalid(Object model,String code) { return true; }\n    private static boolean wireNativeInvalid(Object model) { return false; }\n"
-	if options.JSONModule != "" {
-		if err := javaClassName(options.JSONModule); err != nil {
-			return nil, err
-		}
-		if len(targets) != 1 {
-			return nil, fmt.Errorf("a JSON property module currently requires exactly one target")
-		}
-		nativeFailureCheck := ""
-		if options.NativeJSONValidator != "" {
-			nativeFailureCheck = "if (cause instanceof " + options.NativeJSONValidator + ".NativeValidationException nativeFailure) return output.size()==0 && !nativeFailure.isIndeterminate();"
-		}
-		wireMethods = nativeCandidate + fmt.Sprintf(`    private static final tools.jackson.databind.json.JsonMapper WIRE=%s.strictMapper();
-    private static boolean wireValid(Data data,Object model) {
-        String json=WIRE.writeValueAsString(model); var decoded=WIRE.readValue(json,%s.class);
-        return decoded.rawData().equals(data) && WIRE.writeValueAsString(decoded).equals(json);
-    }
-    private static boolean wireInvalid(Object model,String code) {
-        var output=new java.io.ByteArrayOutputStream();
-        try { WIRE.writeValue(output,model); return false; }
-        catch (RuntimeException expected) {
-            Throwable cause=expected;
-            for (int i=0;cause!=null && i<32;i++,cause=cause.getCause()) {
-                if (cause instanceof ValidationException validation) return output.size()==0 && targeted(validation.outcome(),code);
-            }
-            return false;
-        }
-    }
-    private static boolean wireNativeInvalid(Object model) {
-        var output=new java.io.ByteArrayOutputStream();
-        try { WIRE.writeValue(output,model); return false; }
-        catch (RuntimeException expected) {
-            Throwable cause=expected;
-            for (int i=0;cause!=null && i<32;i++,cause=cause.getCause()) {
-                %s
-                if (cause instanceof ValidationException validation) return output.size()==0 && structureOnly(validation.outcome());
-                if (cause instanceof ArithmeticException) return output.size()==0;
-            }
-            return false;
-        }
-    }
-`, options.JSONModule, targets[0].Name, nativeFailureCheck)
-	}
-	if options.AvroSerde == "" {
-		wireMethods += "    private static boolean avroWireValid(Data data,Object model) { return true; }\n    private static boolean avroWireInvalid(Object model,String code) { return true; }\n    private static boolean avroNativeWireInvalid(Object model) { return false; }\n"
-	} else {
-		if len(targets) != 1 {
-			return nil, fmt.Errorf("an Avro property adapter currently requires exactly one target")
-		}
-		wireMethods += fmt.Sprintf(`    private static final %s AVRO=new %s();
-    private static boolean avroWireValid(Data data,Object model) {
-        try { var value=(%s)model; byte[] binary=AVRO.writeBinary(value); var decoded=AVRO.readBinary(binary); String json=AVRO.writeJson(value); var jsonDecoded=AVRO.readJson(json); return decoded.rawData().equals(data) && jsonDecoded.rawData().equals(data) && java.util.Arrays.equals(binary,AVRO.writeBinary(decoded)) && json.equals(AVRO.writeJson(jsonDecoded)); }
-        catch (java.io.IOException failure) { return false; }
-    }
-    private static boolean avroWireInvalid(Object model,String code) {
-        var output=new java.io.ByteArrayOutputStream();
-        try { AVRO.writeBinary((%s)model,output); return false; }
-        catch (ValidationException expected) { return output.size()==0 && targeted(expected.outcome(),code); }
-        catch (java.io.IOException failure) { return false; }
-    }
-    private static boolean avroNativeWireInvalid(Object model) {
-        var output=new java.io.ByteArrayOutputStream();
-        try { AVRO.writeBinary((%s)model,output); return false; }
-        catch (ValidationException expected) { return output.size()==0 && structureOnly(expected.outcome()); }
-        catch (java.io.IOException failure) { return false; }
-    }
-`, options.AvroSerde, options.AvroSerde, targets[0].Name, targets[0].Name, targets[0].Name)
-	}
-	wireMethods += "    private static boolean nativeWireInvalid(Data data,Object model) { boolean rejected=false; if (!jsonNativeCandidate(data)) { rejected=true; if (!wireNativeInvalid(model)) return false; } if (!avroNativeCandidate(data)) { rejected=true; if (!avroNativeWireInvalid(model)) return false; } return rejected; }\n"
 	propertyMethods := methods.String()
+	if options.JSONModule != "" {
+		calls = append(calls, "wireLimitProperties();")
+	}
+	if len(options.nativeInvalidJSON) > 0 {
+		calls = append(calls, "nativeRejectionProperties();")
+	}
 	source := header + fmt.Sprintf(`@SuppressWarnings("deprecation")
 public final class %s {
+    private static final String SUITE=%s;
     private static final int CASES=%d; private static final long SEED=%dL;
     private static <T> org.jetbrains.jetCheck.Generator<T> requiring(org.jetbrains.jetCheck.Generator<T> raw, java.util.function.Predicate<T> wanted, int attempts, String label) { return org.jetbrains.jetCheck.Generator.from(env -> { for (int i=0;i<attempts;i++) { T value=env.generate(raw); if (wanted.test(value)) { env.generate(org.jetbrains.jetCheck.Generator.integers()); return value; } } throw new AssertionError("property generation exhausted: "+label+" after "+attempts+" attempts"); }); }
-    private static <T extends Data> void check(org.jetbrains.jetCheck.Generator<T> generator, java.util.function.Predicate<T> property, String replay) { if (replay.isEmpty()) org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property); else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property); }
+%s
     private static boolean targeted(Validation.Outcome outcome,String code) { return outcome.state()==Validation.State.INVALID && !outcome.incomplete() && outcome.diagnostics().stream().anyMatch(d -> d.code().equals(code)); }
     private static boolean structureOnly(Validation.Outcome outcome) { return outcome.state()==Validation.State.INVALID && !outcome.incomplete() && !outcome.diagnostics().isEmpty() && outcome.diagnostics().stream().allMatch(d -> d.code().equals("validation.structure")); }
 %s
 %s
-    public static void main(String[] args) { %s %s }
+    public static void main(String[] args) { beginSuite(); %s %s %s finishSuite(); }
 }
-`, class, cases, options.Seed, wireMethods, propertyMethods, examples.String(), strings.Join(calls, " "))
+`, class, javaQuote(namespace+"."+class), cases, options.Seed, propertyReportingJava, wireMethods, propertyMethods, coverage.String(), examples.String(), strings.Join(calls, " "))
 	prefix := strings.ReplaceAll(namespace, ".", "/")
 	return []File{{Path: path.Join(prefix, class+".java"), Source: source}}, nil
 }

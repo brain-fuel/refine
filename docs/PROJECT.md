@@ -147,8 +147,12 @@ and runs the generated
 The launcher invokes every generated family/version suite; it is not merely
 compiled and forgotten. A failing property or required-generation exhaustion
 fails Maven. The standard explicit `-DskipTests` override skips this execution.
-For JSON outputs the properties exercise Jackson raw-preserving round trips
-and targeted invalid writes that must emit no bytes.
+For JSON outputs the properties exercise Jackson payload-preserving round trips
+and targeted invalid writes that must emit no bytes. Wire comparisons preserve
+exact numeric values and payload structure; they disregard Refine-only numeric
+literal tags that JSON and Avro do not encode. Model boundaries still require
+exact raw-data equality. See [generated test evidence](GENERATED-TESTS.md) for
+execution reports, explicit coverage gaps, and mutation checks.
 
 The default remains a single Maven project/artifact containing every family.
 There is no signing or publication execution. The application CLI must provide

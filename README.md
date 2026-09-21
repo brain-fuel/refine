@@ -82,3 +82,9 @@ The Java runtime and Maven plugin are configured for publication as `dev.goforge
 `dev.goforge:refine-maven-plugin`; see [Maven Central publication](docs/MAVEN-PUBLISHING.md)
 for the signed release procedure. Generated schema artifacts remain owned by
 the consuming Maven or Gradle project.
+
+The Maven 0.4.0 distribution runs generation on the JVM and formats generated
+production and test Java with Google Java Format by default. Consumers need Java
+25 and Maven; `-Drefine.javaFormat=none` disables formatting. See the
+[Spring integration roadmap](docs/SPRING-ROADMAP.md) for the prioritized work
+toward automatic imports, refinements, HTTP bindings, and Kafka integration.

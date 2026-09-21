@@ -1,0 +1,58 @@
+package java
+
+import (
+    "fmt"
+    "strings"
+
+    "goforge.dev/refine/language"
+)
+
+// Encode public getter results independently of the getter implementation, and
+// compare to the original data. This covers top-level non-generic model accessors.
+func propertyAccessorMethod(m *modelEmitter,target string,index int)(string,bool){
+    decl:=m.declarations[target];shape:=m.shape(target)
+    if shape==nil||m.genericFamilies[m.modelRoot(target)]{return "",false}
+    m.genericContext(decl);checks:=[]string{}
+    match shape.Form{
+    case language.RecordType(_):
+        for _,field:=range m.recordFields(m.modelRoot(target),shape){
+            encoded:=m.encode(field.typ,"model."+field.member+"()",javaQuote("/"+field.name))
+            checks=append(checks,"wireDataEqual("+encoded+",ModelSupport.field(model.rawData(),"+javaQuote(field.name)+"))")
+        }
+    case _:
+        checks=append(checks,"wireDataEqual("+m.encode(shape,"model.value()",`""`)+",model.rawData())")
+    }
+    if len(checks)==0{return "",false}
+    return fmt.Sprintf("    private static boolean accessors%d(%s model){return %s;}\n",index,target,strings.Join(checks," && ")),true
+}
+
+// A plain mapper leaves enforcement to the generated module, so parser-level
+// limits cannot mask a missing module guard. The nested probes are deliberately
+// schema-independent: traversal must fail before shape/native validation runs.
+func propertyWireLimitMethods(options PropertyTestOptions,target string)string{
+    module:=options.JSONModule
+    constructor:="new "+module+"(limits)"
+    if options.NativeJSONValidator!=""{constructor="new "+module+"(limits,"+options.NativeJSONValidator+".Limits.defaults())"}
+    return fmt.Sprintf(`    private static tools.jackson.databind.json.JsonMapper limitMapper(boolean depth){
+        var defaults=%s.CodecLimits.defaults();
+        var limits=new %s.CodecLimits(defaults.maxBytes(),depth?1:defaults.maxDepth(),depth?defaults.maxNodes():1,defaults.maxNumberLength(),defaults.maxStringLength(),defaults.maxNameLength(),defaults.maxNumericExpansion());
+        return tools.jackson.databind.json.JsonMapper.builder().addModule(%s).build();
+    }
+    private static final tools.jackson.databind.json.JsonMapper NODE_LIMIT_MAPPER=limitMapper(false),DEPTH_LIMIT_MAPPER=limitMapper(true);
+    private static boolean rejectsWireLimit(String input,boolean depth){
+        var mapper=depth?DEPTH_LIMIT_MAPPER:NODE_LIMIT_MAPPER;
+        try{mapper.readValue(input,%s.class);return false;}
+        catch(RuntimeException failure){
+            for(Throwable cause=failure;cause!=null;cause=cause.getCause()){
+                if(cause instanceof ValidationException validation)return validation.outcome().state()==Validation.State.INDETERMINATE&&!validation.outcome().diagnostics().isEmpty()&&validation.outcome().diagnostics().stream().allMatch(d->d.code().equals("validation.limit"));
+            }
+            return false;
+        }
+    }
+    private static void wireLimitProperties(){
+        var leaves=org.jetbrains.jetCheck.Generator.integers().map(n->Integer.toString(n));
+        check("json-node-limit",leaves.map(s->"["+s+"]"),s->rejectsWireLimit(s,false),"");
+        check("json-depth-limit",leaves.map(s->"[["+s+"]]"),s->rejectsWireLimit(s,true),"");
+    }
+`,module,module,constructor,target)
+}

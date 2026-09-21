@@ -10,8 +10,8 @@ authors do not provide Java generator classes or method names.
 
 - `Targets`: closed named schema types. When omitted, every closed declaration
   is selected.
-- `CaseCount`: the required number of cases for every generated property
-  (default 100).
+- `CaseCount`: the requested JetCheck iteration count for every generated
+  property (default 100); execution reports count actual predicate evaluations.
 - `AttemptBudget`: the maximum candidates examined for each required case
   (default 10,000).
 - `Seed`: the deterministic jetCheck seed used for replayable runs.
@@ -160,7 +160,8 @@ closed empty native wrapper.
 
 ### Shared generator behavior
 
-The requested case count is mandatory. For each case, the generated `requiring`
+Every generated property is mandatory; the configured iteration count is passed
+to JetCheck, and the suite rejects zero predicate evaluations. For each case, the generated `requiring`
 generator evaluates at most `AttemptBudget` candidates. If it cannot find a
 valid or clause-targeted invalid payload, it throws an `AssertionError` naming
 the target and attempt count. The property does not skip, reduce its case count,
@@ -213,15 +214,141 @@ it with the matching `GenerateModels` output for the same program, namespace,
 and contract class.
 
 With a JSON module, every valid case also crosses Jackson write/read/write and
-must preserve the raw payload and stable wire text. Each targeted invalid case
+must preserve the wire payload and stable wire text (see numeric-tag semantics below). Each targeted invalid case
 must throw a validation exception carrying the targeted diagnostic (possibly
 wrapped by Jackson) and leave the caller's byte buffer empty. These checks run
 automatically in the Maven-bound project launcher.
 
 With an Avro adapter, valid cases cross both binary and Avro JSON codecs and
-must preserve raw payloads and stable re-encoded bytes/text. Targeted invalid
-binary writes must report the intended refinement and leave the output empty.
+must preserve wire payloads and stable re-encoded bytes/text. Targeted invalid
+binary and Avro JSON writes must report the intended refinement; binary writes
+must also leave the output empty.
 Before selecting a positive case, the adapter's native-only candidate predicate
 also rejects values that cannot inhabit the Avro reader schema. Codec resource
 limits and unexpected failures propagate rather than being filtered out.
 These are properties of the generated adapter, not merely compilation checks.
+
+## Execution evidence and coverage limits
+
+This reporting ships in Maven `0.4.0`. It is not present in `0.3.0`.
+
+Generated payload and OpenAPI operation suites report execution to stderr. The
+report distinguishes properties, embedded examples, inapplicable adapters, and
+coverage gaps. These messages are test evidence, not a claim that all possible
+inputs or failures were exercised.
+
+For an unconstrained JSON-only `Name` contract, a seven-case run reports:
+
+```text
+REFINE_COVERAGE NOT_GENERATED refinement-negative target=Name reason=no-refinement-predicates suite=...
+REFINE_COVERAGE NOT_APPLICABLE avro-wire reason=no-avro-adapter suite=...
+REFINE_PROPERTY PASS valid Name cases=7 mode=generated suite=...
+REFINE_PROPERTY PASS model-accessors Name cases=7 mode=generated suite=...
+REFINE_PROPERTY PASS json-node-limit cases=7 mode=generated suite=...
+REFINE_PROPERTY PASS json-depth-limit cases=7 mode=generated suite=...
+REFINE_SUITE PASS properties=4 cases=28 examples=0 suite=...
+```
+
+An imported native contract without explicit native-invalid examples also reports
+`GAP native-negative reason=no-native-invalid-examples`. OpenAPI operation suites
+identify request, response, and context checks and disclose that randomized
+native-invalid properties are not generated. Explicit examples can cover native
+rejection, but their existence is not randomized rejection coverage.
+
+## Execution accounting
+
+- `cases` counts actual property predicate evaluations on a successful run. It is
+  not a count of distinct inputs, helper methods, requested iterations, or covered
+  branches. Replay runs say `mode=replay` and report their actual count.
+- A failing property reports `evaluations`, which can include shrinking attempts.
+  Failure during generation can legitimately report zero evaluations and still
+  fails the process. No passing suite summary follows a failure.
+- `examples` counts fully completed embedded/caller example checks. Compatible
+  request sampling for an OpenAPI response example is separately reported as a
+  property check with its own observed count.
+- Reports include the suite's qualified class name, including its family/version
+  namespace in a generated Maven project.
+- A property runner that returns without evaluating any cases fails. A suite
+  that completes without any property checks also fails.
+
+Each generated refinement-negative property is required. If its bounded generator
+cannot find a matching input, the suite fails with an exhaustion diagnostic; it
+does not silently skip the property. This can also happen for a tautological
+predicate whose negation has no example in the generated domain.
+
+## Applicable checks only
+
+The generator emits JSON and Avro checks only when those adapters are configured.
+An absent adapter does not receive a constant-success substitute. Negative model
+and codec helpers are omitted when no corresponding refinement-negative property
+or example requires them. Native-negative helpers require explicit native-invalid
+examples.
+
+Positive model checks require preservation of the original `Data`, validation,
+and text round trips. Configured JSON and Avro codecs are exercised for wire
+round trips. Avro positive checks exercise both binary and Avro JSON encoding;
+refinement-negative checks require rejection from both writers. JSON invalid
+writes and Avro binary invalid writes must publish no bytes.
+
+Wire equality preserves exact rational values and payload structure, including
+keys, field names, variants, and collection contents. It disregards only
+`Data.Number.numericType`, a Refine literal tag not encoded by JSON or Avro.
+For example, integer 7 tagged `Int64` and integer 7 decoded as `Int` have the same
+wire value; 7 and 8, or 7 and 7/2, do not. Model boundary checks still require exact
+raw-data equality, including numeric tags.
+
+## Tests of the tests
+
+The regression harness compiles and runs healthy generated implementations, then
+activates narrowly scoped mutations in implementation code, leaving generated
+assertions intact. It requires nonzero process status and an executed-property
+failure for each mutation:
+
+- a contract validator that accepts every value;
+- a model validator that accepts every value;
+- a constructor that bypasses validation;
+- a JSON writer that bypasses validation or loses numeric data;
+- an Avro writer that bypasses validation, loses binary/JSON data, or bypasses
+  validation only on the Avro JSON path;
+- a getter that returns the wrong value;
+- a JSON module with its traversal guard disabled;
+- a native validator that discards an invalid schema result.
+
+Another test substitutes a broken property runner that never invokes its
+predicate. It must fail rather than produce an empty green run. Separate tests
+cover positive and negative generation exhaustion and preservation of payload
+differences by wire equality. OpenAPI regression tests exercise report labels,
+replays, examples, and request/response/context bindings.
+
+These are finite mutation checks, not a claim of comprehensive mutation coverage.
+Running a generated suite is still necessary: compiling it alone establishes no
+property-test evidence. The Maven test launcher must be bound to the test phase,
+as in Offscript and the generated Maven snippet.
+
+## Consumer mutation verification
+
+The reusable harness lives in Refine's Maven plugin as `refine:mutate`.
+See [Mutation testing](MUTATION-TESTING.md) for the catalog, result classifications,
+and Offscript demonstration. Offscript configures and exercises the harness;
+it does not own its implementation.
+
+## Generated boundary checks in 0.4.0
+
+Top-level non-generic model accessor values are encoded and compared with the
+original data; this is independent of the accessor body. Nested model data is
+compared, but this does not independently exercise every nested getter. Generic
+and union accessor checks are reported as a gap.
+
+JSON node and depth limits are tested separately through a plain Jackson mapper
+so strict-mapper parser limits cannot mask a missing module guard. Small nested
+probes must produce an indeterminate `validation.limit` diagnostic before structural
+or native-schema rejection; an unrelated exception is not a pass.
+
+For native JSON projects, a bounded corpus of JSON values is evaluated by the Go
+native validator during generation. Only definite native-payload rejection becomes
+an expected-invalid fixture; enforcement errors abort generation. Java directly
+checks that the emitted native validator rejects those fixtures as `INVALID`.
+The number of requested cases is capped by the finite corpus. The corpus is not
+a complete enumeration of schema constraints. The existing `native-negative`
+gap with reason `no-native-invalid-examples` refers to authored model/wire examples;
+it does not erase the separately reported `native-json-rejection` probe evidence.

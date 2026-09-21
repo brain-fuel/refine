@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>dev.goforge</groupId><artifactId>refine-parent</artifactId><version>0.4.0</version></parent>
+  <artifactId>refine-engine</artifactId>
+  <name>Refine JVM generation engine</name>
+  <description>Refine schema compiler compiled to JVM bytecode; no Go or native executable required by consumers</description>
+  <dependencies>
+    <dependency><groupId>com.dylibso.chicory</groupId><artifactId>wasi</artifactId><version>1.7.5</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.12.2</version><scope>test</scope></dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.3</version>
+        <executions><execution><id>prepare-engine</id><phase>initialize</phase><goals><goal>exec</goal></goals>
+          <configuration><executable>python3</executable><arguments><argument>${project.basedir}/../scripts/prepare-engine.py</argument></arguments></configuration>
+        </execution></executions>
+      </plugin>
+      <plugin><groupId>com.dylibso.chicory</groupId><artifactId>chicory-compiler-maven-plugin</artifactId><version>1.7.5</version>
+        <executions><execution><id>compile-engine-to-jvm</id><goals><goal>compile</goal></goals>
+          <configuration><wasmFile>${project.build.directory}/engine/refine.wasm</wasmFile><name>dev.goforge.refine.engine.RefineModule</name><interpreterFallback>WARN</interpreterFallback></configuration>
+        </execution></executions>
+      </plugin>
+      <plugin><groupId>org.codehaus.mojo</groupId><artifactId>build-helper-maven-plugin</artifactId><version>3.6.1</version>
+        <executions><execution><id>engine-provenance</id><phase>generate-sources</phase><goals><goal>add-source</goal><goal>add-resource</goal></goals>
+          <configuration><sources><source>${project.build.directory}/generated-sources/engine-inputs</source></sources><resources><resource><directory>${project.build.directory}/generated-resources/engine-notices</directory></resource></resources></configuration>
+        </execution></executions>
+      </plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.3</version><configuration><argLine>-Xmx2g</argLine></configuration></plugin>
+    </plugins>
+  </build>
+</project>

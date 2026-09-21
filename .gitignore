@@ -1,6 +1,7 @@
 /bin/
 /dist/
 /target/
+/maven/**/target/
 /.goplus/
 /coverage.out
 *.test

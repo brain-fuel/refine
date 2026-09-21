@@ -4,14 +4,22 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.goforge</groupId>
   <artifactId>refine-parent</artifactId>
-  <version>0.1.0</version>
+  <version>0.4.0</version>
   <packaging>pom</packaging>
   <name>Refine</name>
   <description>Refined OpenAPI, Avro, and JSON Schema tooling</description>
   <url>https://goforge.dev/refine</url>
   <licenses><license><name>MIT License</name><url>https://opensource.org/license/mit</url><distribution>repo</distribution></license></licenses>
-  <scm><connection>scm:git:git@github.com:brain-fuel/refine.git</connection><developerConnection>scm:git:git@github.com:brain-fuel/refine.git</developerConnection><url>https://github.com/brain-fuel/refine</url><tag>v0.1.0</tag></scm>
-  <modules><module>refine-runtime</module><module>refine-maven-plugin</module></modules>
+  <developers>
+    <developer>
+      <id>brain-fuel</id>
+      <name>brain-fuel</name>
+      <email>opensource@goforge.dev</email>
+      <url>https://github.com/brain-fuel</url>
+    </developer>
+  </developers>
+  <scm><connection>scm:git:git@github.com:brain-fuel/refine.git</connection><developerConnection>scm:git:git@github.com:brain-fuel/refine.git</developerConnection><url>https://github.com/brain-fuel/refine</url><tag>maven-0.4.0</tag></scm>
+  <modules><module>refine-runtime</module><module>refine-engine</module><module>refine-maven-plugin</module></modules>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>25</maven.compiler.release>

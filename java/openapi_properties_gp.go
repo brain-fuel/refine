@@ -761,9 +761,12 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 				return nil, replayErr
 			}
 			arguments := propertyRuleArguments(rule)
-			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, arguments, javaQuote("invalid request "+operation.OperationID+" "+rule.code+" "+strings.Join(rule.paths, ",")), ruleIndex, opIndex, arguments, javaQuote(replay))
+			fmt.Fprintf(&invalid, "var invalid%d=requiring(raw,d->requestInvalidCandidate%d(d,%s),ATTEMPTS,%s);check(%s,invalid%d,d->requestInvalidCandidate%d(d,%s),%s);", ruleIndex, opIndex, arguments, javaQuote("invalid request "+operation.OperationID+" "+rule.code+" "+strings.Join(rule.paths, ",")), javaQuote("invalid request "+operation.OperationID+" "+rule.code+" "+strings.Join(rule.paths, ",")), ruleIndex, opIndex, arguments, javaQuote(replay))
 		}
-		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, requestGenerator, contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
+		fmt.Fprintf(&methods, "    private static void requestProperty%d(){var raw=%s;var valid=requiring(raw,%sGeneratedProperties::requestCandidate%d,ATTEMPTS,%s);check(%s,valid,data->{var token=FACADE.validateRequest(%s,%s(data));return token.operationId().equals(%s)&&token.data().equals(data);},%s);%s}\n", opIndex, requestGenerator, contractName, opIndex, javaQuote("request "+operation.OperationID), javaQuote("request "+operation.OperationID), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), javaQuote(validReplay), invalid.String())
+		if len(requestRules) == 0 {
+			calls = append(calls, "coverage("+javaQuote("NOT_GENERATED refinement-negative request="+operation.OperationID+" reason=no-refinement-predicates")+");")
+		}
 		calls = append(calls, fmt.Sprintf("requestProperty%d();", opIndex))
 		for _, response := range operation.Responses {
 			status, statusErr := openAPIPropertyStatus(operation, response)
@@ -850,13 +853,16 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 					logicalValue = "new Data.Struct(java.util.List.of(new Data.Field(\"request\",p.request()),new Data.Field(\"response\",p.response())))"
 				}
 				arguments := javaQuote(logicalType) + "," + logicalValue + "," + propertyRuleArguments(item.rule)
-				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(invalid%d,p->responseInvalidCandidate%d(p,%s),%s);", ruleIndex, pairIndex, arguments, javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code+" "+strings.Join(item.rule.paths, ",")), ruleIndex, pairIndex, arguments, javaQuote(replay))
+				fmt.Fprintf(&responseInvalid, "var invalid%d=requiring(raw,p->responseInvalidCandidate%d(p,%s),ATTEMPTS,%s);check(%s,invalid%d,p->responseInvalidCandidate%d(p,%s),%s);", ruleIndex, pairIndex, arguments, javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code+" "+strings.Join(item.rule.paths, ",")), javaQuote("invalid "+item.role+" "+operation.OperationID+" "+response.Status+" "+item.rule.code+" "+strings.Join(item.rule.paths, ",")), ruleIndex, pairIndex, arguments, javaQuote(replay))
 			}
 			label := "response " + operation.OperationID + " " + response.Status
 			if response.ContextType != "" {
 				label = "context " + operation.OperationID + " " + response.Status
 			}
-			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;},%s);%s}\n", pairIndex, requestGenerator, responseGenerator, pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, javaQuote(validReplay), responseInvalid.String())
+			fmt.Fprintf(&methods, "    private static void responseProperty%d(){var raw=org.jetbrains.jetCheck.Generator.zipWith(%s,%s,Pair%d::new);var valid=requiring(raw,%sGeneratedProperties::responseCandidate%d,ATTEMPTS,%s);check(%s,valid,pair->{var token=FACADE.validateRequest(%s,%s(pair.request()));return FACADE.validateResponse(%s,%s(pair.response()),token).state()==Validation.State.VALID;},%s);%s}\n", pairIndex, requestGenerator, responseGenerator, pairIndex, contractName, pairIndex, javaQuote(label), javaQuote(label), javaQuote(operation.OperationID), requestMethod, javaQuote(operation.OperationID), responseMethod, javaQuote(validReplay), responseInvalid.String())
+			if len(rules) == 0 {
+				calls = append(calls, "coverage("+javaQuote("NOT_GENERATED refinement-negative response="+operation.OperationID+" status="+response.Status+" reason=no-refinement-predicates")+");")
+			}
 			calls = append(calls, fmt.Sprintf("responseProperty%d();", pairIndex))
 			pairIndex++
 		}
@@ -883,7 +889,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 			covered++
 		}
 		for _, occurrence := range responseOccurrences[example.target] {
-			fmt.Fprintf(&methods, "var compatible%d=requiring(%s,request->responseExample%d(new Pair%d(request,data),%s),ATTEMPTS,%s);checkExample(compatible%d,request->responseExample%d(new Pair%d(request,data),%s));", covered, occurrence.requestGenerator, occurrence.index, occurrence.index, args, javaQuote(example.label+" compatible request context"), covered, occurrence.index, occurrence.index, args)
+			fmt.Fprintf(&methods, "var compatible%d=requiring(%s,request->responseExample%d(new Pair%d(request,data),%s),ATTEMPTS,%s);checkExample(%s,compatible%d,request->responseExample%d(new Pair%d(request,data),%s));", covered, occurrence.requestGenerator, occurrence.index, occurrence.index, args, javaQuote(example.label+" compatible request context"), javaQuote(example.label+" compatible request context"), covered, occurrence.index, occurrence.index, args)
 			covered++
 		}
 		for _, occurrence := range contextOccurrences[example.target] {
@@ -893,7 +899,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 		if covered == 0 {
 			return nil, &GenerationError{Message: example.label + " has no checked operation occurrence"}
 		}
-		methods.WriteString("}\n")
+		fmt.Fprintf(&methods, "examplePassed(%s); }\n", javaQuote(example.label))
 		calls = append(calls, method+"();")
 	}
 	for key := range replayValues {
@@ -908,6 +914,7 @@ func GenerateProjectOpenAPIPropertyTests(project *native.Project, namespace, con
 	}
 	source := header + fmt.Sprintf(`@SuppressWarnings("deprecation")
 public final class %s {
+    private static final String SUITE=%s;
     private static final int CASES=%d,ATTEMPTS=%d;private static final long SEED=%dL;
     private static final %s FACADE=new %s();
 %s
@@ -915,8 +922,8 @@ public final class %s {
     private static tools.jackson.databind.JsonNode parse(byte[] raw){return TREE.readTree(raw);}
     private static byte[] part(tools.jackson.databind.JsonNode root,String... path){var value=root;for(var name:path){if(value==null||!value.isObject())return null;value=value.get(name);}return value==null?null:TREE.writeValueAsBytes(value);}
     private static <T> org.jetbrains.jetCheck.Generator<T> requiring(org.jetbrains.jetCheck.Generator<T> raw,java.util.function.Predicate<T> wanted,int attempts,String label){return org.jetbrains.jetCheck.Generator.from(env->{for(int i=0;i<attempts;i++){T value=env.generate(raw);if(wanted.test(value)){env.generate(org.jetbrains.jetCheck.Generator.integers());return value;}}throw new AssertionError("property generation exhausted: "+label+" after "+attempts+" attempts");});}
-    private static <T> void check(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property,String replay){if(replay.isEmpty())org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(CASES).silent().forAll(generator,property);else org.jetbrains.jetCheck.PropertyChecker.customized().rechecking(replay).silent().forAll(generator,property);}
-    private static <T> void checkExample(org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property){org.jetbrains.jetCheck.PropertyChecker.customized().withSeed(SEED).withIterationCount(1).silent().forAll(generator,property);}
+%s
+    private static <T> void checkExample(String label,org.jetbrains.jetCheck.Generator<T> generator,java.util.function.Predicate<T> property){checkCases(label,generator,property,"",1);}
     // Invalid properties require dual evidence: the checked logical contract
     // identifies the exact clause occurrence, then the native-first facade
     // rejects the same request or response at either enforcement layer.
@@ -929,8 +936,8 @@ public final class %s {
     private static boolean matchesOutcome(Validation.Outcome outcome,Validation.State state,String... codes){if(outcome.state()!=state)return false;if(state!=Validation.State.INDETERMINATE&&outcome.incomplete())return false;for(var code:codes)if(outcome.diagnostics().stream().noneMatch(d->d.code().equals(code)))return false;return true;}
     private static Data contextField(Data data,String name){if(!(data instanceof Data.Struct record)||record.fields().size()!=2)throw new AssertionError("operation context example must contain exactly request and response");Data found=null;for(var field:record.fields()){if(!field.name().equals("request")&&!field.name().equals("response"))throw new AssertionError("operation context example has an unknown field");if(field.name().equals(name)){if(found!=null)throw new AssertionError("duplicate operation context field");found=field.value();}}if(found==null)throw new AssertionError("operation context example lacks "+name);return found;}
 %s
-    public static void main(String[] args){%s}
+    public static void main(String[] args){beginSuite();coverage("GAP randomized-native-negative reason=only-explicit-examples-exercise-native-rejection");%s finishSuite();}
 }
-`, class, cases, attempts, options.Seed, facadeName, facadeName, strings.Join(codecFields, "\n"), methods.String(), strings.Join(calls, " "))
+`, class, javaQuote(namespace+"."+class), cases, attempts, options.Seed, facadeName, facadeName, strings.Join(codecFields, "\n"), propertyReportingJava, methods.String(), strings.Join(calls, " "))
 	return []File{{Path: path.Join(strings.ReplaceAll(namespace, ".", "/"), class+".java"), Source: source}}, nil
 }

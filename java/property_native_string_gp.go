@@ -4,6 +4,7 @@
 package java
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -35,6 +36,20 @@ func GenerateProjectPropertyTests(project *native.Project, namespace, contractNa
 	program, err := language.Compile(project.EditableSource())
 	if err != nil {
 		return nil, err
+	}
+	if options.NativeJSONValidator != "" {
+		for _, probe := range []string{`null`, `false`, `true`, `0`, `1`, `-1`, `""`, `"__refine_probe__"`, `[]`, `{}`, `[null]`} {
+			failure := project.ValidateJSON([]byte(probe))
+			if failure == nil {
+				continue
+			}
+			var invalid *native.Error
+			if errors.As(failure, &invalid) && invalid.Code == "native.payload" {
+				options.nativeInvalidJSON = append(options.nativeInvalidJSON, probe)
+			} else {
+				return nil, fmt.Errorf("native rejection probe could not be classified: %w", failure)
+			}
+		}
 	}
 	overrides := map[string]string{}
 	if source, ok := nativeRootStringPropertyGenerator(project, program); ok {
